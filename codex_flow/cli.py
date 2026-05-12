@@ -11,6 +11,12 @@ from .router_agent import CodexRouterAgent, HeuristicRouterAgent, RouterAgentDec
 from .run_all import RunAllRunner
 
 
+def default_commit(enabled: bool | None, *, executes_work: bool) -> bool:
+    if enabled is not None:
+        return enabled
+    return executes_work
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-flow", description="Local ticket, plan, and review queue for Codex work.")
     parser.add_argument("--repo", type=Path, default=None, help="Repository root to operate on. Defaults to cwd or nearest git root.")
@@ -51,7 +57,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_next.add_argument("--plan", type=Path, required=True)
     run_next.add_argument("--dry-run", action="store_true")
     run_next.add_argument("--execute", action="store_true", help="Run Codex CLI for the selected unit.")
-    run_next.add_argument("--commit", action="store_true", help="Commit changed files after successful execution.")
+    run_next.add_argument("--commit", dest="commit", action="store_true", default=None, help="Commit changed files after successful execution. This is the default when --execute is used.")
+    run_next.add_argument("--no-commit", dest="commit", action="store_false", help="Leave successful execution changes uncommitted.")
     run_next.add_argument("--codex-command", default="codex")
     run_next.add_argument("--codex-arg", action="append", default=[])
     run_next.add_argument("--allow-dirty", action="store_true")
@@ -63,7 +70,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--max-units", type=int, default=None)
     run_all.add_argument("--dry-run", action="store_true")
     run_all.add_argument("--execute", action="store_true")
-    run_all.add_argument("--commit", action="store_true")
+    run_all.add_argument("--commit", dest="commit", action="store_true", default=None, help="Commit changed files after each successful executed unit. This is the default when --execute is used.")
+    run_all.add_argument("--no-commit", dest="commit", action="store_false", help="Leave successful execution changes uncommitted.")
     run_all.add_argument("--codex-command", default="codex")
     run_all.add_argument("--codex-arg", action="append", default=[])
     run_all.add_argument("--allow-dirty", action="store_true")
@@ -91,7 +99,8 @@ def build_parser() -> argparse.ArgumentParser:
     open_pr.add_argument("--ready", action="store_true", help="Create a ready PR instead of draft when using --remote.")
     open_pr.add_argument("--auto-resolve", action="store_true", help="Run unfinished units before creating the PR artifact.")
     open_pr.add_argument("--execute-units", action="store_true", help="Use Codex CLI while auto-resolving unfinished units.")
-    open_pr.add_argument("--commit", action="store_true", help="Commit auto-resolved unit changes.")
+    open_pr.add_argument("--commit", dest="commit", action="store_true", default=None, help="Commit auto-resolved unit changes. This is the default when --execute-units is used.")
+    open_pr.add_argument("--no-commit", dest="commit", action="store_false", help="Leave auto-resolved unit changes uncommitted.")
     open_pr.add_argument("--max-units", type=int, default=8)
     open_pr.add_argument("--codex-command", default="codex")
     open_pr.add_argument("--codex-arg", action="append", default=[])
@@ -116,7 +125,8 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--remote", action="store_true")
     merge.add_argument("--auto-resolve", action="store_true", help="Auto-complete unfinished units and treat the merge request as executable.")
     merge.add_argument("--execute-units", action="store_true", help="Use Codex CLI while auto-resolving unfinished units.")
-    merge.add_argument("--commit", action="store_true", help="Commit auto-resolved unit changes.")
+    merge.add_argument("--commit", dest="commit", action="store_true", default=None, help="Commit auto-resolved unit changes. This is the default when --execute-units is used.")
+    merge.add_argument("--no-commit", dest="commit", action="store_false", help="Leave auto-resolved unit changes uncommitted.")
     merge.add_argument("--max-units", type=int, default=8)
     merge.add_argument("--codex-command", default="codex")
     merge.add_argument("--codex-arg", action="append", default=[])
@@ -216,7 +226,7 @@ def main(argv: list[str] | None = None) -> int:
             args.plan,
             dry_run=args.dry_run,
             execute=args.execute,
-            commit=args.commit,
+            commit=default_commit(args.commit, executes_work=args.execute),
             codex_command=args.codex_command,
             codex_args=args.codex_arg,
             allow_dirty=args.allow_dirty,
@@ -248,7 +258,7 @@ def main(argv: list[str] | None = None) -> int:
             max_units=args.max_units,
             dry_run=args.dry_run,
             execute=args.execute,
-            commit=args.commit,
+            commit=default_commit(args.commit, executes_work=args.execute),
             codex_command=args.codex_command,
             codex_args=args.codex_arg,
             allow_dirty=args.allow_dirty,
@@ -263,7 +273,8 @@ def main(argv: list[str] | None = None) -> int:
         print(f"units_processed: {len(results)}")
         for result in results:
             suffix = f" {result.get('action')}" if result.get("action") else ""
-            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}")
+            commit_suffix = f" commit={result['commit']}" if result.get("commit") else ""
+            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}")
         if run_result.message:
             print(run_result.message)
         return 0
@@ -341,7 +352,7 @@ def auto_complete_units(args: argparse.Namespace) -> str:
         args.plan,
         max_units=args.max_units,
         execute=args.execute_units,
-        commit=args.commit,
+        commit=default_commit(args.commit, executes_work=args.execute_units),
         codex_command=args.codex_command,
         codex_args=args.codex_arg,
         allow_dirty=args.allow_dirty,

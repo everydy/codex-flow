@@ -121,6 +121,57 @@ def test_run_next_execute_with_fake_codex_commits_unit(tmp_path):
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 2
 
 
+def test_run_next_cli_execute_commits_by_default(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex(tmp_path)
+    plan = make_plan(tmp_path)
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--execute",
+            "--codex-command",
+            str(fake_codex),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "action: committed" in output
+    assert "commit:" in output
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 2
+
+
+def test_run_next_cli_no_commit_keeps_escape_hatch(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex(tmp_path)
+    plan = make_plan(tmp_path)
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--execute",
+            "--no-commit",
+            "--codex-command",
+            str(fake_codex),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "action: done" in output
+    assert "commit:" not in output
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
+
+
 def test_run_next_auto_resolve_shelves_dirty_worktree_before_execution(tmp_path):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex(tmp_path)
@@ -174,7 +225,6 @@ def test_open_pr_auto_resolve_executes_unfinished_units_before_dry_run(tmp_path,
             str(plan.plan_path),
             "--auto-resolve",
             "--execute-units",
-            "--commit",
             "--codex-command",
             str(fake_codex),
         ]
@@ -186,6 +236,7 @@ def test_open_pr_auto_resolve_executes_unfinished_units_before_dry_run(tmp_path,
     assert "auto_resolve_units:" in output
     assert all(unit["status"] == "done" for unit in queue["units"])
     assert (plan.directory / "pr-dry-run.md").exists()
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 4
 
 
 def test_merge_auto_resolve_executes_unfinished_units_and_merges_without_execute_flag(tmp_path, capsys):
@@ -204,7 +255,6 @@ def test_merge_auto_resolve_executes_unfinished_units_and_merges_without_execute
             "main",
             "--auto-resolve",
             "--execute-units",
-            "--commit",
             "--codex-command",
             str(fake_codex),
         ]
