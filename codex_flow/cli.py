@@ -5,7 +5,10 @@ from pathlib import Path
 import sys
 import time
 
-from . import briefs, dashboard as dashboard_view, plans, pr, runner, state, tickets
+from . import briefs, dashboard as dashboard_view, inbox, plan_readiness, plans, pr, runner, state, tickets
+from .planner_agent import CodexPlannerAgent, TemplatePlannerAgent
+from .router_agent import CodexRouterAgent, HeuristicRouterAgent, RouterAgentDecision, RouterAgentInput, collect_active_plans
+from .run_all import RunAllRunner
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -26,6 +29,10 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--branch", help="Branch name to use when creating a new plan.")
         command.add_argument("--title", dest="plan_title", help="Plan title to use when creating a new plan.")
         command.add_argument("--reason", default="Routed by Codex Flow.")
+        command.add_argument("--router", choices=["heuristic", "codex"], default="heuristic")
+        command.add_argument("--planner", choices=["template", "codex"], default="template")
+        command.add_argument("--codex-command", default="codex")
+        command.add_argument("--codex-arg", action="append", default=[])
 
     submit = subparsers.add_parser("submit", help="Create a ticket from a natural-language request.")
     add_ticket_args(submit)
@@ -140,23 +147,37 @@ def main(argv: list[str] | None = None) -> int:
         print(f"ticket_created: {ticket.path}")
         if args.command == "route":
             lock = pr.read_pr_lock(args.repo)
-            if lock and not args.auto_resolve:
+            if lock:
+                inbox.append_inbox_request(args.repo, ticket.title, "PR lock is active.")
+                tickets.update_ticket_status(ticket.path, "inbox")
                 print("route: queued due to active PR lock")
             elif args.plan:
                 request_path = plans.append_plan_request(args.plan, ticket.title, reason=args.reason)
                 tickets.update_ticket_status(ticket.path, "queued")
                 print(f"route_to_existing_plan: {request_path}")
             else:
-                chosen_plan = None if args.branch or args.plan_title else plans.choose_active_plan(ticket.title, args.repo)
-                if chosen_plan:
-                    request_path = plans.append_plan_request(chosen_plan.plan_path, ticket.title, reason="Matched active plan.")
+                repo = state.resolve_repo(args.repo)
+                decision = route_decision(args, ticket.title, lock)
+                if decision.action == "pause_for_pr_review":
+                    inbox.append_inbox_request(repo, ticket.title, decision.reason)
+                    tickets.update_ticket_status(ticket.path, "inbox")
+                    print("route: queued due to router decision")
+                    return 0
+                if decision.action == "existing_plan":
+                    request_path = plans.append_plan_request(decision.plan_path, ticket.title, reason=decision.reason)
                     tickets.update_ticket_status(ticket.path, "queued")
                     print(f"route_to_existing_plan: {request_path}")
                     return 0
-                plan = plans.create_plan_from_ticket(ticket.path, repo=args.repo, branch_name=args.branch, plan_title=args.plan_title)
-                if lock:
-                    pr.append_lock_resolution(args.repo, f"route auto-resolved active lock by creating stacked plan: {plan.plan_path}")
-                    print(f"route: auto_resolved active PR lock {lock}")
+                planner = CodexPlannerAgent(command=args.codex_command, extra_args=args.codex_arg) if args.planner == "codex" else TemplatePlannerAgent()
+                plan = plans.create_plan_from_ticket(
+                    ticket.path,
+                    repo=args.repo,
+                    branch_name=decision.branch_name or args.branch,
+                    plan_title=decision.plan_title or args.plan_title,
+                    planner=planner,
+                    prepare_git_branch=True,
+                    reason=decision.reason,
+                )
                 print(f"plan_created: {plan.plan_path}")
                 print(f"queue_created: {plan.queue_md}")
         return 0
@@ -222,7 +243,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "run-all":
-        results = runner.run_all(
+        run_result = RunAllRunner().run_all(
             args.plan,
             max_units=args.max_units,
             dry_run=args.dry_run,
@@ -233,14 +254,18 @@ def main(argv: list[str] | None = None) -> int:
             allow_dirty=args.allow_dirty,
             no_branch=args.no_branch,
             auto_resolve=args.auto_resolve,
+            open_pr=args.open_pr,
+            merge=args.merge,
+            remote=args.remote,
+            target=args.target,
         )
+        results = run_result.steps
         print(f"units_processed: {len(results)}")
         for result in results:
             suffix = f" {result.get('action')}" if result.get("action") else ""
             print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}")
-        finalize_message = finalize_after_run_all(args)
-        if finalize_message:
-            print(finalize_message)
+        if run_result.message:
+            print(run_result.message)
         return 0
 
     if args.command == "mark":
@@ -306,7 +331,8 @@ def main(argv: list[str] | None = None) -> int:
 
 
 def auto_complete_units(args: argparse.Namespace) -> str:
-    _, queue_data = plans.load_queue(args.plan)
+    plan_dir, queue_data = plans.load_queue(args.plan)
+    queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
     unfinished_before = plans.unfinished_units(queue_data)
     if not unfinished_before:
         return ""
@@ -322,7 +348,8 @@ def auto_complete_units(args: argparse.Namespace) -> str:
         no_branch=args.no_branch,
         auto_resolve=args.auto_resolve,
     )
-    _, refreshed = plans.load_queue(args.plan)
+    refreshed_dir, refreshed = plans.load_queue(args.plan)
+    refreshed = plan_readiness.sync_queue_cache_from_plan(refreshed_dir / "plan.md")
     remaining = plans.unfinished_units(refreshed)
     return (
         "auto_resolve_units: "
@@ -336,10 +363,10 @@ def auto_complete_units(args: argparse.Namespace) -> str:
 def finalize_after_run_all(args: argparse.Namespace) -> str:
     if not (args.merge or args.open_pr or args.remote):
         return ""
-    _, queue_data = plans.load_queue(args.plan)
-    remaining = plans.unfinished_units(queue_data)
-    if remaining:
-        return f"finalize: not_ready remaining_units={len(remaining)}"
+    plan_dir, plan_content, log_content = plan_readiness.read_plan_file(args.plan)
+    readiness = plan_readiness.check_plan_ready(plan_content, log_content)
+    if not readiness.ready:
+        return f"finalize: not_ready {readiness.reason}"
     if args.merge:
         return pr.merge_plan(args.plan, target=args.target, remote=args.remote, execute=True)
     if args.remote:
@@ -347,6 +374,17 @@ def finalize_after_run_all(args: argparse.Namespace) -> str:
         return f"opened_pr: {url}\npr_lock: {lock_path}"
     pr_path = pr.write_pr_dry_run(args.plan)
     return f"pr_dry_run: {pr_path}"
+
+
+def route_decision(args: argparse.Namespace, prompt: str, lock: Path | None) -> RouterAgentDecision:
+    if args.branch or args.plan_title:
+        title = args.plan_title or prompt.splitlines()[0][:80] or "User Request"
+        return RouterAgentDecision("new_plan", args.reason, branch_name=args.branch or f"codex/{state.slugify(title)}", plan_title=title)
+    repo = state.resolve_repo(args.repo)
+    lock_text = lock.read_text(encoding="utf-8") if lock else None
+    active_plans = collect_active_plans(repo)
+    agent = CodexRouterAgent(command=args.codex_command, extra_args=args.codex_arg) if args.router == "codex" else HeuristicRouterAgent()
+    return agent.decide(RouterAgentInput(repo=repo, prompt=prompt, pr_lock=lock_text, active_plans=active_plans))
 
 
 if __name__ == "__main__":

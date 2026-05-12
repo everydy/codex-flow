@@ -108,15 +108,15 @@ def test_run_next_auto_resolve_shelves_dirty_worktree_before_execution(tmp_path)
     assert "codex-flow auto-shelve" in stash_list
 
 
-def test_route_auto_resolve_creates_plan_despite_active_pr_lock(tmp_path, capsys):
+def test_route_queues_when_pr_lock_is_active(tmp_path, capsys):
     pr.write_pr_lock(tmp_path, "codex/open", "https://github.com/example/repo/pull/1", "reviewing")
 
     status = cli.main(["--repo", str(tmp_path), "route", "새 작업", "--auto-resolve"])
 
     output = capsys.readouterr().out
     assert status == 0
-    assert "auto_resolved active PR lock" in output
-    assert list((tmp_path / ".codex-flow" / "plans").glob("*"))
+    assert "queued due to active PR lock" in output
+    assert not list((tmp_path / ".codex-flow" / "plans").glob("*"))
 
 
 def test_pr_lock_check_drain_and_merge_hard_stop(tmp_path):

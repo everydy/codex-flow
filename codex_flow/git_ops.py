@@ -166,6 +166,30 @@ def merge_branch(repo: str | Path, source_branch: str, target_branch: str) -> Pr
     return run_process(["git", "merge", source_branch], cwd=repo_path)
 
 
+def unmerged_paths(repo: str | Path) -> list[str]:
+    result = run_process(["git", "diff", "--name-only", "--diff-filter=U"], cwd=require_git_repo(repo))
+    if result.status != 0:
+        raise SystemExit(command_failure("git diff failed", result))
+    return [line.strip() for line in result.stdout.splitlines() if line.strip()]
+
+
+def has_pending_merge_commit(repo: str | Path) -> bool:
+    result = run_process(["git", "rev-parse", "-q", "--verify", "MERGE_HEAD"], cwd=require_git_repo(repo))
+    return result.status == 0
+
+
+def commit_merge(repo: str | Path) -> ProcessResult:
+    return run_process(["git", "commit", "--no-edit"], cwd=require_git_repo(repo))
+
+
+def fetch_branch(repo: str | Path, branch_name: str) -> ProcessResult:
+    return run_process(["git", "fetch", "origin", branch_name], cwd=require_git_repo(repo))
+
+
+def merge_current_branch(repo: str | Path, source: str) -> ProcessResult:
+    return run_process(["git", "merge", source], cwd=require_git_repo(repo))
+
+
 def command_failure(prefix: str, result: ProcessResult) -> str:
     detail = result.stderr.strip() or result.stdout.strip()
     return f"{prefix}: {detail}" if detail else prefix

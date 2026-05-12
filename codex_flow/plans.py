@@ -4,7 +4,9 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 
-from . import state
+from . import plan_readiness, state
+from .git_ops import is_git_repo, prepare_branch
+from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
 from .tickets import Ticket, load_ticket, update_ticket_status
 
 
@@ -62,12 +64,17 @@ def create_plan_from_ticket(
     repo: str | Path | None = None,
     branch_name: str | None = None,
     plan_title: str | None = None,
+    planner: PlannerAgent | None = None,
+    prepare_git_branch: bool = False,
+    reason: str = "No PR lock or selected active plan; created a new plan.",
 ) -> Plan:
     flow = state.ensure_initialized(repo)
     ticket = load_ticket(ticket_path)
     title = plan_title or ticket.title
     slug = unique_slug(title, flow.plans)
     branch = branch_name or f"codex/{slug}"
+    if prepare_git_branch and is_git_repo(flow.repo):
+        prepare_branch(flow.repo, branch)
     plan_dir = flow.plans / slug
     plan_dir.mkdir(parents=True, exist_ok=False)
     (plan_dir / "prompts").mkdir(parents=True, exist_ok=True)
@@ -98,6 +105,20 @@ def create_plan_from_ticket(
         queue_md=plan_dir / "queue.md",
     )
     write_plan_files(plan, ticket, queue_data)
+    selected_planner = planner or TemplatePlannerAgent()
+    selected_planner.write_plan(
+        PlannerAgentInput(
+            repo=flow.repo,
+            branch_name=branch,
+            plan_title=title,
+            plan_path=plan.plan_path,
+            queue_path=plan.queue_md,
+            log_path=plan.directory / "log.md",
+            prompt=ticket.title,
+            reason=reason,
+        )
+    )
+    plan_readiness.sync_queue_cache_from_plan(plan.plan_path)
     update_ticket_status(ticket.path, "planned")
     state.refresh_dashboard(flow.repo)
     return plan
@@ -188,17 +209,7 @@ def render_plan_md(ticket: Ticket, plan: Plan, queue_data: dict | None = None) -
 
 
 def render_queue_md(queue_data: dict) -> str:
-    lines = [
-        f"# Queue: {queue_data['ticket_title']}",
-        "",
-        "| Unit | Status | Title | Prompt |",
-        "| --- | --- | --- | --- |",
-    ]
-    for unit in queue_data["units"]:
-        prompt = unit.get("prompt_path") or "-"
-        lines.append(f"| {unit['id']} | {unit['status']} | {unit['title']} | {prompt} |")
-    lines.append("")
-    return "\n".join(lines)
+    return plan_readiness.render_queue_md(queue_data)
 
 
 def load_queue(plan_path: str | Path) -> tuple[Path, dict]:
@@ -206,6 +217,8 @@ def load_queue(plan_path: str | Path) -> tuple[Path, dict]:
     plan_dir = plan.parent if plan.name == "plan.md" else plan
     queue_json = plan_dir / "queue.json"
     if not queue_json.exists():
+        if (plan_dir / "plan.md").exists():
+            return plan_dir, plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
         raise SystemExit(f"Missing queue: {queue_json}")
     return plan_dir, json.loads(queue_json.read_text(encoding="utf-8"))
 
@@ -237,7 +250,10 @@ def append_plan_request(plan_path: str | Path, request: str, reason: str = "Rout
 def list_active_plans(repo: str | Path | None = None) -> list[ActivePlan]:
     flow = state.ensure_initialized(repo)
     active: list[ActivePlan] = []
-    for queue_json in sorted(flow.plans.glob("*/queue.json")):
+    for plan_path in sorted(flow.plans.glob("*/plan.md")):
+        queue_json = plan_path.parent / "queue.json"
+        if not queue_json.exists():
+            plan_readiness.sync_queue_cache_from_plan(plan_path)
         try:
             queue_data = json.loads(queue_json.read_text(encoding="utf-8"))
         except (OSError, ValueError):
@@ -256,8 +272,11 @@ def list_active_plans(repo: str | Path | None = None) -> list[ActivePlan]:
 
 def latest_plan(repo: str | Path | None = None) -> ActivePlan | None:
     flow = state.ensure_initialized(repo)
-    queue_paths = sorted(flow.plans.glob("*/queue.json"), key=lambda path: path.stat().st_mtime, reverse=True)
-    for queue_json in queue_paths:
+    plan_paths = sorted(flow.plans.glob("*/plan.md"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for plan_path in plan_paths:
+        queue_json = plan_path.parent / "queue.json"
+        if not queue_json.exists():
+            plan_readiness.sync_queue_cache_from_plan(plan_path)
         try:
             queue_data = json.loads(queue_json.read_text(encoding="utf-8"))
         except (OSError, ValueError):

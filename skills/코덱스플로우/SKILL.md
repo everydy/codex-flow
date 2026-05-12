@@ -17,7 +17,7 @@ metadata:
 | --- | --- | --- |
 | `$코덱스플로우` | 상태 확인 | 현재 repo의 Codex Flow를 `init`하고 `status`, `pr-check`를 확인한다. |
 | `$코덱스플로우 상태` | 상태 확인 | dashboard 상태와 PR lock 여부를 다시 확인한다. |
-| `$코덱스플로우 라우트 <요청>` | 라우트 | 요청을 ticket으로 저장하고 plan queue를 만든다. PR lock이 있으면 `--auto-resolve`로 stacked plan을 만든다. |
+| `$코덱스플로우 라우트 <요청>` | 라우트 | 요청을 ticket으로 저장하고 plan queue를 만든다. PR lock이 있으면 inbox에 보낸다. |
 | `$코덱스플로우 다음실행` | 다음실행 | 현재 plan의 다음 `ready` unit 하나를 `run-next --auto-resolve --execute --commit`으로 실행한다. |
 | `$코덱스플로우 모두실행` | 모두실행 | 현재 plan의 ready unit들을 `run-all --auto-resolve --execute --commit`으로 순차 실행한다. |
 | `$코덱스플로우 브리핑` | 브리핑 | 오늘 아침/작업 재개용 `morning-brief`를 만든다. |
@@ -31,6 +31,7 @@ metadata:
 
 - 사용자가 `$코덱스플로우`만 말하거나 `$코덱스플로우 상태`라고 말하면 현재 repo에서 `init`, `status`, `pr-check`를 실행한다.
 - `라우트` 뒤에 요청문이 있으면 그 요청문을 그대로 `route "<요청>" --auto-resolve`에 넣는다.
+- 사용자가 Crack-CLI처럼 agent routing/planning을 원하면 `route "<요청>" --router codex --planner codex`를 쓴다.
 - `다음실행`과 `모두실행`은 현재 plan이 명확할 때 바로 실행한다.
 - `브리핑`은 plan이 없어도 실행할 수 있다.
 - `리뷰`, `PR초안`, `병합`은 현재 plan이 명확할 때 실행한다.
@@ -48,6 +49,7 @@ python3 scripts/codex_flow.py --repo <repo> status
 python3 scripts/codex_flow.py --repo <repo> pr-check
 python3 scripts/codex_flow.py --repo <repo> dashboard
 python3 scripts/codex_flow.py --repo <repo> route "<요청>" --auto-resolve
+python3 scripts/codex_flow.py --repo <repo> route "<요청>" --router codex --planner codex
 python3 scripts/codex_flow.py --repo <repo> run-next --plan <plan.md> --auto-resolve --execute --commit
 python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve --execute --commit
 python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve --execute --commit --open-pr

@@ -92,10 +92,10 @@ def test_pr_check_merged_clears_lock_and_drains_inbox(tmp_path, capsys):
 def test_run_all_open_pr_writes_dry_run_after_units_done(tmp_path, capsys):
     ticket = tickets.submit_ticket("Open PR dry run", repo=tmp_path)
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
-    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
-    for unit in queue["units"]:
-        unit["status"] = "done"
-    plans.save_queue(plan.directory, queue)
+    (plan.directory / "log.md").write_text(
+        "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n- Completed commit unit 3.\n",
+        encoding="utf-8",
+    )
 
     status = cli.main(["--repo", str(tmp_path), "run-all", "--plan", str(plan.plan_path), "--open-pr"])
 

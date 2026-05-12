@@ -2,17 +2,17 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import plans, pr, state
+from . import plan_readiness, plans, pr, state
 
 
 def iter_plan_dirs(flow: state.FlowPaths) -> list[Path]:
     if not flow.plans.exists():
         return []
-    return sorted(path for path in flow.plans.iterdir() if path.is_dir() and (path / "queue.json").exists())
+    return sorted(path for path in flow.plans.iterdir() if path.is_dir() and (path / "plan.md").exists())
 
 
 def summarize_queue(plan_dir: Path) -> dict[str, int]:
-    _, queue = plans.load_queue(plan_dir)
+    queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
     counts = {status: 0 for status in state.UNIT_STATUSES}
     for unit in queue.get("units", []):
         status_name = unit.get("status", "")
@@ -57,15 +57,22 @@ def write_morning_brief(repo: str | Path | None = None) -> Path:
 
 def write_review(plan_path: str | Path) -> Path:
     plan_dir, queue = plans.load_queue(plan_path)
+    queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+    plan_content = (plan_dir / "plan.md").read_text(encoding="utf-8")
+    log_content = (plan_dir / "log.md").read_text(encoding="utf-8") if (plan_dir / "log.md").exists() else ""
+    readiness = plan_readiness.check_plan_ready(plan_content, log_content)
     review_path = plan_dir / "review.md"
     lines = [
         f"# Review: {queue.get('ticket_title')}",
         "",
         f"- Updated: {state.timestamp()}",
         "",
-        "## Queue Status",
-        "",
-        "| Unit | Status | Title |",
+            "## Queue Status",
+            "",
+            f"- Plan ready: {str(readiness.ready).lower()}",
+            f"- Next: {readiness.next_unit.title if readiness.next_unit else 'complete'}",
+            "",
+            "| Unit | Status | Title |",
         "| --- | --- | --- |",
     ]
     for unit in queue.get("units", []):

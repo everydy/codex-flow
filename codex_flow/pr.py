@@ -4,21 +4,27 @@ from pathlib import Path
 import json
 import re
 
-from . import plans, state
+from . import inbox, plan_readiness, plans, state
 from .git_ops import command_failure, merge_branch, push_branch, run_process
+from .merge import MergeRunner
 
 
 def branch_from_queue(queue_data: dict) -> str:
     return queue_data.get("branch") or f"codex/{queue_data.get('plan_slug', 'codex-flow-plan')}"
 
 
-def plan_is_complete(queue_data: dict) -> bool:
+def plan_is_complete(queue_data: dict, plan_path: str | Path | None = None) -> bool:
+    if plan_path:
+        plan_dir, plan_content, log_content = plan_readiness.read_plan_file(plan_path)
+        return plan_readiness.check_plan_ready(plan_content, log_content).ready
     return all(unit.get("status") == "done" for unit in queue_data.get("units", []))
 
 
 def write_pr_dry_run(plan_path: str | Path) -> Path:
     plan_dir, queue = plans.load_queue(plan_path)
+    queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
     branch = branch_from_queue(queue)
+    ready = plan_is_complete(queue, plan_dir / "plan.md")
     pr_path = plan_dir / "pr-dry-run.md"
     lines = [
         f"# PR Dry Run: {queue.get('ticket_title')}",
@@ -30,7 +36,7 @@ def write_pr_dry_run(plan_path: str | Path) -> Path:
         f"- Plan: `{plan_dir}`",
         f"- Ticket: {queue.get('ticket_id')}",
         f"- Branch: `{branch}`",
-        f"- Ready: {str(plan_is_complete(queue)).lower()}",
+        f"- Ready: {str(ready).lower()}",
         "",
         "## Unit Status",
         "",
@@ -55,7 +61,8 @@ def write_pr_dry_run(plan_path: str | Path) -> Path:
 
 def create_remote_pr(plan_path: str | Path, draft: bool = True) -> tuple[str, Path]:
     plan_dir, queue = plans.load_queue(plan_path)
-    if not plan_is_complete(queue):
+    queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+    if not plan_is_complete(queue, plan_dir / "plan.md"):
         raise SystemExit("Plan is not complete; remote PR creation stopped.")
     repo = plan_dir.parents[2]
     branch = branch_from_queue(queue)
@@ -67,7 +74,7 @@ def create_remote_pr(plan_path: str | Path, draft: bool = True) -> tuple[str, Pa
         "--head",
         branch,
         "--title",
-        queue.get("ticket_title", branch),
+        queue.get("plan_title") or queue.get("ticket_title", branch),
         "--body",
         build_pr_body(plan_dir, queue),
     ]
@@ -121,10 +128,11 @@ def clear_pr_lock(repo: str | Path) -> bool:
 def parse_pr_lock(lock_path: str | Path) -> dict[str, str]:
     text = Path(lock_path).read_text(encoding="utf-8")
     data: dict[str, str] = {}
-    for key in ("Branch", "URL", "Status", "Reason"):
-        match = re.search(rf"^- {key}:\s*(.+)$", text, flags=re.MULTILINE)
+    key_map = {"Branch": "branch", "URL": "url", "PR": "url", "Status": "status", "Reason": "reason"}
+    for key, target in key_map.items():
+        match = re.search(rf"^(?:- )?{key}:\s*(.+)$", text, flags=re.MULTILINE)
         if match:
-            data[key.lower()] = match.group(1).strip()
+            data[target] = match.group(1).strip()
     return data
 
 
@@ -165,6 +173,18 @@ def drain_inbox(repo: str | Path) -> str:
 
     if read_pr_lock(repo):
         return "drain: locked"
+    flow = state.ensure_initialized(repo)
+
+    def route_structured(request: inbox.QueuedRequest) -> str:
+        ticket = tickets.submit_ticket(request.prompt, repo=repo)
+        plan = plans.create_plan_from_ticket(ticket.path, repo=repo, reason=request.reason)
+        tickets.update_ticket_status(ticket.path, "planned")
+        return str(plan.plan_path)
+
+    structured = inbox.read_inbox_requests(flow.inbox)
+    if structured:
+        result = inbox.drain_inbox_requests(flow.inbox, lambda: read_pr_lock(repo) is not None, route_structured)
+        return result.message
     ticket = tickets.first_inbox_ticket(repo)
     if not ticket:
         return "drain: empty"
@@ -174,22 +194,9 @@ def drain_inbox(repo: str | Path) -> str:
 
 
 def merge_plan(plan_path: str | Path, target: str = "main", remote: bool = False, execute: bool = False) -> str:
-    plan_dir, queue = plans.load_queue(plan_path)
-    branch = branch_from_queue(queue)
-    if not plan_is_complete(queue):
-        return "merge: needs_work plan is not complete"
-    if not execute:
-        return "merge: hard-stop use --execute to run an actual merge"
-    repo = plan_dir.parents[2]
-    if remote:
-        result = run_process(["gh", "pr", "merge", "--merge", branch], cwd=repo)
-        if result.status != 0:
-            raise SystemExit(command_failure("gh pr merge failed", result))
-        return "merge: remote merged"
-    result = merge_branch(repo, branch, target)
-    if result.status != 0:
-        raise SystemExit(command_failure("git merge failed", result))
-    return f"merge: local merged {branch} into {target}"
+    runner = MergeRunner()
+    result = runner.merge_remote(plan_path, target=target, execute=execute) if remote else runner.merge_local(plan_path, target=target, execute=execute)
+    return result.message
 
 
 def build_pr_body(plan_dir: Path, queue: dict) -> str:

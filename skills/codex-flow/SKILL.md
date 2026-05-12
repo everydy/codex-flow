@@ -13,7 +13,7 @@ Codex Flow는 큰 작업을 `ticket -> plan/branch -> run-next -> Codex exec -> 
 
 Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞게 도입한다. 즉 `plan-first-implementation`으로 계획을 잠그고, `mission-completion-harness`의 hard stop gate를 지키면서, Codex App 안에서 내가 CLI를 대신 호출하는 방식으로 운용한다.
 
-중요한 기본값: hard stop은 사용자에게 되묻는 장치가 아니라 AI preflight가 먼저 해결해야 하는 작업 신호다. Codex Flow를 쓸 때는 가능한 경우 `--auto-resolve` 경로로 dirty state, PR lock, unfinished unit, merge readiness를 먼저 정리하고 계속 진행한다.
+중요한 기본값: hard stop은 사용자에게 되묻는 장치가 아니라 AI preflight가 먼저 해결해야 하는 작업 신호다. Codex Flow를 쓸 때는 가능한 경우 `--auto-resolve` 경로로 dirty state, unfinished unit, merge readiness를 먼저 정리하고 계속 진행한다. 단 PR lock은 review gate라서 새 작업을 inbox로 보낸다.
 
 ## When To Use
 
@@ -27,8 +27,8 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 ## Core Flow
 
 1. 저장소 루트에서 `python3 scripts/codex_flow.py init`으로 `.codex-flow/`를 만든다.
-2. `python3 scripts/codex_flow.py route "<요청>"`으로 티켓과 plan/branch queue를 만든다.
-3. `python3 scripts/codex_flow.py run-next --plan <plan.md> --execute --commit`으로 commit unit 하나를 자동 구현하고 커밋한다.
+2. `python3 scripts/codex_flow.py route "<요청>"`으로 티켓과 plan/branch queue를 만든다. Crack-style agent routing/planning이 필요하면 `--router codex --planner codex`를 붙인다.
+3. `python3 scripts/codex_flow.py run-next --plan <plan.md> --execute --commit`으로 commit unit 하나를 구현하고 같은 Codex session review 후 커밋한다.
 4. `python3 scripts/codex_flow.py run-all --plan <plan.md> --execute --commit --max-units 4`로 여러 unit을 반복 처리한다.
 5. 아침에는 `morning-brief`와 `review`로 검토 자료를 만든다.
 6. PR은 `open-pr --auto-resolve --execute-units --commit`으로 남은 unit을 먼저 끝낸 뒤 만든다. 실제 원격 PR이 필요하면 사용자의 PR 생성 요청이 있을 때 `--remote`를 붙인다.
@@ -50,6 +50,9 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 ## Crack-CLI Parity Features
 
 - `route`는 PR lock이 있으면 inbox로 보내고, `--plan`이 있으면 기존 plan request queue에 붙이며, active plan이 하나면 그 plan에 자동으로 붙인다.
+- `--router codex --planner codex`를 붙이면 Codex Router/Planner agent를 사용한다. 기본값은 public-safe한 heuristic/template이다.
+- `run-next --execute --commit`은 구현 후 같은 session review decision을 거친 뒤 commit한다.
+- 완료 판정은 `queue.json` 단독이 아니라 `plan.md`의 commit unit과 `log.md`의 `Completed commit unit N` 기록을 기준으로 한다.
 - `dashboard`는 PR lock, inbox 수, dirty file 수, active plan 진행률, 최근 log, suggested command를 보여준다.
 - `set-pr-lock`, `clear-pr-lock`, `pr-check`, `drain`으로 PR lock lifecycle을 관리한다.
 - `run-all --open-pr`는 완료 후 PR dry-run을 만들고, `run-all --merge`는 완료 후 local merge를 시도한다.
@@ -63,7 +66,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 - `run-next`와 `run-all`은 기본값으로는 prompt 생성까지만 한다. `--execute`를 붙이면 Codex CLI를 실제 실행한다.
 - `--commit`을 붙인 경우에만 Codex Flow가 변경 파일을 commit unit 단위로 커밋한다.
 - 실행 전 worktree가 dirty이면 `--auto-resolve`로 non-`.codex-flow/` 변경을 로컬 stash에 보존하고 계속한다. revert/reset으로 사용자 변경을 삭제하지 않는다.
-- PR lock이 있으면 `route --auto-resolve`로 새 작업을 inbox에 묶어두지 않고 stacked plan을 만든 뒤 lock-resolution log를 남긴다.
+- PR lock이 있으면 `route --auto-resolve`라도 새 작업을 inbox에 보낸다. PR lock은 review gate라서 임의로 stacked plan을 만들지 않는다.
 - PR 생성 전 unit이 미완료이면 `open-pr --auto-resolve --execute-units --commit`으로 남은 unit을 실행하고, 끝까지 `done`이 된 경우에만 PR artifact 또는 remote PR을 만든다.
 - merge 전 unit이 미완료이면 `merge --auto-resolve --execute-units --commit`으로 남은 unit을 실행하고, 끝까지 `done`이 된 경우에만 merge한다.
 - `.codex-flow/`에는 로컬 작업 맥락이 들어갈 수 있으므로 공개 저장소에 올리기 전에 내용을 점검한다.
@@ -73,7 +76,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | 기존 hard stop | Codex Flow 자동 해결 |
 | --- | --- |
 | 작업 폴더가 더러우면 실행 안 함 | `run-next/run-all --auto-resolve`가 dirty path를 git stash로 보존한 뒤 계속한다. |
-| PR lock이 있으면 새 작업은 inbox | `route --auto-resolve`가 lock log를 남기고 새 plan을 생성한다. |
+| PR lock이 있으면 새 작업은 inbox | Codex Flow도 inbox에 보낸다. lock 해제 후 `pr-check`/`drain`이 다시 라우팅한다. |
 | 모든 unit이 `done` 아니면 PR 생성 안 함 | `open-pr --auto-resolve --execute-units --commit`이 남은 unit을 실행하고 PR 생성을 재시도한다. |
 | merge는 `--execute` 없으면 안 함 | 사용자가 merge를 요청한 경우 `merge --auto-resolve --execute-units --commit`을 사용한다. 이 경로는 `--execute` 없이도 local merge를 실행한다. |
 
@@ -84,6 +87,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 ```bash
 python3 scripts/codex_flow.py init
 python3 scripts/codex_flow.py route "작업 요청"
+python3 scripts/codex_flow.py route "작업 요청" --router codex --planner codex
 python3 scripts/codex_flow.py plan --ticket .codex-flow/tickets/<ticket>.md
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --commit
