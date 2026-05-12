@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import re
 
 from . import state
 
@@ -55,6 +56,16 @@ def load_ticket(path: str | Path) -> Ticket:
         allow_draft_pr=_parse_bool(data.get("allow_draft_pr", "false")),
         no_implement=_parse_bool(data.get("no_implement", "false")),
     )
+
+
+def update_ticket_status(path: str | Path, status: str) -> None:
+    ticket_path = Path(path).expanduser().resolve()
+    text = ticket_path.read_text(encoding="utf-8")
+    if re.search(r"^status:\s*.+$", text, flags=re.MULTILINE):
+        text = re.sub(r"^status:\s*.+$", f"status: {status}", text, count=1, flags=re.MULTILINE)
+    else:
+        text = text.replace("---\n", f"---\nstatus: {status}\n", 1)
+    ticket_path.write_text(text, encoding="utf-8")
 
 
 def submit_ticket(
@@ -119,4 +130,3 @@ def first_inbox_ticket(repo: str | Path | None = None) -> Ticket | None:
         if ticket.status == "inbox":
             return ticket
     return None
-

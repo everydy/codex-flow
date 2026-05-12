@@ -1,6 +1,6 @@
 ---
 name: codex-flow
-description: "Use when the user wants a Crack-CLI-style automatic development factory or types $코덱스플로우. Includes 라우트 for ticket/plan queue creation, 다음실행 for run-next, 모두실행 for run-all, plus 상태, 브리핑, 리뷰, PR초안, and 병합."
+description: "Use when the user wants a Crack-CLI-style automatic development factory or types $코덱스플로우. Includes 라우트 for inbox/existing-plan/new-plan routing, 다음실행 for run-next, 모두실행 for run-all, plus 상태, 브리핑, 리뷰, PR초안, 병합, dashboard, PR lock, pr-check, and drain."
 metadata:
   short-description: "Crack-CLI형 자동 개발 공장"
 ---
@@ -47,6 +47,14 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | `$코덱스플로우 PR초안` | PR 초안 | 미완료 unit을 자동 실행한 뒤 PR dry-run 산출물을 만든다. |
 | `$코덱스플로우 병합` | 로컬 병합 | 미완료 unit을 자동 실행한 뒤 local merge를 진행한다. remote merge는 별도 명시가 있을 때만 한다. |
 
+## Crack-CLI Parity Features
+
+- `route`는 PR lock이 있으면 inbox로 보내고, `--plan`이 있으면 기존 plan request queue에 붙이며, active plan이 하나면 그 plan에 자동으로 붙인다.
+- `dashboard`는 PR lock, inbox 수, dirty file 수, active plan 진행률, 최근 log, suggested command를 보여준다.
+- `set-pr-lock`, `clear-pr-lock`, `pr-check`, `drain`으로 PR lock lifecycle을 관리한다.
+- `run-all --open-pr`는 완료 후 PR dry-run을 만들고, `run-all --merge`는 완료 후 local merge를 시도한다.
+- remote PR/remote merge는 `--remote`가 명시된 경우에만 실행한다.
+
 ## Guardrails
 
 - 실제 GitHub PR 생성은 사용자가 PR 생성을 요청했을 때만 한다. 그 전에는 dry-run과 readiness artifact만 만든다.
@@ -80,11 +88,15 @@ python3 scripts/codex_flow.py plan --ticket .codex-flow/tickets/<ticket>.md
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --commit
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --commit --max-units 4
+python3 scripts/codex_flow.py dashboard
+python3 scripts/codex_flow.py dashboard --watch
 python3 scripts/codex_flow.py morning-brief
 python3 scripts/codex_flow.py review --plan .codex-flow/plans/<slug>/plan.md
 python3 scripts/codex_flow.py open-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute-units --commit --dry-run
 python3 scripts/codex_flow.py pr-check
 python3 scripts/codex_flow.py drain
+python3 scripts/codex_flow.py set-pr-lock --branch codex/<slug> --pr-url https://github.com/example/repo/pull/1
+python3 scripts/codex_flow.py clear-pr-lock
 python3 scripts/codex_flow.py merge --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute-units --commit
 ```
 

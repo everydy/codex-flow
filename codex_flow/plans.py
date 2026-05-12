@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 
 from . import state
-from .tickets import Ticket, load_ticket
+from .tickets import Ticket, load_ticket, update_ticket_status
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,14 @@ class Plan:
     plan_path: Path
     queue_json: Path
     queue_md: Path
+
+
+@dataclass(frozen=True)
+class ActivePlan:
+    directory: Path
+    plan_path: Path
+    queue_json: Path
+    queue_data: dict
 
 
 DEFAULT_UNITS = [
@@ -49,10 +57,17 @@ def unique_slug(base: str, plans_dir: Path) -> str:
     return candidate
 
 
-def create_plan_from_ticket(ticket_path: str | Path, repo: str | Path | None = None) -> Plan:
+def create_plan_from_ticket(
+    ticket_path: str | Path,
+    repo: str | Path | None = None,
+    branch_name: str | None = None,
+    plan_title: str | None = None,
+) -> Plan:
     flow = state.ensure_initialized(repo)
     ticket = load_ticket(ticket_path)
-    slug = unique_slug(ticket.title, flow.plans)
+    title = plan_title or ticket.title
+    slug = unique_slug(title, flow.plans)
+    branch = branch_name or f"codex/{slug}"
     plan_dir = flow.plans / slug
     plan_dir.mkdir(parents=True, exist_ok=False)
     (plan_dir / "prompts").mkdir(parents=True, exist_ok=True)
@@ -68,8 +83,9 @@ def create_plan_from_ticket(ticket_path: str | Path, repo: str | Path | None = N
     queue_data = {
         "ticket_id": ticket.id,
         "ticket_title": ticket.title,
+        "plan_title": title,
         "plan_slug": slug,
-        "branch": f"codex/{slug}",
+        "branch": branch,
         "created_at": state.timestamp(),
         "units": units,
     }
@@ -82,14 +98,16 @@ def create_plan_from_ticket(ticket_path: str | Path, repo: str | Path | None = N
         queue_md=plan_dir / "queue.md",
     )
     write_plan_files(plan, ticket, queue_data)
+    update_ticket_status(ticket.path, "planned")
     state.refresh_dashboard(flow.repo)
     return plan
 
 
 def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
-    plan.plan_path.write_text(render_plan_md(ticket, plan), encoding="utf-8")
+    plan.plan_path.write_text(render_plan_md(ticket, plan, queue_data), encoding="utf-8")
     plan.queue_json.write_text(json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     plan.queue_md.write_text(render_queue_md(queue_data), encoding="utf-8")
+    (plan.directory / "requests.md").write_text("# Follow-up Requests\n\n- None yet.\n", encoding="utf-8")
     (plan.directory / "log.md").write_text(f"# Log\n\n- {state.timestamp()} plan created\n", encoding="utf-8")
     (plan.directory / "decisions.md").write_text("# Decisions\n\n- Default: remote PR and merge are disabled.\n", encoding="utf-8")
     (plan.directory / "artifacts.md").write_text("# Artifacts\n\n- None yet.\n", encoding="utf-8")
@@ -108,8 +126,10 @@ def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
     )
 
 
-def render_plan_md(ticket: Ticket, plan: Plan) -> str:
-    branch = f"codex/{plan.slug}"
+def render_plan_md(ticket: Ticket, plan: Plan, queue_data: dict | None = None) -> str:
+    queue_data = queue_data or {}
+    branch = queue_data.get("branch") or f"codex/{plan.slug}"
+    title = queue_data.get("plan_title") or ticket.title
     commit_sections: list[str] = []
     for index, unit in enumerate(DEFAULT_UNITS, start=1):
         verification = "\n".join(f"- {item}" for item in unit["verification"])
@@ -128,10 +148,10 @@ def render_plan_md(ticket: Ticket, plan: Plan) -> str:
         )
     return "\n".join(
         [
-            f"# Codex Flow Plan: {ticket.title}",
+            f"# Codex Flow Plan: {title}",
             "",
             f"Branch: {branch}",
-            f"Title: {ticket.title}",
+            f"Title: {title}",
             "",
             "## Ticket",
             "",
@@ -194,6 +214,73 @@ def save_queue(plan_dir: Path, queue_data: dict) -> None:
     queue_data["updated_at"] = state.timestamp()
     (plan_dir / "queue.json").write_text(json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (plan_dir / "queue.md").write_text(render_queue_md(queue_data), encoding="utf-8")
+
+
+def append_plan_request(plan_path: str | Path, request: str, reason: str = "Routed to existing plan.") -> Path:
+    plan_dir, queue_data = load_queue(plan_path)
+    requests_path = plan_dir / "requests.md"
+    current = requests_path.read_text(encoding="utf-8") if requests_path.exists() else "# Follow-up Requests\n"
+    if "- None yet." in current:
+        current = current.replace("- None yet.\n", "")
+    requests_path.write_text(
+        current.rstrip()
+        + "\n"
+        + f"- {state.timestamp()} {request}\n"
+        + f"  - Reason: {reason}\n",
+        encoding="utf-8",
+    )
+    queue_data.setdefault("requests", []).append({"request": request, "reason": reason, "created_at": state.timestamp()})
+    save_queue(plan_dir, queue_data)
+    return requests_path
+
+
+def list_active_plans(repo: str | Path | None = None) -> list[ActivePlan]:
+    flow = state.ensure_initialized(repo)
+    active: list[ActivePlan] = []
+    for queue_json in sorted(flow.plans.glob("*/queue.json")):
+        try:
+            queue_data = json.loads(queue_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        if any(unit.get("status") != "done" for unit in queue_data.get("units", [])):
+            active.append(
+                ActivePlan(
+                    directory=queue_json.parent,
+                    plan_path=queue_json.parent / "plan.md",
+                    queue_json=queue_json,
+                    queue_data=queue_data,
+                )
+            )
+    return active
+
+
+def latest_plan(repo: str | Path | None = None) -> ActivePlan | None:
+    flow = state.ensure_initialized(repo)
+    queue_paths = sorted(flow.plans.glob("*/queue.json"), key=lambda path: path.stat().st_mtime, reverse=True)
+    for queue_json in queue_paths:
+        try:
+            queue_data = json.loads(queue_json.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            continue
+        return ActivePlan(queue_json.parent, queue_json.parent / "plan.md", queue_json, queue_data)
+    return None
+
+
+def choose_active_plan(request: str, repo: str | Path | None = None) -> ActivePlan | None:
+    active = list_active_plans(repo)
+    if len(active) == 1:
+        return active[0]
+    if not active:
+        return None
+    request_terms = set(state.slugify(request, fallback="request").split("-"))
+    best: tuple[int, ActivePlan] | None = None
+    for plan in active:
+        title = plan.queue_data.get("plan_title") or plan.queue_data.get("ticket_title") or plan.directory.name
+        plan_terms = set(state.slugify(title, fallback="plan").split("-"))
+        score = len(request_terms & plan_terms)
+        if score and (best is None or score > best[0]):
+            best = (score, plan)
+    return best[1] if best else None
 
 
 def unfinished_units(queue_data: dict) -> list[dict]:

@@ -3,8 +3,9 @@ from __future__ import annotations
 import argparse
 from pathlib import Path
 import sys
+import time
 
-from . import briefs, plans, pr, runner, state, tickets
+from . import briefs, dashboard as dashboard_view, plans, pr, runner, state, tickets
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -21,14 +22,20 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--allow-draft-pr", action="store_true")
         command.add_argument("--no-implement", action="store_true")
         command.add_argument("--auto-resolve", action="store_true", help="Let Codex Flow resolve route blockers without waiting for the user.")
+        command.add_argument("--plan", type=Path, help="Append the request to an existing plan instead of creating a new one.")
+        command.add_argument("--branch", help="Branch name to use when creating a new plan.")
+        command.add_argument("--title", dest="plan_title", help="Plan title to use when creating a new plan.")
+        command.add_argument("--reason", default="Routed by Codex Flow.")
 
     submit = subparsers.add_parser("submit", help="Create a ticket from a natural-language request.")
     add_ticket_args(submit)
     route = subparsers.add_parser("route", help="Create a ticket and plan it immediately unless a PR lock is active.")
     add_ticket_args(route)
 
-    subparsers.add_parser("status", help="Print dashboard summary.")
-    subparsers.add_parser("dashboard", help="Alias for status.")
+    subparsers.add_parser("status", help="Print numeric dashboard summary.")
+    dashboard = subparsers.add_parser("dashboard", help="Print detailed dashboard.")
+    dashboard.add_argument("--watch", action="store_true")
+    dashboard.add_argument("--interval", type=float, default=5.0)
 
     plan = subparsers.add_parser("plan", help="Create a plan directory and queue from a ticket.")
     plan.add_argument("--ticket", type=Path, help="Ticket Markdown path. Defaults to first inbox ticket.")
@@ -55,6 +62,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--allow-dirty", action="store_true")
     run_all.add_argument("--no-branch", action="store_true")
     run_all.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
+    run_all.add_argument("--merge", action="store_true", help="Merge after all units are done.")
+    run_all.add_argument("--target", default="main")
+    run_all.add_argument("--remote", action="store_true", help="Use remote PR/merge mode for finalize steps.")
+    run_all.add_argument("--open-pr", action="store_true", help="Create a PR dry-run or remote PR after all units are done.")
 
     mark = subparsers.add_parser("mark", help="Update a queue unit status.")
     mark.add_argument("--plan", type=Path, required=True)
@@ -80,8 +91,16 @@ def build_parser() -> argparse.ArgumentParser:
     open_pr.add_argument("--allow-dirty", action="store_true")
     open_pr.add_argument("--no-branch", action="store_true")
 
-    subparsers.add_parser("pr-check", help="Check PR lock state.")
+    pr_check = subparsers.add_parser("pr-check", help="Check PR lock state.")
+    pr_check.add_argument("--gh-command", default="gh")
     subparsers.add_parser("drain", help="Route one inbox ticket when no PR lock is active.")
+
+    set_lock = subparsers.add_parser("set-pr-lock", help="Create or replace the PR lock.")
+    set_lock.add_argument("--branch", required=True)
+    set_lock.add_argument("--pr-url", required=True)
+    set_lock.add_argument("--status", default="reviewing")
+
+    subparsers.add_parser("clear-pr-lock", help="Remove the active PR lock.")
 
     merge = subparsers.add_parser("merge", help="Merge only with explicit --execute.")
     merge.add_argument("--plan", type=Path)
@@ -123,8 +142,18 @@ def main(argv: list[str] | None = None) -> int:
             lock = pr.read_pr_lock(args.repo)
             if lock and not args.auto_resolve:
                 print("route: queued due to active PR lock")
+            elif args.plan:
+                request_path = plans.append_plan_request(args.plan, ticket.title, reason=args.reason)
+                tickets.update_ticket_status(ticket.path, "queued")
+                print(f"route_to_existing_plan: {request_path}")
             else:
-                plan = plans.create_plan_from_ticket(ticket.path, repo=args.repo)
+                chosen_plan = None if args.branch or args.plan_title else plans.choose_active_plan(ticket.title, args.repo)
+                if chosen_plan:
+                    request_path = plans.append_plan_request(chosen_plan.plan_path, ticket.title, reason="Matched active plan.")
+                    tickets.update_ticket_status(ticket.path, "queued")
+                    print(f"route_to_existing_plan: {request_path}")
+                    return 0
+                plan = plans.create_plan_from_ticket(ticket.path, repo=args.repo, branch_name=args.branch, plan_title=args.plan_title)
                 if lock:
                     pr.append_lock_resolution(args.repo, f"route auto-resolved active lock by creating stacked plan: {plan.plan_path}")
                     print(f"route: auto_resolved active PR lock {lock}")
@@ -132,10 +161,21 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"queue_created: {plan.queue_md}")
         return 0
 
-    if args.command in {"status", "dashboard"}:
+    if args.command == "status":
         summary = state.dashboard_summary(args.repo)
         for key, value in summary.items():
             print(f"{key}: {value}")
+        return 0
+
+    if args.command == "dashboard":
+        if args.watch:
+            try:
+                while True:
+                    print(dashboard_view.render_dashboard(args.repo))
+                    time.sleep(args.interval)
+            except KeyboardInterrupt:
+                return 0
+        print(dashboard_view.render_dashboard(args.repo))
         return 0
 
     if args.command == "plan":
@@ -198,6 +238,9 @@ def main(argv: list[str] | None = None) -> int:
         for result in results:
             suffix = f" {result.get('action')}" if result.get("action") else ""
             print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}")
+        finalize_message = finalize_after_run_all(args)
+        if finalize_message:
+            print(finalize_message)
         return 0
 
     if args.command == "mark":
@@ -231,11 +274,20 @@ def main(argv: list[str] | None = None) -> int:
         return 0
 
     if args.command == "pr-check":
-        print(pr.check_pr_lock(args.repo))
+        print(pr.check_pr_lock(args.repo, gh_command=args.gh_command))
         return 0
 
     if args.command == "drain":
         print(pr.drain_inbox(args.repo))
+        return 0
+
+    if args.command == "set-pr-lock":
+        lock_path = pr.write_pr_lock(state.resolve_repo(args.repo), args.branch, args.pr_url, args.status)
+        print(f"set_pr_lock: {lock_path}")
+        return 0
+
+    if args.command == "clear-pr-lock":
+        print("clear_pr_lock: removed" if pr.clear_pr_lock(args.repo) else "clear_pr_lock: no lock")
         return 0
 
     if args.command == "merge":
@@ -279,6 +331,22 @@ def auto_complete_units(args: argparse.Namespace) -> str:
         f"processed={len(results)} "
         f"remaining={len(remaining)}"
     )
+
+
+def finalize_after_run_all(args: argparse.Namespace) -> str:
+    if not (args.merge or args.open_pr or args.remote):
+        return ""
+    _, queue_data = plans.load_queue(args.plan)
+    remaining = plans.unfinished_units(queue_data)
+    if remaining:
+        return f"finalize: not_ready remaining_units={len(remaining)}"
+    if args.merge:
+        return pr.merge_plan(args.plan, target=args.target, remote=args.remote, execute=True)
+    if args.remote:
+        url, lock_path = pr.create_remote_pr(args.plan, draft=True)
+        return f"opened_pr: {url}\npr_lock: {lock_path}"
+    pr_path = pr.write_pr_dry_run(args.plan)
+    return f"pr_dry_run: {pr_path}"
 
 
 if __name__ == "__main__":
