@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import plans, state
-from .agent import run_codex_agent
+from . import plan_readiness, plans, state
 from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, stash_paths, status
+from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput
 
 
 def next_ready_unit(queue_data: dict) -> dict | None:
@@ -14,9 +14,28 @@ def next_ready_unit(queue_data: dict) -> dict | None:
     return None
 
 
-def render_prompt(queue_data: dict, unit: dict, plan_dir: Path) -> str:
+def unit_for_commit(queue_data: dict, commit_unit: plan_readiness.CommitUnit) -> dict:
+    for unit in queue_data.get("units", []):
+        if unit.get("id") == commit_unit.unit_id:
+            return unit
+    unit = {
+        "id": commit_unit.unit_id,
+        "number": commit_unit.number,
+        "title": commit_unit.title,
+        "status": "ready",
+        "prompt_path": "",
+        "updated_at": state.timestamp(),
+    }
+    queue_data.setdefault("units", []).append(unit)
+    return unit
+
+
+def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: plan_readiness.CommitUnit | None = None) -> str:
     allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
     verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
+    selected = ""
+    if commit_unit:
+        selected = "\n".join(["## Selected Commit Unit", "", f"### Commit {commit_unit.number}: {commit_unit.title}", "", commit_unit.content, ""])
     return "\n".join(
         [
             f"# Codex Flow Implementer Prompt: {unit['id']}",
@@ -55,6 +74,7 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path) -> str:
             f"- Branch: {queue_data.get('branch', '-')}",
             f"- Previous commit: {head_summary(plan_dir.parents[2]) if (plan_dir.parents[2] / '.git').exists() else 'None'}",
             "",
+            selected,
         ]
     )
 
@@ -71,12 +91,24 @@ def run_next(
     auto_resolve: bool = False,
 ) -> dict | None:
     plan_dir, queue_data = plans.load_queue(plan_path)
-    unit = next_ready_unit(queue_data)
-    if unit is None:
-        return None
+    queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+    plan_content = (plan_dir / "plan.md").read_text(encoding="utf-8")
+    commit_units = {item.unit_id: item for item in plan_readiness.parse_commit_units(plan_content)}
+    if execute:
+        _, plan_content, log_content = plan_readiness.read_plan_file(plan_dir / "plan.md")
+        readiness = plan_readiness.check_plan_ready(plan_content, log_content)
+        if readiness.next_unit is None:
+            return None
+        commit_unit = readiness.next_unit
+        unit = unit_for_commit(queue_data, commit_unit)
+    else:
+        unit = next_ready_unit(queue_data)
+        if unit is None:
+            return None
+        commit_unit = commit_units.get(unit["id"])
 
     prompt_path = plan_dir / "prompts" / f"{unit['id']}.md"
-    prompt_text = render_prompt(queue_data, unit, plan_dir)
+    prompt_text = render_prompt(queue_data, unit, plan_dir, commit_unit)
     if dry_run:
         return {"unit": unit, "prompt_path": prompt_path, "prompt": prompt_text, "changed": False}
 
@@ -89,6 +121,7 @@ def run_next(
             unit=unit,
             prompt_path=prompt_path,
             prompt_text=prompt_text,
+            commit_unit=commit_unit,
             commit=commit,
             codex_command=codex_command,
             codex_args=codex_args or [],
@@ -101,7 +134,7 @@ def run_next(
     unit["prompt_path"] = str(prompt_path.relative_to(plan_dir))
     unit["updated_at"] = state.timestamp()
     plans.save_queue(plan_dir, queue_data)
-    append_log(plan_dir, f"prompted {unit['id']} -> {unit['prompt_path']}")
+    append_log(plan_dir, f"Prompted commit unit {unit.get('number') or unit['id']}: {unit['title']} -> {unit['prompt_path']}")
     state.refresh_dashboard(plan_dir.parents[2])
     return {"unit": unit, "prompt_path": prompt_path, "prompt": prompt_text, "changed": True}
 
@@ -112,6 +145,7 @@ def execute_unit(
     unit: dict,
     prompt_path: Path,
     prompt_text: str,
+    commit_unit: plan_readiness.CommitUnit | None,
     commit: bool,
     codex_command: str,
     codex_args: list[str],
@@ -138,20 +172,30 @@ def execute_unit(
     unit["prompt_path"] = str(prompt_path.relative_to(plan_dir))
     unit["updated_at"] = state.timestamp()
     plans.save_queue(plan_dir, queue_data)
-    append_log(plan_dir, f"started {unit['id']} on {branch}")
+    append_log(plan_dir, f"Started commit unit {unit.get('number') or unit['id']}: {unit['title']} on {branch}.")
 
-    agent_result = run_codex_agent(prompt_text, repo=repo, command=codex_command, extra_args=codex_args)
-    if agent_result.decision.status == "needs_work":
+    selected_unit = commit_unit or plan_readiness.CommitUnit(number=unit.get("number") or int(str(unit["id"]).split("-")[-1]), title=unit["title"], content="")
+    agent_result = CodexImplementerAgent(command=codex_command, extra_args=codex_args).implement(
+        ImplementerAgentInput(
+            repo=repo,
+            plan_path=plan_dir / "plan.md",
+            plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
+            unit=selected_unit,
+            previous_commit=head_summary(repo),
+            git_status=before.raw,
+        )
+    )
+    if agent_result.review.status == "needs_work":
         unit["status"] = "needs_work"
         unit["updated_at"] = state.timestamp()
         plans.save_queue(plan_dir, queue_data)
-        append_log(plan_dir, f"needs_work {unit['id']}: {agent_result.decision.reason}")
+        append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work: {agent_result.review.reason}")
         state.refresh_dashboard(repo)
         return {
             "unit": unit,
             "prompt_path": prompt_path,
             "action": "needs_work",
-            "reason": agent_result.decision.reason,
+            "reason": agent_result.review.reason,
             "changed_paths": [],
             "auto_resolved_dirty": auto_resolved_dirty,
         }
@@ -161,7 +205,7 @@ def execute_unit(
     commit_hash = ""
     action = "done"
     if commit and changed:
-        commit_hash = commit_paths(repo, changed, commit_message(unit, agent_result.decision.title))
+        commit_hash = commit_paths(repo, changed, commit_message(unit, agent_result.review.title))
         action = "committed"
     elif not changed:
         action = "skipped"
@@ -176,9 +220,11 @@ def execute_unit(
         log_parts.append(f"changed: {', '.join(changed)}")
     if commit_hash:
         log_parts.append(f"commit: {commit_hash}")
-    if agent_result.decision.summary:
-        log_parts.append(f"summary: {agent_result.decision.summary}")
+    if agent_result.review.summary:
+        log_parts.append(f"summary: {agent_result.review.summary}")
     append_log(plan_dir, " | ".join(log_parts))
+    append_log(plan_dir, f"Completed commit unit {selected_unit.number}.")
+    queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
     state.refresh_dashboard(repo)
     return {
         "unit": unit,
@@ -197,7 +243,7 @@ def commit_message(unit: dict, title: str) -> str:
 
 def run_all(
     plan_path: str | Path,
-    max_units: int = 4,
+    max_units: int | None = None,
     dry_run: bool = False,
     execute: bool = False,
     commit: bool = False,
@@ -208,7 +254,10 @@ def run_all(
     auto_resolve: bool = False,
 ) -> list[dict]:
     results: list[dict] = []
-    for _ in range(max_units):
+    limit = max_units
+    if limit is None and not execute:
+        limit = 4
+    while limit is None or len(results) < limit:
         result = run_next(
             plan_path,
             dry_run=dry_run,

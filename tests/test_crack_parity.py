@@ -11,12 +11,19 @@ def test_route_reuses_single_active_plan(tmp_path, capsys):
     first = tickets.submit_ticket("Improve dashboard", repo=tmp_path)
     plan = plans.create_plan_from_ticket(first.path, repo=tmp_path)
 
-    status = cli.main(["--repo", str(tmp_path), "route", "Improve dashboard copy"])
+    status = cli.main(["--repo", str(tmp_path), "route", "Improve dashboard copy", "--router", "heuristic", "--planner", "template"])
 
     output = capsys.readouterr().out
     assert status == 0
     assert "route_to_existing_plan:" in output
     assert "Improve dashboard copy" in (plan.directory / "requests.md").read_text(encoding="utf-8")
+
+
+def test_route_defaults_to_codex_router_and_planner():
+    args = cli.build_parser().parse_args(["route", "Improve dashboard"])
+
+    assert args.router == "codex"
+    assert args.planner == "codex"
 
 
 def test_route_explicit_plan_appends_request(tmp_path, capsys):
@@ -89,13 +96,42 @@ def test_pr_check_merged_clears_lock_and_drains_inbox(tmp_path, capsys):
     assert tickets.load_ticket(ticket.path).status == "planned"
 
 
+def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
+    from codex_flow import merge
+    from codex_flow.git_ops import ProcessResult
+    from codex_flow.merge import MergeRunner
+
+    plan_dir = tmp_path / ".codex-flow" / "plans" / "demo"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Done\n\nDone\n", encoding="utf-8")
+    (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    pr.write_pr_lock(tmp_path, "codex/demo", "https://github.com/example/repo/pull/7", "reviewing")
+
+    monkeypatch.setattr(merge, "push_branch", lambda repo, branch: None)
+
+    def fake_run_process(args, cwd, input_text=None):
+        if args[:3] == ["gh", "pr", "list"]:
+            return ProcessResult(args=args, status=0, stdout='[{"url":"https://github.com/example/repo/pull/7","title":"Demo","isDraft":false}]', stderr="")
+        if args[:3] == ["gh", "pr", "merge"]:
+            return ProcessResult(args=args, status=0, stdout="", stderr="")
+        raise AssertionError(f"unexpected command: {args}")
+
+    monkeypatch.setattr(merge, "run_process", fake_run_process)
+
+    result = MergeRunner().merge_remote(plan_dir / "plan.md", execute=True)
+
+    assert result.action == "merged_remote"
+    assert "pr_lock_cleared=true" in result.message
+    assert not pr.read_pr_lock(tmp_path)
+
+
 def test_run_all_open_pr_writes_dry_run_after_units_done(tmp_path, capsys):
     ticket = tickets.submit_ticket("Open PR dry run", repo=tmp_path)
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
-    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
-    for unit in queue["units"]:
-        unit["status"] = "done"
-    plans.save_queue(plan.directory, queue)
+    (plan.directory / "log.md").write_text(
+        "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n- Completed commit unit 3.\n",
+        encoding="utf-8",
+    )
 
     status = cli.main(["--repo", str(tmp_path), "run-all", "--plan", str(plan.plan_path), "--open-pr"])
 

@@ -98,7 +98,8 @@ def ensure_initialized(repo: str | Path | None = None) -> FlowPaths:
                 "- remote_pr: disabled",
                 "- remote_merge: disabled",
                 "- recursive_codex_exec: disabled",
-                "- default_max_units: 4",
+                "- execute_run_all_limit: none",
+                "- prompt_preview_max_units: 4",
                 "- created_by: codex-flow",
                 "",
             ]
@@ -144,7 +145,15 @@ def relative_to_repo(flow: FlowPaths, path: Path) -> str:
 
 def count_plan_units(flow: FlowPaths) -> dict[str, int]:
     counts = {status: 0 for status in UNIT_STATUSES}
-    for queue_path in flow.plans.glob("*/queue.json"):
+    for plan_path in flow.plans.glob("*/plan.md"):
+        queue_path = plan_path.parent / "queue.json"
+        if not queue_path.exists():
+            try:
+                from . import plan_readiness
+
+                plan_readiness.sync_queue_cache_from_plan(plan_path)
+            except (OSError, ValueError):
+                continue
         try:
             import json
 
@@ -197,4 +206,3 @@ def require_initialized(repo: str | Path | None = None) -> FlowPaths:
     if not flow.root.exists():
         raise SystemExit(f"Codex Flow is not initialized: {flow.root}")
     return flow
-

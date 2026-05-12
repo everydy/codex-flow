@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "codex-flow"
-version = "0.1.0"
+version = "0.2.0"
 description = "Local-first Codex work orchestration with ticketed commit units."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -33,4 +33,3 @@ packages = ["codex_flow"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-
