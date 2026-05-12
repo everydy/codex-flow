@@ -14,6 +14,22 @@ def next_ready_unit(queue_data: dict) -> dict | None:
     return None
 
 
+def unit_for_commit(queue_data: dict, commit_unit: plan_readiness.CommitUnit) -> dict:
+    for unit in queue_data.get("units", []):
+        if unit.get("id") == commit_unit.unit_id:
+            return unit
+    unit = {
+        "id": commit_unit.unit_id,
+        "number": commit_unit.number,
+        "title": commit_unit.title,
+        "status": "ready",
+        "prompt_path": "",
+        "updated_at": state.timestamp(),
+    }
+    queue_data.setdefault("units", []).append(unit)
+    return unit
+
+
 def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: plan_readiness.CommitUnit | None = None) -> str:
     allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
     verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
@@ -76,12 +92,20 @@ def run_next(
 ) -> dict | None:
     plan_dir, queue_data = plans.load_queue(plan_path)
     queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
-    unit = next_ready_unit(queue_data)
-    if unit is None:
-        return None
     plan_content = (plan_dir / "plan.md").read_text(encoding="utf-8")
     commit_units = {item.unit_id: item for item in plan_readiness.parse_commit_units(plan_content)}
-    commit_unit = commit_units.get(unit["id"])
+    if execute:
+        _, plan_content, log_content = plan_readiness.read_plan_file(plan_dir / "plan.md")
+        readiness = plan_readiness.check_plan_ready(plan_content, log_content)
+        if readiness.next_unit is None:
+            return None
+        commit_unit = readiness.next_unit
+        unit = unit_for_commit(queue_data, commit_unit)
+    else:
+        unit = next_ready_unit(queue_data)
+        if unit is None:
+            return None
+        commit_unit = commit_units.get(unit["id"])
 
     prompt_path = plan_dir / "prompts" / f"{unit['id']}.md"
     prompt_text = render_prompt(queue_data, unit, plan_dir, commit_unit)
@@ -219,7 +243,7 @@ def commit_message(unit: dict, title: str) -> str:
 
 def run_all(
     plan_path: str | Path,
-    max_units: int = 4,
+    max_units: int | None = None,
     dry_run: bool = False,
     execute: bool = False,
     commit: bool = False,
@@ -230,7 +254,10 @@ def run_all(
     auto_resolve: bool = False,
 ) -> list[dict]:
     results: list[dict] = []
-    for _ in range(max_units):
+    limit = max_units
+    if limit is None and not execute:
+        limit = 4
+    while limit is None or len(results) < limit:
         result = run_next(
             plan_path,
             dry_run=dry_run,

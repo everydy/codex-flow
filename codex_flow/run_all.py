@@ -18,7 +18,7 @@ class RunAllRunner:
     def run_all(
         self,
         plan_path: str | Path,
-        max_units: int = 4,
+        max_units: int | None = None,
         dry_run: bool = False,
         execute: bool = False,
         commit: bool = False,
@@ -49,7 +49,7 @@ class RunAllRunner:
         plan_dir, plan_content, log_content = plan_readiness.read_plan_file(plan_path)
         readiness = plan_readiness.check_plan_ready(plan_content, log_content)
         if not readiness.ready:
-            if len(steps) >= max_units:
+            if max_units is not None and len(steps) >= max_units:
                 return RunAllResult("max_units_reached", steps, f"run_all: max_units_reached remaining={readiness.next_unit.number if readiness.next_unit else 'unknown'}")
             return RunAllResult("not_ready", steps, readiness.reason)
         if merge:

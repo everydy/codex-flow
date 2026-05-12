@@ -3,8 +3,9 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import re
 
-from . import plan_readiness
+from . import plan_readiness, state
 from .git_ops import (
     command_failure,
     commit_merge,
@@ -79,8 +80,12 @@ class MergeRunner:
             merge_result = run_process([self.gh_command, "pr", "merge", pr_url, "--merge"], cwd=repo)
         if merge_result.status != 0:
             return MergeResult("needs_work", command_failure("gh pr merge failed", merge_result), branch, target, pr_url)
+        lock_cleared = clear_matching_pr_lock(repo, branch)
         append_merge_log(plan_dir, f"Merged remote PR `{pr_url}`.")
-        return MergeResult("merged_remote", f"merge: remote merged {pr_url}", branch, target, pr_url)
+        if lock_cleared:
+            append_merge_log(plan_dir, f"Cleared PR lock for `{branch}`.")
+        suffix = "; pr_lock_cleared=true" if lock_cleared else ""
+        return MergeResult("merged_remote", f"merge: remote merged {pr_url}{suffix}", branch, target, pr_url)
 
     def ensure_remote_pr(self, repo: Path, branch: str, target: str, plan_content: str) -> str:
         existing = run_process(
@@ -191,3 +196,16 @@ def build_remote_pr_body(plan_content: str, branch: str) -> str:
 def is_retryable_remote_merge_failure(output: str) -> bool:
     lowered = output.lower()
     return "out of date" in lowered or "behind" in lowered or "update branch" in lowered
+
+
+def clear_matching_pr_lock(repo: str | Path, branch: str) -> bool:
+    flow = state.ensure_initialized(repo)
+    lock_path = flow.locks / "pr-lock.md"
+    if not lock_path.exists():
+        return False
+    text = lock_path.read_text(encoding="utf-8")
+    match = re.search(r"^(?:- )?Branch:\s*(.+)$", text, flags=re.MULTILINE)
+    if not match or match.group(1).strip() != branch:
+        return False
+    lock_path.unlink()
+    return True

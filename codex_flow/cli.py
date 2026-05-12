@@ -29,8 +29,8 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--branch", help="Branch name to use when creating a new plan.")
         command.add_argument("--title", dest="plan_title", help="Plan title to use when creating a new plan.")
         command.add_argument("--reason", default="Routed by Codex Flow.")
-        command.add_argument("--router", choices=["heuristic", "codex"], default="heuristic")
-        command.add_argument("--planner", choices=["template", "codex"], default="template")
+        command.add_argument("--router", choices=["heuristic", "codex"], default="codex")
+        command.add_argument("--planner", choices=["template", "codex"], default="codex")
         command.add_argument("--codex-command", default="codex")
         command.add_argument("--codex-arg", action="append", default=[])
 
@@ -58,9 +58,9 @@ def build_parser() -> argparse.ArgumentParser:
     run_next.add_argument("--no-branch", action="store_true")
     run_next.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
 
-    run_all = subparsers.add_parser("run-all", help="Generate or execute multiple ready units.")
+    run_all = subparsers.add_parser("run-all", help="Generate preview prompts or execute commit units.")
     run_all.add_argument("--plan", type=Path, required=True)
-    run_all.add_argument("--max-units", type=int, default=4)
+    run_all.add_argument("--max-units", type=int, default=None)
     run_all.add_argument("--dry-run", action="store_true")
     run_all.add_argument("--execute", action="store_true")
     run_all.add_argument("--commit", action="store_true")

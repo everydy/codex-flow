@@ -14,8 +14,8 @@ The project is intentionally conservative. It keeps work in small units, records
 
 - Creates a local `.codex-flow/` workspace for tickets, plans, queues, briefs, and locks.
 - Routes a natural-language request into an inbox, an existing plan, or a new plan queue.
-- Can route and plan through role-separated Codex Router and Planner agents when `--router codex --planner codex` is selected.
-- Generates implementer prompts for the next ready unit.
+- Routes and plans through role-separated Codex Router and Planner agents by default.
+- Generates implementer prompts for previewable ready units.
 - Can execute Codex CLI for one unit or a sequence of units with an implement-then-review agent loop.
 - Can commit changed files per completed unit.
 - Writes morning briefs, review checklists, and PR dry-run artifacts.
@@ -55,12 +55,12 @@ Route a request:
 python3 scripts/codex_flow.py --repo /path/to/your/repo route "Improve the onboarding flow" --auto-resolve
 ```
 
-Route and write the plan with Codex agents:
+Route with the explicit offline-safe fallback:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo route \
   "Improve the onboarding flow" \
-  --router codex --planner codex
+  --router heuristic --planner template
 ```
 
 Route directly to an existing plan:
@@ -86,15 +86,15 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-next \
   --auto-resolve --execute --commit
 ```
 
-Run all ready units:
+Run all executable commit units until the plan is complete or a unit needs work:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
-  --auto-resolve --execute --commit --max-units 4
+  --auto-resolve --execute --commit
 ```
 
-Run all ready units and prepare a PR draft artifact:
+Run all executable commit units and prepare a PR draft artifact:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
@@ -102,7 +102,7 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --auto-resolve --execute --commit --open-pr
 ```
 
-Run all ready units and merge locally after completion:
+Run all executable commit units and merge locally after completion:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
@@ -139,8 +139,8 @@ $코덱스플로우 병합
 Core meanings:
 
 - `라우트`: create a ticket and plan queue from the request.
-- `다음실행`: run the next ready unit with `run-next`.
-- `모두실행`: run ready units with `run-all`.
+- `다음실행`: run the next incomplete commit unit with `run-next`.
+- `모두실행`: run commit units with `run-all` until complete or needs_work.
 
 ## Auto-Resolve Policy
 
@@ -158,10 +158,10 @@ Remote PR creation and remote merge are intentionally separate commands. Use the
 Codex Flow intentionally borrows the strongest operational ideas from Crack-CLI while staying Python-first and skill-friendly:
 
 - role-separated Router, Planner, Implementer, and Merge agent modules
-- Markdown `plan.md` plus `log.md` as the primary commit-unit progress source, with `queue.json` kept as a compatibility cache
+- Markdown `plan.md` plus `log.md` as the primary execution progress source, with `queue.json` kept as a compatibility cache
 - active-plan routing before creating unnecessary new branches
 - explicit PR lock files
-- inbox drain after a merged PR, including structured multi-request drain
+- PR lock clearing after merged PRs, plus inbox drain after review locks are cleared
 - dashboard summaries with suggested next commands
 - `run-next` and `run-all` commit-unit execution
 - optional `run-all --open-pr` and `run-all --merge` finalize paths
@@ -180,7 +180,7 @@ Implementer agent implements one unit, then resumes the same session for review
 Merge agent       resolves only active merge conflicts
 ```
 
-The default public CLI remains conservative: route uses the heuristic router and template planner unless you pass `--router codex --planner codex`. Execution still requires `--execute`, and commits require `--commit`.
+The default route path now uses Codex Router and Planner agents. Use `--router heuristic --planner template` for offline smoke tests or public-safe demos. Execution still requires `--execute`, and commits require `--commit`.
 
 Plan progress is read from readable Markdown:
 
@@ -207,7 +207,7 @@ tests/                   pytest test suite
 ```bash
 python3 scripts/codex_flow.py init
 python3 scripts/codex_flow.py route "request"
-python3 scripts/codex_flow.py route "request" --router codex --planner codex
+python3 scripts/codex_flow.py route "request" --router heuristic --planner template
 python3 scripts/codex_flow.py route "request" --plan .codex-flow/plans/<slug>/plan.md
 python3 scripts/codex_flow.py dashboard
 python3 scripts/codex_flow.py dashboard --watch

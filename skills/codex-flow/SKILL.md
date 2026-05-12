@@ -27,9 +27,9 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 ## Core Flow
 
 1. 저장소 루트에서 `python3 scripts/codex_flow.py init`으로 `.codex-flow/`를 만든다.
-2. `python3 scripts/codex_flow.py route "<요청>"`으로 티켓과 plan/branch queue를 만든다. Crack-style agent routing/planning이 필요하면 `--router codex --planner codex`를 붙인다.
+2. `python3 scripts/codex_flow.py route "<요청>"`으로 Codex Router/Planner agent가 티켓과 plan/branch queue를 만든다. 오프라인 smoke test나 deterministic fallback이 필요할 때만 `--router heuristic --planner template`을 붙인다.
 3. `python3 scripts/codex_flow.py run-next --plan <plan.md> --execute --commit`으로 commit unit 하나를 구현하고 같은 Codex session review 후 커밋한다.
-4. `python3 scripts/codex_flow.py run-all --plan <plan.md> --execute --commit --max-units 4`로 여러 unit을 반복 처리한다.
+4. `python3 scripts/codex_flow.py run-all --plan <plan.md> --execute --commit`으로 plan이 complete 또는 needs_work가 될 때까지 반복 처리한다. preview prompt만 만들 때는 기본 4개까지만 만든다.
 5. 아침에는 `morning-brief`와 `review`로 검토 자료를 만든다.
 6. PR은 `open-pr --auto-resolve --execute-units --commit`으로 남은 unit을 먼저 끝낸 뒤 만든다. 실제 원격 PR이 필요하면 사용자의 PR 생성 요청이 있을 때 `--remote`를 붙인다.
 7. merge는 사용자가 merge를 요청한 경우 `merge --auto-resolve --execute-units --commit`으로 미완료 unit을 끝내고 readiness를 확인한 뒤 진행한다. 원격 merge는 사용자가 remote merge를 요청했을 때만 `--remote`를 붙인다.
@@ -40,8 +40,8 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | --- | --- | --- |
 | `$코덱스플로우`, `$코덱스플로우 상태` | 상태 확인 | 현재 repo의 Codex Flow를 초기화하고 `status`, `pr-check`를 확인한다. |
 | `$코덱스플로우 라우트 <요청>` | 라우트 | 요청을 ticket으로 저장하고 plan queue를 만든다. |
-| `$코덱스플로우 다음실행` | 다음실행 | 현재 plan의 다음 ready unit 하나를 `run-next --auto-resolve --execute --commit`으로 실행한다. |
-| `$코덱스플로우 모두실행` | 모두실행 | 현재 plan의 ready unit들을 `run-all --auto-resolve --execute --commit`으로 실행한다. |
+| `$코덱스플로우 다음실행` | 다음실행 | 현재 plan의 다음 incomplete commit unit 하나를 `run-next --auto-resolve --execute --commit`으로 실행한다. |
+| `$코덱스플로우 모두실행` | 모두실행 | 현재 plan의 incomplete commit unit들을 `run-all --auto-resolve --execute --commit`으로 끝까지 실행한다. |
 | `$코덱스플로우 브리핑` | 브리핑 | `morning-brief`로 작업 재개 브리프를 만든다. |
 | `$코덱스플로우 리뷰` | 리뷰 | 현재 plan의 review checklist를 만든다. |
 | `$코덱스플로우 PR초안` | PR 초안 | 미완료 unit을 자동 실행한 뒤 PR dry-run 산출물을 만든다. |
@@ -50,12 +50,13 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 ## Crack-CLI Parity Features
 
 - `route`는 PR lock이 있으면 inbox로 보내고, `--plan`이 있으면 기존 plan request queue에 붙이며, active plan이 하나면 그 plan에 자동으로 붙인다.
-- `--router codex --planner codex`를 붙이면 Codex Router/Planner agent를 사용한다. 기본값은 public-safe한 heuristic/template이다.
+- 기본 `route`는 Codex Router/Planner agent를 사용한다. `--router heuristic --planner template`은 오프라인 smoke test나 deterministic fallback용이다.
 - `run-next --execute --commit`은 구현 후 같은 session review decision을 거친 뒤 commit한다.
 - 완료 판정은 `queue.json` 단독이 아니라 `plan.md`의 commit unit과 `log.md`의 `Completed commit unit N` 기록을 기준으로 한다.
 - `dashboard`는 PR lock, inbox 수, dirty file 수, active plan 진행률, 최근 log, suggested command를 보여준다.
 - `set-pr-lock`, `clear-pr-lock`, `pr-check`, `drain`으로 PR lock lifecycle을 관리한다.
 - `run-all --open-pr`는 완료 후 PR dry-run을 만들고, `run-all --merge`는 완료 후 local merge를 시도한다.
+- successful remote merge는 matching PR lock을 자동으로 clear한다.
 - remote PR/remote merge는 `--remote`가 명시된 경우에만 실행한다.
 
 ## Guardrails
@@ -87,11 +88,11 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 ```bash
 python3 scripts/codex_flow.py init
 python3 scripts/codex_flow.py route "작업 요청"
-python3 scripts/codex_flow.py route "작업 요청" --router codex --planner codex
+python3 scripts/codex_flow.py route "작업 요청" --router heuristic --planner template
 python3 scripts/codex_flow.py plan --ticket .codex-flow/tickets/<ticket>.md
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --commit
-python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --commit --max-units 4
+python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --commit
 python3 scripts/codex_flow.py dashboard
 python3 scripts/codex_flow.py dashboard --watch
 python3 scripts/codex_flow.py morning-brief
