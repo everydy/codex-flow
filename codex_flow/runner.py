@@ -116,6 +116,7 @@ def run_next(
     allow_dirty: bool = False,
     no_branch: bool = False,
     auto_resolve: bool = False,
+    repair_attempts: int = 0,
 ) -> dict | None:
     plan_dir, queue_data = plans.load_queue(plan_path)
     queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
@@ -155,6 +156,7 @@ def run_next(
             allow_dirty=allow_dirty,
             no_branch=no_branch,
             auto_resolve=auto_resolve,
+            repair_attempts=repair_attempts,
         )
 
     unit["status"] = "prompted"
@@ -179,6 +181,7 @@ def execute_unit(
     allow_dirty: bool,
     no_branch: bool,
     auto_resolve: bool,
+    repair_attempts: int,
 ) -> dict:
     repo = plan_dir.parents[2]
     branch = queue_data.get("branch") or f"codex/{queue_data.get('plan_slug', 'plan')}"
@@ -202,30 +205,56 @@ def execute_unit(
     append_log(plan_dir, f"Started commit unit {unit.get('number') or unit['id']}: {unit['title']} on {branch}.")
 
     selected_unit = commit_unit or plan_readiness.CommitUnit(number=unit.get("number") or int(str(unit["id"]).split("-")[-1]), title=unit["title"], content="")
-    agent_result = CodexImplementerAgent(command=codex_command, extra_args=codex_args).implement(
-        ImplementerAgentInput(
-            repo=repo,
-            plan_path=plan_dir / "plan.md",
-            plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
-            unit=selected_unit,
-            previous_commit=head_summary(repo),
-            git_status=before.raw,
+    agent = CodexImplementerAgent(command=codex_command, extra_args=codex_args)
+    agent_result = None
+    last_repair_reason = ""
+    used_repair_attempts = 0
+    for attempt in range(max(0, repair_attempts) + 1):
+        if attempt > 0:
+            used_repair_attempts = attempt
+            unit["status"] = "in_progress"
+            unit["repair_attempts"] = attempt
+            unit["last_needs_work_reason"] = last_repair_reason
+            unit["updated_at"] = state.timestamp()
+            plans.save_queue(plan_dir, queue_data)
+            append_log(plan_dir, f"Repair attempt {attempt}/{repair_attempts} for commit unit {selected_unit.number}: {last_repair_reason}")
+        agent_result = agent.implement(
+            ImplementerAgentInput(
+                repo=repo,
+                plan_path=plan_dir / "plan.md",
+                plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
+                unit=selected_unit,
+                previous_commit=head_summary(repo),
+                git_status=status(repo).raw,
+                repair_attempt=attempt,
+                repair_reason=last_repair_reason,
+            )
         )
-    )
-    if agent_result.review.status == "needs_work":
+        if agent_result.review.status != "needs_work":
+            break
+        last_repair_reason = agent_result.review.reason
+        if attempt < max(0, repair_attempts):
+            append_log(plan_dir, f"Commit unit {selected_unit.number} requested repair: {last_repair_reason}")
+            continue
         unit["status"] = "needs_work"
         unit["updated_at"] = state.timestamp()
+        unit["repair_attempts"] = used_repair_attempts
+        unit["last_needs_work_reason"] = last_repair_reason
         plans.save_queue(plan_dir, queue_data)
-        append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work: {agent_result.review.reason}")
+        append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work: {last_repair_reason}")
         state.refresh_dashboard(repo)
         return {
             "unit": unit,
             "prompt_path": prompt_path,
             "action": "needs_work",
-            "reason": agent_result.review.reason,
+            "reason": last_repair_reason,
             "changed_paths": [],
             "auto_resolved_dirty": auto_resolved_dirty,
+            "repair_attempts": used_repair_attempts,
+            "repair_reason": last_repair_reason,
         }
+    if agent_result is None:
+        raise SystemExit("Codex implementer did not return a result")
 
     after = status(repo)
     changed = changed_paths_since(before, after)
@@ -241,6 +270,9 @@ def execute_unit(
     unit["updated_at"] = state.timestamp()
     unit["changed_paths"] = changed
     unit["commit"] = commit_hash
+    unit["repair_attempts"] = used_repair_attempts
+    if last_repair_reason:
+        unit["last_repair_reason"] = last_repair_reason
     plans.save_queue(plan_dir, queue_data)
     log_parts = [f"{action} {unit['id']}"]
     if changed:
@@ -249,7 +281,11 @@ def execute_unit(
         log_parts.append(f"commit: {commit_hash}")
     if agent_result.review.summary:
         log_parts.append(f"summary: {agent_result.review.summary}")
+    if used_repair_attempts:
+        log_parts.append(f"repair_attempts: {used_repair_attempts}")
     append_log(plan_dir, " | ".join(log_parts))
+    if used_repair_attempts:
+        append_log(plan_dir, f"Repair succeeded for commit unit {selected_unit.number} after {used_repair_attempts} attempt(s).")
     append_log(plan_dir, f"Completed commit unit {selected_unit.number}.")
     queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
     state.refresh_dashboard(repo)
@@ -260,6 +296,8 @@ def execute_unit(
         "commit": commit_hash,
         "changed_paths": changed,
         "auto_resolved_dirty": auto_resolved_dirty,
+        "repair_attempts": used_repair_attempts,
+        "repair_reason": last_repair_reason,
     }
 
 
@@ -279,6 +317,7 @@ def run_all(
     allow_dirty: bool = False,
     no_branch: bool = False,
     auto_resolve: bool = False,
+    repair_attempts: int = 0,
 ) -> list[dict]:
     results: list[dict] = []
     limit = max_units
@@ -295,6 +334,7 @@ def run_all(
             allow_dirty=allow_dirty,
             no_branch=no_branch,
             auto_resolve=auto_resolve,
+            repair_attempts=repair_attempts,
         )
         if result is None:
             break

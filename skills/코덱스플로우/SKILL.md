@@ -36,6 +36,7 @@ metadata:
 - `다음실행`과 `모두실행`은 현재 plan이 명확할 때 바로 실행한다.
 - `다음실행`/`모두실행`/`PR초안`/`PR생성`/`병합`은 기본값으로 Codex CLI를 실제 실행하고 성공한 unit을 자동 커밋한다. 사용자가 명시적으로 커밋 금지를 요청한 경우에만 `--no-commit`을 쓴다.
 - 프롬프트만 보고 싶으면 `run-next/run-all --preview` 또는 `--dry-run`을 명시한다.
+- `--auto-resolve` 실행 중 unit review가 `needs_work`를 반환하면 같은 unit을 기본 1회 repair context로 재시도한다. 횟수는 `--repair-attempts <n>`으로 조정한다.
 - `브리핑`은 plan이 없어도 실행할 수 있다.
 - `리뷰`, `PR초안`, `PR생성`, `병합`은 현재 plan이 명확할 때 실행한다.
 - `대시보드`는 `dashboard`를 실행한다.

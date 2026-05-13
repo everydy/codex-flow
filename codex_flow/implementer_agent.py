@@ -25,6 +25,8 @@ class ImplementerAgentInput:
     unit: CommitUnit
     previous_commit: str | None
     git_status: str
+    repair_attempt: int = 0
+    repair_reason: str = ""
 
 
 @dataclass(frozen=True)
@@ -101,6 +103,7 @@ def build_implementation_prompt(input_data: ImplementerAgentInput) -> str:
             "Git status before this unit:",
             fence(input_data.git_status) if input_data.git_status.strip() else "Clean",
             "",
+            *repair_context(input_data),
             "Unit boundary gates:",
             "- Do not create or merge a real remote PR inside this commit-unit implementation; finalization commands handle PR and merge after all units are ready.",
             "- Do not deploy.",
@@ -111,6 +114,26 @@ def build_implementation_prompt(input_data: ImplementerAgentInput) -> str:
             fence(input_data.plan_content),
         ]
     )
+
+
+def repair_context(input_data: ImplementerAgentInput) -> list[str]:
+    if input_data.repair_attempt <= 0:
+        return []
+    return [
+        "Repair attempt:",
+        fence(
+            "\n".join(
+                [
+                    f"Attempt: {input_data.repair_attempt}",
+                    f"Previous needs_work reason: {input_data.repair_reason or 'Not provided'}",
+                    "Keep any useful existing working tree changes from the previous attempt.",
+                    "Do not restart the unit from scratch unless the current partial changes are directly wrong.",
+                    "Focus only on resolving the reason above and returning the commit unit to a ready state.",
+                ]
+            )
+        ),
+        "",
+    ]
 
 
 def build_review_prompt(input_data: ImplementerAgentInput) -> str:

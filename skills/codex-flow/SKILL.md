@@ -31,7 +31,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 1. 저장소 루트에서 `python3 scripts/codex_flow.py init`으로 `.codex-flow/`를 만든다.
 2. `python3 scripts/codex_flow.py route "<요청>"`으로 Codex Router/Planner agent가 티켓과 plan/branch queue를 만든다. 오프라인 smoke test나 deterministic fallback이 필요할 때만 `--router heuristic --planner template`을 붙인다.
 3. `python3 scripts/codex_flow.py run-next --plan <plan.md>`로 commit unit 하나를 구현하고 같은 Codex session review 후 자동 커밋한다. 프롬프트만 만들 때는 `--preview`, 큐 변경도 없이 볼 때는 `--dry-run`을 붙인다.
-4. `python3 scripts/codex_flow.py run-all --plan <plan.md>`로 plan이 complete 또는 needs_work가 될 때까지 반복 처리하며 각 성공 unit을 자동 커밋한다. preview prompt만 만들 때는 `--preview`를 붙이고, 기본 4개까지만 만든다.
+4. `python3 scripts/codex_flow.py run-all --plan <plan.md>`로 plan이 complete 또는 needs_work가 될 때까지 반복 처리하며 각 성공 unit을 자동 커밋한다. `--auto-resolve`에서는 transient needs_work를 기본 1회 repair하고, preview prompt만 만들 때는 `--preview`를 붙인다.
 5. 아침에는 `morning-brief`와 `review`로 검토 자료를 만든다.
 6. PR 초안은 `open-pr --auto-resolve --dry-run`으로 남은 unit을 먼저 끝내고 자동 커밋한 뒤 만든다. 실제 원격 PR은 `create-pr --auto-resolve`로 분리해 실행한다.
 7. merge는 `merge --auto-resolve`로 미완료 unit을 끝내고 자동 커밋한 뒤 readiness를 확인하고 진행한다. 현재 작업 흐름상 원격 통합이 자연스러운 완료 조건이면 `--remote`까지 사용할 수 있다.
@@ -93,6 +93,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 - `run-next`와 `run-all`은 기본값으로 Codex CLI를 실제 실행하고 성공한 unit 변경을 자동 커밋한다. 프롬프트만 만들려면 `--preview` 또는 `--dry-run`을 명시한다.
 - `--execute`, `--execute-units`, `--commit`은 호환용 명시 플래그다. 커밋을 의도적으로 막을 때만 `--no-commit`을 쓴다.
 - 실행 전 worktree가 dirty이면 `--auto-resolve`로 non-`.codex-flow/` 변경을 로컬 stash에 보존하고 계속한다. revert/reset으로 사용자 변경을 삭제하지 않는다.
+- `--auto-resolve` 실행 중 unit review가 `needs_work`를 반환하면 같은 unit을 기본 1회 repair context로 재시도한다. 횟수는 `--repair-attempts <n>`으로 조정한다.
 - PR lock이 있으면 `route --auto-resolve`라도 새 작업을 inbox에 보낸다. PR lock은 review gate라서 임의로 stacked plan을 만들지 않는다.
 - PR 생성 전 unit이 미완료이면 `open-pr/create-pr --auto-resolve`로 남은 unit을 실행하고 자동 커밋한 뒤, 끝까지 `done`이 된 경우에만 PR artifact 또는 remote PR을 만든다.
 - merge 전 unit이 미완료이면 `merge --auto-resolve`로 남은 unit을 실행하고 자동 커밋한 뒤, 끝까지 `done`이 된 경우에만 merge한다.
@@ -106,8 +107,9 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | PR lock이 있으면 새 작업은 inbox | Codex Flow도 inbox에 보낸다. lock 해제 후 `pr-check`/`drain`이 다시 라우팅한다. |
 | 모든 unit이 `done` 아니면 PR 생성 안 함 | `open-pr`/`create-pr --auto-resolve`가 남은 unit을 실행, 자동 커밋하고 PR 산출물 또는 원격 PR 생성을 재시도한다. |
 | merge가 중간에서 멈춤 | Codex Flow finalize 단계에서는 `merge --auto-resolve`를 사용한다. 이 경로는 미완료 unit을 먼저 해결하고 local merge를 실행하며, 필요하면 `--remote`로 원격 통합까지 진행한다. |
+| review가 transient `needs_work`를 반환 | `--auto-resolve`가 같은 unit을 기본 1회 repair context로 재실행한다. |
 
-자동 해결 후에도 `needs_work`가 남으면 그것은 사용자 검토 요청이 아니라 새 repair unit의 입력이다. 이때는 실패 이유를 queue/log에 남기고, 다음 `run-next --auto-resolve` 또는 더 좁은 repair plan으로 이어간다.
+기본 repair attempt 후에도 `needs_work`가 남으면 그것은 사용자 검토 요청이 아니라 더 좁은 repair unit의 입력이다. 이때는 실패 이유를 queue/log에 남기고, 다음 `run-next --auto-resolve --repair-attempts <n>` 또는 더 좁은 repair plan으로 이어간다.
 
 ## Commands
 

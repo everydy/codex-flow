@@ -188,6 +188,7 @@ Codex Flow does not replace specialist skills such as `요청개선`, `mission-c
 | Active PR lock | Keeps the lock meaningful and queues new requests in inbox. |
 | Unfinished units before PR draft | Runs unfinished units before writing the PR artifact. |
 | Local merge readiness | Runs unfinished units before local merge. |
+| Transient `needs_work` review | Retries the same unit with bounded repair context when `--auto-resolve` is active. |
 
 Remote PR creation and remote merge are normal Codex Flow finalization steps when the current workflow calls for GitHub integration. They remain separate CLI modes so automation can choose them deliberately and log the result.
 
@@ -206,7 +207,7 @@ Codex Flow intentionally borrows the strongest operational ideas from Crack-CLI 
 - optional `run-all --open-pr` and `run-all --merge` finalize paths
 - local-first default behavior with remote operations kept in finalize commands
 
-Codex Flow differs by preserving explicit execution flags, shipping Korean Codex skill aliases, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
+Codex Flow differs by keeping explicit `--preview` and `--dry-run` escape hatches, shipping Korean Codex skill aliases, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
 
 ## Agent Architecture
 

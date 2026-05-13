@@ -27,6 +27,7 @@ class RunAllRunner:
         allow_dirty: bool = False,
         no_branch: bool = False,
         auto_resolve: bool = False,
+        repair_attempts: int = 0,
         open_pr: bool = False,
         merge: bool = False,
         remote: bool = False,
@@ -43,6 +44,7 @@ class RunAllRunner:
             allow_dirty=allow_dirty,
             no_branch=no_branch,
             auto_resolve=auto_resolve,
+            repair_attempts=repair_attempts,
         )
         if any(step.get("action") == "needs_work" for step in steps):
             return RunAllResult("needs_work", steps, "run_all: needs_work")

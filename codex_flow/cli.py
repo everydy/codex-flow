@@ -43,6 +43,14 @@ def default_execute_units(enabled: bool | None, *, auto_resolve: bool) -> bool:
     return auto_resolve
 
 
+def default_repair_attempts(value: int | None, *, auto_resolve: bool) -> int:
+    if value is not None:
+        if value < 0:
+            raise SystemExit("--repair-attempts must be 0 or greater")
+        return value
+    return 1 if auto_resolve else 0
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="codex-flow", description="Local ticket, plan, and review queue for Codex work.")
     parser.add_argument("--repo", type=Path, default=None, help="Repository root to operate on. Defaults to cwd or nearest git root.")
@@ -91,6 +99,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_next.add_argument("--allow-dirty", action="store_true")
     run_next.add_argument("--no-branch", action="store_true")
     run_next.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
+    run_next.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times. Defaults to 1 with --auto-resolve, otherwise 0.")
 
     run_all = subparsers.add_parser("run-all", help="Execute remaining commit units by default; use --preview or --dry-run to inspect prompts only.")
     run_all.add_argument("--plan", type=Path, required=True)
@@ -105,6 +114,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--allow-dirty", action="store_true")
     run_all.add_argument("--no-branch", action="store_true")
     run_all.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
+    run_all.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times. Defaults to 1 with --auto-resolve, otherwise 0.")
     run_all.add_argument("--merge", action="store_true", help="Merge after all units are done.")
     run_all.add_argument("--target", default="main")
     run_all.add_argument("--remote", action="store_true", help="Use remote PR/merge mode for finalize steps.")
@@ -133,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--codex-arg", action="append", default=[])
         command.add_argument("--allow-dirty", action="store_true")
         command.add_argument("--no-branch", action="store_true")
+        command.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times while auto-resolving. Defaults to 1 with --auto-resolve, otherwise 0.")
         if include_remote:
             command.add_argument("--remote", action="store_true", help="Create a real remote draft PR with gh.")
 
@@ -169,6 +180,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--codex-arg", action="append", default=[])
     merge.add_argument("--allow-dirty", action="store_true")
     merge.add_argument("--no-branch", action="store_true")
+    merge.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times while auto-resolving. Defaults to 1 with --auto-resolve, otherwise 0.")
 
     return parser
 
@@ -260,6 +272,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run-next":
         execute_work = default_execute(args.execute, preview=args.preview, dry_run=args.dry_run)
+        repair_attempts = default_repair_attempts(args.repair_attempts, auto_resolve=args.auto_resolve)
         result = runner.run_next(
             args.plan,
             dry_run=args.dry_run,
@@ -270,6 +283,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_dirty=args.allow_dirty,
             no_branch=args.no_branch,
             auto_resolve=args.auto_resolve,
+            repair_attempts=repair_attempts,
         )
         if result is None:
             print("no_ready_units")
@@ -286,6 +300,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"changed_paths: {', '.join(result['changed_paths'])}")
             if result.get("auto_resolved_dirty"):
                 print(f"auto_resolved_dirty: {', '.join(result['auto_resolved_dirty'])}")
+            if result.get("repair_attempts"):
+                print(f"repair_attempts: {result['repair_attempts']}")
             return exit_code_for_action(result.get("action", ""))
         else:
             print("status: prompted")
@@ -293,6 +309,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "run-all":
         execute_work = default_execute(args.execute, preview=args.preview, dry_run=args.dry_run)
+        repair_attempts = default_repair_attempts(args.repair_attempts, auto_resolve=args.auto_resolve)
         run_result = RunAllRunner().run_all(
             args.plan,
             max_units=args.max_units,
@@ -304,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             allow_dirty=args.allow_dirty,
             no_branch=args.no_branch,
             auto_resolve=args.auto_resolve,
+            repair_attempts=repair_attempts,
             open_pr=args.open_pr,
             merge=args.merge,
             remote=args.remote,
@@ -314,7 +332,8 @@ def main(argv: list[str] | None = None) -> int:
         for result in results:
             suffix = f" {result.get('action')}" if result.get("action") else ""
             commit_suffix = f" commit={result['commit']}" if result.get("commit") else ""
-            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}")
+            repair_suffix = f" repair_attempts={result['repair_attempts']}" if result.get("repair_attempts") else ""
+            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}{repair_suffix}")
         if run_result.message:
             print(run_result.message)
         return exit_code_for_action(run_result.action)
@@ -397,6 +416,7 @@ def auto_complete_units(args: argparse.Namespace) -> str:
         return ""
     requeued = plans.requeue_unfinished_units(args.plan, reason=f"auto-resolve before {args.command}")
     execute_units = default_execute_units(args.execute_units, auto_resolve=args.auto_resolve)
+    repair_attempts = default_repair_attempts(args.repair_attempts, auto_resolve=args.auto_resolve)
     results = runner.run_all(
         args.plan,
         max_units=args.max_units,
@@ -407,6 +427,7 @@ def auto_complete_units(args: argparse.Namespace) -> str:
         allow_dirty=args.allow_dirty,
         no_branch=args.no_branch,
         auto_resolve=args.auto_resolve,
+        repair_attempts=repair_attempts,
     )
     refreshed_dir, refreshed = plans.load_queue(args.plan)
     refreshed = plan_readiness.sync_queue_cache_from_plan(refreshed_dir / "plan.md")
