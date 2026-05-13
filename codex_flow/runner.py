@@ -260,7 +260,7 @@ def execute_unit(
         unit["updated_at"] = state.timestamp()
         unit["repair_attempts"] = used_repair_attempts
         unit["last_needs_work_reason"] = last_repair_reason
-        partial_changed = merge_changed_paths(preserved_repair_dirty, changed_paths_since(before, status(repo)))
+        partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
         unit["changed_paths"] = partial_changed
         plans.save_queue(plan_dir, queue_data)
         append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work: {last_repair_reason}")
@@ -279,7 +279,7 @@ def execute_unit(
         raise SystemExit("Codex implementer did not return a result")
 
     after = status(repo)
-    changed = merge_changed_paths(preserved_repair_dirty, changed_paths_since(before, after))
+    changed = repair_changed_paths(preserved_repair_dirty, before, after)
     commit_hash = ""
     action = "done"
     if commit and changed:
@@ -387,6 +387,15 @@ def merge_changed_paths(*path_groups: list[str]) -> list[str]:
                 seen.add(path)
                 paths.append(path)
     return paths
+
+
+def repair_changed_paths(preserved_paths: list[str], before, after) -> list[str]:
+    return merge_changed_paths(active_snapshot_paths(preserved_paths, after), changed_paths_since(before, after))
+
+
+def active_snapshot_paths(paths: list[str], snapshot) -> list[str]:
+    active = {entry.path for entry in snapshot.entries}
+    return [path for path in paths if path in active]
 
 
 def append_log(plan_dir: Path, message: str) -> None:
