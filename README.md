@@ -17,7 +17,7 @@ Each plan also carries a `Skill Routing Manifest`, so a fresh Codex session can 
 - Routes a natural-language request into an inbox, an existing plan, or a new plan queue.
 - Routes and plans through role-separated Codex Router and Planner agents by default.
 - Writes a `Skill Routing Manifest` into every plan, then feeds the selected entry into implementer prompts, review checklists, and PR draft artifacts.
-- Generates implementer prompts for previewable ready units.
+- Executes commit units by default, while still supporting prompt previews with `--preview` or `--dry-run`.
 - Can execute Codex CLI for one unit or a sequence of units with an implement-then-review agent loop.
 - Can commit changed files per completed unit.
 - Writes morning briefs, review checklists, and PR dry-run artifacts.
@@ -85,7 +85,7 @@ Run the next unit:
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-next \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
-  --auto-resolve --execute
+  --auto-resolve
 ```
 
 Run all executable commit units until the plan is complete or a unit needs work:
@@ -93,7 +93,7 @@ Run all executable commit units until the plan is complete or a unit needs work:
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
-  --auto-resolve --execute
+  --auto-resolve
 ```
 
 Run all executable commit units and prepare a PR draft artifact:
@@ -101,7 +101,7 @@ Run all executable commit units and prepare a PR draft artifact:
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
-  --auto-resolve --execute --open-pr
+  --auto-resolve --open-pr
 ```
 
 Run all executable commit units and merge locally after completion:
@@ -109,7 +109,7 @@ Run all executable commit units and merge locally after completion:
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
-  --auto-resolve --execute --merge --target main
+  --auto-resolve --merge --target main
 ```
 
 Create a PR draft artifact:
@@ -117,7 +117,7 @@ Create a PR draft artifact:
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo open-pr \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
-  --auto-resolve --execute-units --dry-run
+  --auto-resolve --dry-run
 ```
 
 Create a real remote draft PR after readiness:
@@ -125,7 +125,18 @@ Create a real remote draft PR after readiness:
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo create-pr \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
-  --auto-resolve --execute-units
+  --auto-resolve
+```
+
+Preview prompts without running Codex:
+
+```bash
+python3 scripts/codex_flow.py --repo /path/to/your/repo run-next \
+  --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
+  --preview
+python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
+  --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
+  --preview
 ```
 
 ## Korean Shortcut Skill
@@ -208,7 +219,7 @@ Implementer agent implements one unit, then resumes the same session for review
 Merge agent       resolves only active merge conflicts
 ```
 
-The default route path now uses Codex Router and Planner agents. Use `--router heuristic --planner template` for offline smoke tests or public-safe demos. Execution still requires `--execute`; executed units commit by default unless `--no-commit` is explicit.
+The default route path now uses Codex Router and Planner agents. Use `--router heuristic --planner template` for offline smoke tests or public-safe demos. `run-next` and `run-all` execute by default and commit completed units unless `--no-commit` is explicit. Use `--preview` or `--dry-run` when you only want prompts.
 
 Plan progress is read from readable Markdown:
 
@@ -240,11 +251,13 @@ python3 scripts/codex_flow.py route "request" --router heuristic --planner templ
 python3 scripts/codex_flow.py route "request" --plan .codex-flow/plans/<slug>/plan.md
 python3 scripts/codex_flow.py dashboard
 python3 scripts/codex_flow.py dashboard --watch
-python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute
-python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute
-python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --open-pr
-python3 scripts/codex_flow.py create-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute-units
-python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --merge
+python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --preview
+python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --preview
+python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --open-pr
+python3 scripts/codex_flow.py create-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --merge
 python3 scripts/codex_flow.py set-pr-lock --branch codex/demo --pr-url https://github.com/example/repo/pull/1
 python3 scripts/codex_flow.py pr-check
 python3 scripts/codex_flow.py drain

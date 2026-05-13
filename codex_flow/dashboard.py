@@ -54,7 +54,7 @@ def render_dashboard(repo: str | Path | None = None) -> str:
                     f"- Branch: `{branch}`",
                     f"- Progress: {done}/{len(units)} done, {ready} ready, {needs_work} needs_work",
                     f"- Next: {format_next(readiness.next_unit)}",
-                    f"- Suggested command: `python3 scripts/codex_flow.py run-all --plan {rel_plan} --auto-resolve --execute --commit`",
+                    f"- Suggested command: `python3 scripts/codex_flow.py run-all --plan {rel_plan} --auto-resolve`",
                     "",
                 ]
             )

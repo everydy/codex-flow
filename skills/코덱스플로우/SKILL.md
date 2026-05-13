@@ -18,8 +18,8 @@ metadata:
 | `$코덱스플로우` | 상태 확인 | 현재 repo의 Codex Flow를 `init`하고 `status`, `pr-check`를 확인한다. |
 | `$코덱스플로우 상태` | 상태 확인 | dashboard 상태와 PR lock 여부를 다시 확인한다. |
 | `$코덱스플로우 라우트 <요청>` | 라우트 | 요청을 ticket으로 저장하고 plan queue를 만든다. PR lock이 있으면 inbox에 보낸다. |
-| `$코덱스플로우 다음실행` | 다음실행 | 현재 plan의 다음 incomplete commit unit 하나를 `run-next --auto-resolve --execute`로 실행하고 자동 커밋한다. |
-| `$코덱스플로우 모두실행` | 모두실행 | 현재 plan의 incomplete commit unit들을 `run-all --auto-resolve --execute`로 끝까지 실행하고 unit별 자동 커밋한다. |
+| `$코덱스플로우 다음실행` | 다음실행 | 현재 plan의 다음 incomplete commit unit 하나를 `run-next --auto-resolve`로 실행하고 자동 커밋한다. |
+| `$코덱스플로우 모두실행` | 모두실행 | 현재 plan의 incomplete commit unit들을 `run-all --auto-resolve`로 끝까지 실행하고 unit별 자동 커밋한다. |
 | `$코덱스플로우 브리핑` | 브리핑 | 오늘 아침/작업 재개용 `morning-brief`를 만든다. |
 | `$코덱스플로우 리뷰` | 리뷰 | 현재 plan의 review checklist를 만든다. |
 | `$코덱스플로우 PR초안` | PR 초안 | 미완료 unit을 자동 실행한 뒤 `open-pr --dry-run` 산출물을 만든다. |
@@ -34,7 +34,8 @@ metadata:
 - `라우트` 뒤에 요청문이 있으면 그 요청문을 그대로 `route "<요청>" --auto-resolve`에 넣는다. 기본값은 Codex Router/Planner agent다.
 - 오프라인 smoke test나 deterministic fallback이 필요할 때만 `route "<요청>" --router heuristic --planner template`을 쓴다.
 - `다음실행`과 `모두실행`은 현재 plan이 명확할 때 바로 실행한다.
-- `다음실행`/`모두실행`/`PR초안`/`PR생성`/`병합`에서 Codex CLI가 실제 구현을 수행하는 `--execute` 또는 `--execute-units` 경로는 성공한 unit을 자동 커밋하는 것이 기본값이다. 사용자가 명시적으로 커밋 금지를 요청한 경우에만 `--no-commit`을 쓴다.
+- `다음실행`/`모두실행`/`PR초안`/`PR생성`/`병합`은 기본값으로 Codex CLI를 실제 실행하고 성공한 unit을 자동 커밋한다. 사용자가 명시적으로 커밋 금지를 요청한 경우에만 `--no-commit`을 쓴다.
+- 프롬프트만 보고 싶으면 `run-next/run-all --preview` 또는 `--dry-run`을 명시한다.
 - `브리핑`은 plan이 없어도 실행할 수 있다.
 - `리뷰`, `PR초안`, `PR생성`, `병합`은 현재 plan이 명확할 때 실행한다.
 - `대시보드`는 `dashboard`를 실행한다.
@@ -55,13 +56,15 @@ python3 scripts/codex_flow.py --repo <repo> pr-check
 python3 scripts/codex_flow.py --repo <repo> dashboard
 python3 scripts/codex_flow.py --repo <repo> route "<요청>" --auto-resolve
 python3 scripts/codex_flow.py --repo <repo> route "<요청>" --router heuristic --planner template
-python3 scripts/codex_flow.py --repo <repo> run-next --plan <plan.md> --auto-resolve --execute
-python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve --execute
-python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve --execute --open-pr
-python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve --execute --merge
+python3 scripts/codex_flow.py --repo <repo> run-next --plan <plan.md> --auto-resolve
+python3 scripts/codex_flow.py --repo <repo> run-next --plan <plan.md> --preview
+python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve
+python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --preview
+python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve --open-pr
+python3 scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve --merge
 python3 scripts/codex_flow.py --repo <repo> morning-brief
 python3 scripts/codex_flow.py --repo <repo> review --plan <plan.md>
-python3 scripts/codex_flow.py --repo <repo> open-pr --plan <plan.md> --auto-resolve --execute-units --dry-run
-python3 scripts/codex_flow.py --repo <repo> create-pr --plan <plan.md> --auto-resolve --execute-units
-python3 scripts/codex_flow.py --repo <repo> merge --plan <plan.md> --auto-resolve --execute-units
+python3 scripts/codex_flow.py --repo <repo> open-pr --plan <plan.md> --auto-resolve --dry-run
+python3 scripts/codex_flow.py --repo <repo> create-pr --plan <plan.md> --auto-resolve
+python3 scripts/codex_flow.py --repo <repo> merge --plan <plan.md> --auto-resolve
 ```
