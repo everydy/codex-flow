@@ -15,6 +15,9 @@ def test_init_creates_default_state(tmp_path):
     assert flow.config.exists()
     assert flow.inbox.exists()
     assert flow.dashboard.exists()
+    config = flow.config.read_text(encoding="utf-8")
+    assert "remote_pr: finalize_command" in config
+    assert "remote_merge: finalize_command" in config
 
 
 def test_dashboard_summary_starts_empty(tmp_path):
@@ -23,4 +26,3 @@ def test_dashboard_summary_starts_empty(tmp_path):
     assert summary["tickets"] == 0
     assert summary["plans"] == 0
     assert summary["ready_units"] == 0
-

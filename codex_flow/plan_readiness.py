@@ -20,6 +20,14 @@ class CommitUnit:
 
 
 @dataclass(frozen=True)
+class SkillRoutingEntry:
+    phase: str
+    required_skills: tuple[str, ...]
+    optional_skills: tuple[str, ...]
+    evidence: str
+
+
+@dataclass(frozen=True)
 class PlanReadiness:
     ready: bool
     reason: str
@@ -42,6 +50,65 @@ def parse_commit_units(plan_content: str) -> list[CommitUnit]:
             )
         )
     return units
+
+
+def parse_skill_routing_manifest(plan_content: str) -> list[SkillRoutingEntry]:
+    section = markdown_section(plan_content, "Skill Routing Manifest")
+    if not section:
+        return []
+    entries: list[SkillRoutingEntry] = []
+    for line in section.splitlines():
+        if not line.lstrip().startswith("|"):
+            continue
+        cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+        if len(cells) < 4:
+            continue
+        phase, required, optional, evidence = cells[:4]
+        if phase.lower() == "phase" or _is_separator_row(cells):
+            continue
+        entries.append(
+            SkillRoutingEntry(
+                phase=clean_markdown_cell(phase),
+                required_skills=parse_skill_cell(required),
+                optional_skills=parse_skill_cell(optional),
+                evidence=clean_markdown_cell(evidence),
+            )
+        )
+    return entries
+
+
+def skill_routing_for_commit(plan_content: str, commit_number: int) -> SkillRoutingEntry | None:
+    commit_key = f"commit {commit_number}"
+    unit_key = f"unit-{commit_number:03d}"
+    for entry in parse_skill_routing_manifest(plan_content):
+        phase = entry.phase.lower()
+        if commit_key in phase or unit_key in phase:
+            return entry
+    return None
+
+
+def final_gate_skill_routing(plan_content: str) -> SkillRoutingEntry | None:
+    for entry in parse_skill_routing_manifest(plan_content):
+        if "final gate" in entry.phase.lower() or "최종" in entry.phase:
+            return entry
+    return None
+
+
+def format_skill_routing_entry(entry: SkillRoutingEntry | None) -> str:
+    if entry is None:
+        return "- Not specified"
+    return "\n".join(
+        [
+            f"- Phase: {entry.phase}",
+            f"- Required skills: {format_skill_list(entry.required_skills)}",
+            f"- Optional skills: {format_skill_list(entry.optional_skills)}",
+            f"- Evidence: {entry.evidence or '-'}",
+        ]
+    )
+
+
+def format_skill_list(skills: tuple[str, ...] | list[str]) -> str:
+    return ", ".join(f"`{skill}`" for skill in skills) if skills else "-"
 
 
 def completed_commit_unit_numbers(log_content: str) -> set[int]:
@@ -94,10 +161,12 @@ def sync_queue_cache_from_plan(plan_path: str | Path) -> dict:
     units = parse_commit_units(plan_content)
     completed = completed_commit_unit_numbers(log_content)
     needs_work = needs_work_commit_unit_numbers(log_content)
+    skill_entries = {entry.phase.lower(): entry for entry in parse_skill_routing_manifest(plan_content)}
     existing_by_id = {unit.get("id"): unit for unit in existing.get("units", []) if isinstance(unit, dict)}
     queue_units = []
     for unit in units:
         old = dict(existing_by_id.get(unit.unit_id, {}))
+        skill_entry = _skill_entry_for_unit(unit, skill_entries)
         old.update(
             {
                 "id": unit.unit_id,
@@ -107,6 +176,10 @@ def sync_queue_cache_from_plan(plan_path: str | Path) -> dict:
                 "updated_at": old.get("updated_at") or state.timestamp(),
             }
         )
+        if skill_entry:
+            old["required_skills"] = list(skill_entry.required_skills)
+            old["optional_skills"] = list(skill_entry.optional_skills)
+            old["skill_routing_evidence"] = skill_entry.evidence
         if old["status"] not in state.UNIT_STATUSES:
             old["status"] = "ready"
         queue_units.append(old)
@@ -129,12 +202,13 @@ def render_queue_md(queue_data: dict) -> str:
     lines = [
         f"# Queue: {queue_data.get('ticket_title') or queue_data.get('plan_title') or 'Codex Flow Plan'}",
         "",
-        "| Unit | Status | Title | Prompt |",
-        "| --- | --- | --- | --- |",
+        "| Unit | Status | Title | Required Skills | Prompt |",
+        "| --- | --- | --- | --- | --- |",
     ]
     for unit in queue_data.get("units", []):
         prompt = unit.get("prompt_path") or "-"
-        lines.append(f"| {unit.get('id')} | {unit.get('status')} | {unit.get('title')} | {prompt} |")
+        required = ", ".join(f"`{skill}`" for skill in unit.get("required_skills", [])) or "-"
+        lines.append(f"| {unit.get('id')} | {unit.get('status')} | {unit.get('title')} | {required} | {prompt} |")
     lines.append("")
     return "\n".join(lines)
 
@@ -151,3 +225,48 @@ def read_json(path: Path) -> dict:
 def match_line(content: str, pattern: str) -> str:
     match = re.search(pattern, content, flags=re.MULTILINE)
     return match.group(1).strip() if match else ""
+
+
+def markdown_section(content: str, heading: str) -> str:
+    match = re.search(rf"^##\s+{re.escape(heading)}\s*$", content, flags=re.MULTILINE)
+    if not match:
+        return ""
+    start = match.end()
+    next_heading = re.search(r"^##\s+", content[start:], flags=re.MULTILINE)
+    end = start + next_heading.start() if next_heading else len(content)
+    return content[start:end].strip()
+
+
+def parse_skill_cell(cell: str) -> tuple[str, ...]:
+    cleaned = clean_markdown_cell(cell)
+    if cleaned in {"", "-", "None", "none", "없음"}:
+        return ()
+    cleaned = re.sub(r"<br\s*/?>", ",", cleaned, flags=re.IGNORECASE)
+    values: list[str] = []
+    for part in re.split(r"[,;\n]+", cleaned):
+        skill = part.strip().strip("-* ").strip()
+        if skill and skill not in {"-", "None", "none", "없음"}:
+            values.append(skill)
+    return tuple(dict.fromkeys(values))
+
+
+def clean_markdown_cell(cell: str) -> str:
+    value = cell.strip()
+    value = re.sub(r"`([^`]*)`", r"\1", value)
+    value = re.sub(r"\[([^\]]+)\]\([^)]+\)", r"\1", value)
+    value = re.sub(r"\[\[([^\]|]+)\|([^\]]+)\]\]", r"\2", value)
+    value = re.sub(r"\[\[([^\]]+)\]\]", r"\1", value)
+    return value.strip()
+
+
+def _is_separator_row(cells: list[str]) -> bool:
+    return all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells if cell.strip())
+
+
+def _skill_entry_for_unit(unit: CommitUnit, entries: dict[str, SkillRoutingEntry]) -> SkillRoutingEntry | None:
+    commit_key = f"commit {unit.number}"
+    unit_key = unit.unit_id
+    for phase, entry in entries.items():
+        if commit_key in phase or unit_key in phase:
+            return entry
+    return None

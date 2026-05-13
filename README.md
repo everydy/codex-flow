@@ -9,12 +9,14 @@ ticket -> plan queue -> run-next/run-all -> commit unit -> review artifact -> PR
 ```
 
 The project is intentionally conservative. It keeps work in small units, records local state in `.codex-flow/`, and gives AI agents explicit recovery paths for common automation blockers.
+Each plan also carries a `Skill Routing Manifest`, so a fresh Codex session can see which existing skills should guide each commit unit and final review gate.
 
 ## What It Does
 
 - Creates a local `.codex-flow/` workspace for tickets, plans, queues, briefs, and locks.
 - Routes a natural-language request into an inbox, an existing plan, or a new plan queue.
 - Routes and plans through role-separated Codex Router and Planner agents by default.
+- Writes a `Skill Routing Manifest` into every plan, then feeds the selected entry into implementer prompts, review checklists, and PR draft artifacts.
 - Generates implementer prompts for previewable ready units.
 - Can execute Codex CLI for one unit or a sequence of units with an implement-then-review agent loop.
 - Can commit changed files per completed unit.
@@ -118,6 +120,14 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo open-pr \
   --auto-resolve --execute-units --dry-run
 ```
 
+Create a real remote draft PR after readiness:
+
+```bash
+python3 scripts/codex_flow.py --repo /path/to/your/repo create-pr \
+  --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
+  --auto-resolve --execute-units
+```
+
 ## Korean Shortcut Skill
 
 This repository includes a Korean Codex skill alias in `skills/코덱스플로우/SKILL.md`.
@@ -133,6 +143,7 @@ $코덱스플로우 모두실행
 $코덱스플로우 브리핑
 $코덱스플로우 리뷰
 $코덱스플로우 PR초안
+$코덱스플로우 PR생성
 $코덱스플로우 병합
 ```
 
@@ -141,6 +152,22 @@ Core meanings:
 - `라우트`: create a ticket and plan queue from the request.
 - `다음실행`: run the next incomplete commit unit with `run-next`.
 - `모두실행`: run commit units with `run-all` until complete or needs_work.
+
+## Skill Routing Manifest
+
+Codex Flow does not replace specialist skills such as `요청개선`, `mission-completion-harness`, `review-all-in-one`, or `qa-gate`. Instead, `plan.md` contains a routing table:
+
+```md
+## Skill Routing Manifest
+
+| Phase | Required skills | Optional skills | Evidence |
+| --- | --- | --- | --- |
+| Commit 1: Scope lock | `요청개선` | `community-research` | Requirements need narrowing. |
+| Commit 2: Implementation | `mission-completion-harness` | `디자인올인원` | A focused code unit must be completed. |
+| Final Gate | `review-all-in-one`, `qa-gate` | `checkpoint` | Review and verification decide readiness. |
+```
+
+`run-next` and `run-all` read the selected manifest entry and include it in the implementer prompt. `review` and `open-pr --dry-run` include the same manifest so the daytime review can check whether the right skills were used or explicitly skipped with a fallback reason.
 
 ## Auto-Resolve Policy
 
@@ -151,7 +178,7 @@ Core meanings:
 | Unfinished units before PR draft | Runs unfinished units before writing the PR artifact. |
 | Local merge readiness | Runs unfinished units before local merge. |
 
-Remote PR creation and remote merge are intentionally separate commands. Use them only when you are ready to make externally visible GitHub changes.
+Remote PR creation and remote merge are normal Codex Flow finalization steps when the current workflow calls for GitHub integration. They remain separate CLI modes so automation can choose them deliberately and log the result.
 
 ## Crack-CLI-Inspired Features
 
@@ -159,13 +186,14 @@ Codex Flow intentionally borrows the strongest operational ideas from Crack-CLI 
 
 - role-separated Router, Planner, Implementer, and Merge agent modules
 - Markdown `plan.md` plus `log.md` as the primary execution progress source, with `queue.json` kept as a compatibility cache
+- plan-level `Skill Routing Manifest` that routes existing Codex skills per commit unit instead of hiding that decision in chat context
 - active-plan routing before creating unnecessary new branches
 - explicit PR lock files
 - PR lock clearing after merged PRs, plus inbox drain after review locks are cleared
 - dashboard summaries with suggested next commands
 - `run-next` and `run-all` commit-unit execution
 - optional `run-all --open-pr` and `run-all --merge` finalize paths
-- local-first default behavior with remote operations kept explicit
+- local-first default behavior with remote operations kept in finalize commands
 
 Codex Flow differs by preserving explicit execution flags, shipping Korean Codex skill aliases, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
 
@@ -187,6 +215,7 @@ Plan progress is read from readable Markdown:
 ```text
 .codex-flow/plans/<slug>/
   plan.md       canonical commit units, with headings like ### Commit 1: ...
+                and Skill Routing Manifest entries for each unit
   log.md        canonical completion records, including Completed commit unit N.
   queue.json    machine-readable cache for compatibility
   queue.md      rendered cache
@@ -214,6 +243,7 @@ python3 scripts/codex_flow.py dashboard --watch
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --open-pr
+python3 scripts/codex_flow.py create-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute-units
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --execute --merge
 python3 scripts/codex_flow.py set-pr-lock --branch codex/demo --pr-url https://github.com/example/repo/pull/1
 python3 scripts/codex_flow.py pr-check

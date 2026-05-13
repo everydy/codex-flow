@@ -43,6 +43,24 @@ print('{"session_id":"fake-session"}')
     return fake_codex
 
 
+def write_fake_codex_needs_work(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_needs_work_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+output.write_text('COMMIT_UNIT_NEEDS_WORK reason="fake failure"\\n', encoding="utf-8")
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
 def test_run_next_writes_prompt_and_marks_unit_prompted(tmp_path):
     plan = make_plan(tmp_path)
 
@@ -50,6 +68,9 @@ def test_run_next_writes_prompt_and_marks_unit_prompted(tmp_path):
 
     assert result is not None
     assert result["prompt_path"].exists()
+    prompt_text = result["prompt_path"].read_text(encoding="utf-8")
+    assert "## Skill Routing Manifest" in prompt_text
+    assert "Required skills: `요청개선`" in prompt_text
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["units"][0]["status"] == "prompted"
     assert queue["units"][0]["prompt_path"] == "prompts/unit-001.md"
@@ -103,6 +124,8 @@ def test_morning_brief_review_and_pr_dry_run(tmp_path):
     assert brief.exists()
     assert review.exists()
     assert pr.exists()
+    assert "Required skills from the Skill Routing Manifest" in review.read_text(encoding="utf-8")
+    assert "## Skill Routing Manifest" in pr.read_text(encoding="utf-8")
     assert "remote PR" in pr.read_text(encoding="utf-8") or "Remote PR" in pr.read_text(encoding="utf-8")
 
 
@@ -170,6 +193,30 @@ def test_run_next_cli_no_commit_keeps_escape_hatch(tmp_path, capsys):
     assert "action: done" in output
     assert "commit:" not in output
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
+
+
+def test_run_next_needs_work_returns_nonzero(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_needs_work(tmp_path)
+    plan = make_plan(tmp_path)
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--execute",
+            "--commit",
+            "--codex-command",
+            str(fake_codex),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "action: needs_work" in output
 
 
 def test_run_next_auto_resolve_shelves_dirty_worktree_before_execution(tmp_path):
@@ -255,6 +302,7 @@ def test_merge_auto_resolve_executes_unfinished_units_and_merges_without_execute
             "main",
             "--auto-resolve",
             "--execute-units",
+            "--commit",
             "--codex-command",
             str(fake_codex),
         ]

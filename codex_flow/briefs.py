@@ -47,7 +47,7 @@ def write_morning_brief(repo: str | Path | None = None) -> Path:
             "",
             "1. Read plans with `prompted` or `needs_work` units.",
             "2. Run project-specific verification before accepting any merge.",
-            "3. Use `open-pr --dry-run` first; create a real PR only after user approval.",
+            "3. Use `open-pr --dry-run` for review artifacts, or `create-pr` when the current finalize flow should open a real PR.",
             "",
         ]
     )
@@ -61,6 +61,7 @@ def write_review(plan_path: str | Path) -> Path:
     plan_content = (plan_dir / "plan.md").read_text(encoding="utf-8")
     log_content = (plan_dir / "log.md").read_text(encoding="utf-8") if (plan_dir / "log.md").exists() else ""
     readiness = plan_readiness.check_plan_ready(plan_content, log_content)
+    skill_manifest = plan_readiness.parse_skill_routing_manifest(plan_content)
     review_path = plan_dir / "review.md"
     lines = [
         f"# Review: {queue.get('ticket_title')}",
@@ -80,12 +81,29 @@ def write_review(plan_path: str | Path) -> Path:
     lines.extend(
         [
             "",
+            "## Skill Routing Manifest",
+            "",
+            "| Phase | Required skills | Optional skills | Evidence |",
+            "| --- | --- | --- | --- |",
+        ]
+    )
+    if skill_manifest:
+        for entry in skill_manifest:
+            lines.append(
+                f"| {entry.phase} | {plan_readiness.format_skill_list(entry.required_skills)} | {plan_readiness.format_skill_list(entry.optional_skills)} | {entry.evidence or '-'} |"
+            )
+    else:
+        lines.append("| - | - | - | Not specified |")
+    lines.extend(
+        [
+            "",
             "## Review Checklist",
             "",
             "- [ ] Diff is limited to the intended paths.",
+            "- [ ] Required skills from the Skill Routing Manifest were applied or skipped with reasons.",
             "- [ ] Verification command was run or a reason is documented.",
             "- [ ] No unrelated user changes were reverted.",
-            "- [ ] Remote PR and merge are still disabled unless explicitly approved.",
+            "- [ ] Remote PR or merge, if used, happened only through a finalize command after readiness.",
             "",
         ]
     )

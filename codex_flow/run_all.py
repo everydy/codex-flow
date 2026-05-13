@@ -51,12 +51,20 @@ class RunAllRunner:
         if not readiness.ready:
             if max_units is not None and len(steps) >= max_units:
                 return RunAllResult("max_units_reached", steps, f"run_all: max_units_reached remaining={readiness.next_unit.number if readiness.next_unit else 'unknown'}")
+            if not execute and not open_pr and not merge and not remote:
+                next_unit = readiness.next_unit.number if readiness.next_unit else "unknown"
+                return RunAllResult("prompts_generated", steps, f"run_all: prompts_generated remaining={next_unit}")
             return RunAllResult("not_ready", steps, readiness.reason)
         if merge:
             merge_result = MergeRunner().merge_remote(plan_path, target=target, execute=True) if remote else MergeRunner().merge_local(plan_path, target=target, execute=True)
             return RunAllResult(merge_result.action, steps, merge_result.message)
         if remote:
-            url, lock_path = pr.create_remote_pr(plan_path, draft=True)
+            try:
+                url, lock_path = pr.create_remote_pr(plan_path, draft=True)
+            except pr.ActivePrLockError as exc:
+                return RunAllResult("pr_locked", steps, str(exc))
+            except SystemExit as exc:
+                return RunAllResult("needs_work", steps, str(exc))
             return RunAllResult("opened", steps, f"opened_pr: {url}\npr_lock: {lock_path}")
         if open_pr:
             pr_path = pr.write_pr_dry_run(plan_path)

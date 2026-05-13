@@ -26,6 +26,16 @@ def test_route_defaults_to_codex_router_and_planner():
     assert args.planner == "codex"
 
 
+def test_pr_draft_and_pr_create_commands_are_distinct():
+    draft_args = cli.build_parser().parse_args(["open-pr", "--plan", "plan.md"])
+    create_args = cli.build_parser().parse_args(["create-pr", "--plan", "plan.md"])
+
+    assert draft_args.command == "open-pr"
+    assert draft_args.remote is False
+    assert create_args.command == "create-pr"
+    assert not hasattr(create_args, "remote")
+
+
 def test_route_explicit_plan_appends_request(tmp_path, capsys):
     first = tickets.submit_ticket("Plan target", repo=tmp_path)
     plan = plans.create_plan_from_ticket(first.path, repo=tmp_path)
@@ -139,3 +149,58 @@ def test_run_all_open_pr_writes_dry_run_after_units_done(tmp_path, capsys):
     assert status == 0
     assert "pr_dry_run:" in output
     assert (plan.directory / "pr-dry-run.md").exists()
+
+
+def test_remote_pr_creation_refuses_active_pr_lock(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Remote PR lock test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    (plan.directory / "log.md").write_text(
+        "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n- Completed commit unit 3.\n",
+        encoding="utf-8",
+    )
+    pr.write_pr_lock(tmp_path, "codex/other", "https://github.com/example/repo/pull/8", "reviewing")
+
+    status = cli.main(["--repo", str(tmp_path), "create-pr", "--plan", str(plan.plan_path)])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "pr_locked: active" in output
+    assert "codex/other" in output
+
+
+def test_run_all_remote_returns_nonzero_when_pr_lock_active(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Run all remote lock test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    (plan.directory / "log.md").write_text(
+        "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n- Completed commit unit 3.\n",
+        encoding="utf-8",
+    )
+    pr.write_pr_lock(tmp_path, "codex/other", "https://github.com/example/repo/pull/8", "reviewing")
+
+    status = cli.main(["--repo", str(tmp_path), "run-all", "--plan", str(plan.plan_path), "--remote"])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "pr_locked: active" in output
+
+
+def test_run_all_failure_state_returns_nonzero(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Run all exit code test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+
+    status = cli.main(["--repo", str(tmp_path), "run-all", "--plan", str(plan.plan_path), "--max-units", "0"])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "max_units_reached" in output
+
+
+def test_create_pr_incomplete_plan_returns_nonzero(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Incomplete remote PR test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+
+    status = cli.main(["--repo", str(tmp_path), "create-pr", "--plan", str(plan.plan_path)])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "Plan is not complete" in output

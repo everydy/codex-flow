@@ -11,6 +11,20 @@ from .router_agent import CodexRouterAgent, HeuristicRouterAgent, RouterAgentDec
 from .run_all import RunAllRunner
 
 
+FAILURE_ACTIONS = {
+    "hard_stop",
+    "max_units_reached",
+    "merge_needs_work",
+    "needs_work",
+    "not_ready",
+    "pr_locked",
+}
+
+
+def exit_code_for_action(action: str) -> int:
+    return 1 if action in FAILURE_ACTIONS else 0
+
+
 def default_commit(enabled: bool | None, *, executes_work: bool) -> bool:
     if enabled is not None:
         return enabled
@@ -92,20 +106,27 @@ def build_parser() -> argparse.ArgumentParser:
     review = subparsers.add_parser("review", help="Write a review checklist for a plan.")
     review.add_argument("--plan", type=Path, required=True)
 
+    def add_pr_finalize_args(command: argparse.ArgumentParser, include_remote: bool = True) -> None:
+        command.add_argument("--plan", type=Path, required=True)
+        command.add_argument("--ready", action="store_true", help="Create a ready PR instead of draft when using remote mode.")
+        command.add_argument("--auto-resolve", action="store_true", help="Run unfinished units before creating the PR artifact.")
+        command.add_argument("--execute-units", action="store_true", help="Use Codex CLI while auto-resolving unfinished units.")
+        command.add_argument("--commit", dest="commit", action="store_true", default=None, help="Commit auto-resolved unit changes. This is the default when --execute-units is used.")
+        command.add_argument("--no-commit", dest="commit", action="store_false", help="Leave auto-resolved unit changes uncommitted.")
+        command.add_argument("--max-units", type=int, default=8)
+        command.add_argument("--codex-command", default="codex")
+        command.add_argument("--codex-arg", action="append", default=[])
+        command.add_argument("--allow-dirty", action="store_true")
+        command.add_argument("--no-branch", action="store_true")
+        if include_remote:
+            command.add_argument("--remote", action="store_true", help="Create a real remote draft PR with gh.")
+
     open_pr = subparsers.add_parser("open-pr", help="Write a PR dry-run artifact or create a remote draft PR.")
-    open_pr.add_argument("--plan", type=Path, required=True)
     open_pr.add_argument("--dry-run", action="store_true", default=True)
-    open_pr.add_argument("--remote", action="store_true", help="Create a real remote draft PR with gh.")
-    open_pr.add_argument("--ready", action="store_true", help="Create a ready PR instead of draft when using --remote.")
-    open_pr.add_argument("--auto-resolve", action="store_true", help="Run unfinished units before creating the PR artifact.")
-    open_pr.add_argument("--execute-units", action="store_true", help="Use Codex CLI while auto-resolving unfinished units.")
-    open_pr.add_argument("--commit", dest="commit", action="store_true", default=None, help="Commit auto-resolved unit changes. This is the default when --execute-units is used.")
-    open_pr.add_argument("--no-commit", dest="commit", action="store_false", help="Leave auto-resolved unit changes uncommitted.")
-    open_pr.add_argument("--max-units", type=int, default=8)
-    open_pr.add_argument("--codex-command", default="codex")
-    open_pr.add_argument("--codex-arg", action="append", default=[])
-    open_pr.add_argument("--allow-dirty", action="store_true")
-    open_pr.add_argument("--no-branch", action="store_true")
+    add_pr_finalize_args(open_pr)
+
+    create_pr = subparsers.add_parser("create-pr", help="Create a real remote draft PR after all units are ready.")
+    add_pr_finalize_args(create_pr, include_remote=False)
 
     pr_check = subparsers.add_parser("pr-check", help="Check PR lock state.")
     pr_check.add_argument("--gh-command", default="gh")
@@ -248,6 +269,7 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"changed_paths: {', '.join(result['changed_paths'])}")
             if result.get("auto_resolved_dirty"):
                 print(f"auto_resolved_dirty: {', '.join(result['auto_resolved_dirty'])}")
+            return exit_code_for_action(result.get("action", ""))
         else:
             print("status: prompted")
         return 0
@@ -277,7 +299,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}")
         if run_result.message:
             print(run_result.message)
-        return 0
+        return exit_code_for_action(run_result.action)
 
     if args.command == "mark":
         unit = plans.mark_unit(args.plan, args.unit, args.status)
@@ -294,13 +316,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"review: {review_path}")
         return 0
 
-    if args.command == "open-pr":
+    if args.command in {"open-pr", "create-pr"}:
         if args.auto_resolve:
             auto_complete_result = auto_complete_units(args)
             if auto_complete_result:
                 print(auto_complete_result)
-        if args.remote:
-            url, lock_path = pr.create_remote_pr(args.plan, draft=not args.ready)
+        remote_pr_requested = args.command == "create-pr" or getattr(args, "remote", False)
+        if remote_pr_requested:
+            try:
+                url, lock_path = pr.create_remote_pr(args.plan, draft=not args.ready)
+            except pr.ActivePrLockError as exc:
+                print(str(exc))
+                return 1
+            except SystemExit as exc:
+                print(str(exc))
+                return 1
             print(f"remote_pr: {url}")
             print(f"pr_lock: {lock_path}")
             return 0
@@ -381,7 +411,12 @@ def finalize_after_run_all(args: argparse.Namespace) -> str:
     if args.merge:
         return pr.merge_plan(args.plan, target=args.target, remote=args.remote, execute=True)
     if args.remote:
-        url, lock_path = pr.create_remote_pr(args.plan, draft=True)
+        try:
+            url, lock_path = pr.create_remote_pr(args.plan, draft=True)
+        except pr.ActivePrLockError as exc:
+            return str(exc)
+        except SystemExit as exc:
+            return str(exc)
         return f"opened_pr: {url}\npr_lock: {lock_path}"
     pr_path = pr.write_pr_dry_run(args.plan)
     return f"pr_dry_run: {pr_path}"

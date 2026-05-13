@@ -5,6 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .codex_cli import fence, last_matching_line, parse_key_values, parse_session_id, run_codex_exec
+from . import plan_readiness
 from .plan_readiness import CommitUnit
 
 
@@ -76,15 +77,23 @@ def build_implementation_prompt(input_data: ImplementerAgentInput) -> str:
         plan_path = str(input_data.plan_path.relative_to(input_data.repo))
     except ValueError:
         plan_path = str(input_data.plan_path)
+    skill_routing = plan_readiness.format_skill_routing_entry(
+        plan_readiness.skill_routing_for_commit(input_data.plan_content, input_data.unit.number)
+    )
     return "\n".join(
         [
             f"Read {plan_path} and implement only commit unit {input_data.unit.number}.",
             "",
             "You are Agent 2: Implementer for the Codex Flow workflow orchestrator.",
             "Implement only the selected commit unit. Do not create a git commit.",
+            "Before editing, load and apply the required skills named in the Skill Routing Manifest when available.",
+            "If a required skill is unavailable, continue with the closest safe fallback and mention the fallback in the review summary.",
             "",
             "Selected commit unit:",
             fence(f"### Commit {input_data.unit.number}: {input_data.unit.title}\n\n{input_data.unit.content}"),
+            "",
+            "Skill Routing Manifest entry:",
+            fence(skill_routing),
             "",
             "Previous commit:",
             input_data.previous_commit or "None",
@@ -92,8 +101,8 @@ def build_implementation_prompt(input_data: ImplementerAgentInput) -> str:
             "Git status before this unit:",
             fence(input_data.git_status) if input_data.git_status.strip() else "Clean",
             "",
-            "Hard stop gates:",
-            "- Do not create or merge a real remote PR.",
+            "Unit boundary gates:",
+            "- Do not create or merge a real remote PR inside this commit-unit implementation; finalization commands handle PR and merge after all units are ready.",
             "- Do not deploy.",
             "- Do not reset, checkout, or revert unrelated user changes.",
             "- If secrets, accounts, payments, or external posting are required, stop after preparing drafts.",
@@ -113,6 +122,8 @@ def build_review_prompt(input_data: ImplementerAgentInput) -> str:
             "Return exactly one final line in one of these forms:",
             f'COMMIT_UNIT_READY title="{input_data.unit.title}" summary="..."',
             'COMMIT_UNIT_NEEDS_WORK reason="..."',
+            "",
+            "Review requirement: confirm that required skills from the Skill Routing Manifest were applied or explicitly skipped with a fallback reason.",
         ]
     )
 

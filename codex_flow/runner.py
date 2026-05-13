@@ -33,6 +33,7 @@ def unit_for_commit(queue_data: dict, commit_unit: plan_readiness.CommitUnit) ->
 def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: plan_readiness.CommitUnit | None = None) -> str:
     allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
     verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
+    skill_routing = render_skill_routing_prompt(unit, plan_dir, commit_unit)
     selected = ""
     if commit_unit:
         selected = "\n".join(["## Selected Commit Unit", "", f"### Commit {commit_unit.number}: {commit_unit.title}", "", commit_unit.content, ""])
@@ -54,9 +55,15 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             "",
             verification,
             "",
-            "## Hard Stop Gates",
+            "## Skill Routing Manifest",
             "",
-            "- Do not create or merge a real remote PR.",
+            skill_routing,
+            "",
+            "Before implementation, read and apply the required skills named above when they are available in the Codex skill list. If a required skill is unavailable, use the closest safe fallback and document that fallback in the final summary.",
+            "",
+            "## Unit Boundary Gates",
+            "",
+            "- Do not create or merge a real remote PR inside this commit-unit implementation; finalization commands handle PR and merge after all units are ready.",
             "- Do not deploy.",
             "- Do not reset, checkout, or revert unrelated user changes.",
             "- If secrets, accounts, payments, or external posting are required, stop after preparing the draft.",
@@ -75,6 +82,26 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             f"- Previous commit: {head_summary(plan_dir.parents[2]) if (plan_dir.parents[2] / '.git').exists() else 'None'}",
             "",
             selected,
+        ]
+    )
+
+
+def render_skill_routing_prompt(unit: dict, plan_dir: Path, commit_unit: plan_readiness.CommitUnit | None) -> str:
+    entry = None
+    plan_path = plan_dir / "plan.md"
+    if commit_unit and plan_path.exists():
+        entry = plan_readiness.skill_routing_for_commit(plan_path.read_text(encoding="utf-8"), commit_unit.number)
+    if entry:
+        return plan_readiness.format_skill_routing_entry(entry)
+    required = tuple(unit.get("required_skills", []))
+    optional = tuple(unit.get("optional_skills", []))
+    evidence = unit.get("skill_routing_evidence", "-")
+    return "\n".join(
+        [
+            f"- Phase: {unit.get('id', '-')}: {unit.get('title', '-')}",
+            f"- Required skills: {plan_readiness.format_skill_list(required)}",
+            f"- Optional skills: {plan_readiness.format_skill_list(optional)}",
+            f"- Evidence: {evidence}",
         ]
     )
 
