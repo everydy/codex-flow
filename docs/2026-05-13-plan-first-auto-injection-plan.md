@@ -84,7 +84,7 @@ PYTHONPATH=. pytest -q tests/test_agent_roles.py tests/test_plans.py tests/test_
 ## 커밋 단위
 
 - 단일 커밋 권장: `Inject plan-first routing for implementation units`
-- 이 세션에서는 사용자가 명시적으로 커밋을 요청하지 않았으므로 staging/commit은 하지 않는다.
+- 커밋 완료: `7aed61d Inject plan-first routing for implementation units`
 
 ## 중단 조건
 
