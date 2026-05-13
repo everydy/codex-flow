@@ -11,6 +11,22 @@ from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
 from .tickets import Ticket, load_ticket, update_ticket_status
 
 
+PLAN_FIRST_SKILL = "plan-first-implementation"
+
+PLAN_FIRST_TRIGGER_RE = re.compile(
+    r"("
+    r"구현|패치|기능|화면|레이아웃|디자인|UI|UX|리팩터|리팩토|통합|API|DB|데이터베이스|라우팅|"
+    r"frontend|backend|implement|implementation|feature|layout|design|refactor|integration|routing|component|screen|code"
+    r")",
+    flags=re.IGNORECASE,
+)
+
+PLAN_FIRST_EXEMPT_RE = re.compile(
+    r"(검증|리뷰|review|qa|final gate|브리핑|brief|상태|status|test-only|테스트만|문서만)",
+    flags=re.IGNORECASE,
+)
+
+
 @dataclass(frozen=True)
 class Plan:
     slug: str
@@ -34,16 +50,16 @@ DEFAULT_UNITS = [
         "title": "근거 수집과 범위 잠금",
         "allowed_paths": ["README.md", "docs/**", "scripts/**", "tools/**"],
         "verification": ["관련 파일을 rg/find로 확인", "계획과 범위가 요청과 맞는지 점검"],
-        "required_skills": ["요청개선"],
+        "required_skills": ["요청개선", PLAN_FIRST_SKILL],
         "optional_skills": ["community-research", "project-wiki-all-in-one"],
-        "skill_routing_evidence": "요청 범위와 근거를 잠그는 계획 단위다.",
+        "skill_routing_evidence": "요청 범위와 구현 전 계획 게이트를 잠그는 단위다.",
     },
     {
         "id": "unit-002",
         "title": "좁은 구현 패치",
         "allowed_paths": ["scripts/**", "tools/**", "docs/**"],
         "verification": ["단위 테스트 또는 CLI smoke test 실행"],
-        "required_skills": ["mission-completion-harness"],
+        "required_skills": [PLAN_FIRST_SKILL, "mission-completion-harness"],
         "optional_skills": ["디자인올인원", "supabase-runtime-debugger", "env-deploy-audit"],
         "skill_routing_evidence": "선택된 구현 단위를 끝까지 완수해야 한다.",
     },
@@ -242,13 +258,14 @@ def render_skill_routing_manifest(units: list[dict], final_gate: dict) -> list[s
         "| --- | --- | --- | --- |",
     ]
     for index, unit in enumerate(units, start=1):
+        routed_unit = with_plan_first_for_unit(unit)
         lines.append(
             " | ".join(
                 [
-                    f"| Commit {index}: {unit['title']}",
-                    render_skills_cell(unit.get("required_skills", [])),
-                    render_skills_cell(unit.get("optional_skills", [])),
-                    unit.get("skill_routing_evidence") or "-",
+                    f"| Commit {index}: {routed_unit['title']}",
+                    render_skills_cell(routed_unit.get("required_skills", [])),
+                    render_skills_cell(routed_unit.get("optional_skills", [])),
+                    routed_unit.get("skill_routing_evidence") or "-",
                 ]
             )
             + " |"
@@ -271,10 +288,96 @@ def render_skills_cell(skills: list[str]) -> str:
     return ", ".join(f"`{skill}`" for skill in skills) if skills else "-"
 
 
+def with_plan_first_for_unit(unit: dict) -> dict:
+    routed = dict(unit)
+    required_skills = list(routed.get("required_skills") or [])
+    if unit_requires_plan_first(routed) and PLAN_FIRST_SKILL not in required_skills:
+        insert_plan_first_skill(required_skills)
+    routed["required_skills"] = required_skills
+    return routed
+
+
+def insert_plan_first_skill(required_skills: list[str]) -> None:
+    if "요청개선" in required_skills:
+        required_skills.insert(required_skills.index("요청개선") + 1, PLAN_FIRST_SKILL)
+        return
+    required_skills.insert(0, PLAN_FIRST_SKILL)
+
+
+def unit_requires_plan_first(unit: dict) -> bool:
+    required_skills = unit.get("required_skills") or []
+    if PLAN_FIRST_SKILL in required_skills:
+        return True
+    title = str(unit.get("title") or "")
+    evidence = str(unit.get("skill_routing_evidence") or "")
+    allowed_paths = " ".join(str(item) for item in unit.get("allowed_paths") or [])
+    combined = f"{title} {evidence} {allowed_paths}"
+    if PLAN_FIRST_EXEMPT_RE.search(combined) and not PLAN_FIRST_TRIGGER_RE.search(combined):
+        return False
+    return bool(PLAN_FIRST_TRIGGER_RE.search(combined))
+
+
+def manifest_row_requires_plan_first(phase: str, evidence: str) -> bool:
+    if phase.strip().lower() == "final gate":
+        return False
+    combined = f"{phase} {evidence}"
+    if PLAN_FIRST_EXEMPT_RE.search(combined) and not PLAN_FIRST_TRIGGER_RE.search(combined):
+        return False
+    return bool(PLAN_FIRST_TRIGGER_RE.search(combined))
+
+
+def repair_plan_first_manifest_policy(plan_path: Path) -> bool:
+    content = plan_path.read_text(encoding="utf-8")
+    section_match = re.search(
+        r"(^##\s+Skill Routing Manifest\s*$)(.*?)(?=^##\s+|\Z)",
+        content,
+        flags=re.MULTILINE | re.DOTALL,
+    )
+    if not section_match:
+        return False
+    section = section_match.group(0)
+    repaired_lines = [repair_plan_first_manifest_row(line) for line in section.splitlines()]
+    repaired_section = "\n".join(repaired_lines)
+    if section.endswith("\n"):
+        repaired_section += "\n"
+    if repaired_section == section:
+        return False
+    repaired = content[: section_match.start()] + repaired_section + content[section_match.end() :]
+    plan_path.write_text(repaired, encoding="utf-8")
+    return True
+
+
+def repair_plan_first_manifest_row(line: str) -> str:
+    stripped = line.strip()
+    if not stripped.startswith("|"):
+        return line
+    cells = [cell.strip() for cell in stripped.strip("|").split("|")]
+    if len(cells) < 4:
+        return line
+    phase, required_cell, optional_cell, evidence = cells[:4]
+    if phase.lower() == "phase" or all(re.fullmatch(r":?-{3,}:?", cell.strip()) for cell in cells if cell.strip()):
+        return line
+    required_skills = parse_skills_cell(required_cell)
+    if PLAN_FIRST_SKILL in required_skills or not manifest_row_requires_plan_first(phase, evidence):
+        return line
+    insert_plan_first_skill(required_skills)
+    return f"| {phase} | {render_skills_cell(required_skills)} | {optional_cell or '-'} | {evidence or '-'} |"
+
+
+def parse_skills_cell(cell: str) -> list[str]:
+    quoted = re.findall(r"`([^`]+)`", cell)
+    if quoted:
+        return quoted
+    stripped = cell.strip()
+    if not stripped or stripped == "-":
+        return []
+    return [item.strip() for item in stripped.split(",") if item.strip()]
+
+
 def ensure_plan_skill_routing_manifest(plan_path: Path, queue_data: dict) -> bool:
     content = plan_path.read_text(encoding="utf-8")
     if re.search(r"^##\s+Skill Routing Manifest\s*$", content, flags=re.MULTILINE):
-        return False
+        return repair_plan_first_manifest_policy(plan_path)
     units = manifest_units_from_plan_content(content, queue_data)
     final_gate = queue_data.get("final_gate") or DEFAULT_FINAL_GATE
     section = "\n".join(
@@ -298,6 +401,7 @@ def ensure_plan_skill_routing_manifest(plan_path: Path, queue_data: dict) -> boo
     else:
         repaired = content.rstrip() + "\n\n" + section + "\n"
     plan_path.write_text(repaired, encoding="utf-8")
+    repair_plan_first_manifest_policy(plan_path)
     return True
 
 
@@ -326,11 +430,16 @@ def load_queue(plan_path: str | Path) -> tuple[Path, dict]:
     plan = Path(plan_path).expanduser().resolve()
     plan_dir = plan.parent if plan.name == "plan.md" else plan
     queue_json = plan_dir / "queue.json"
+    plan_file = plan_dir / "plan.md"
     if not queue_json.exists():
-        if (plan_dir / "plan.md").exists():
-            return plan_dir, plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+        if plan_file.exists():
+            return plan_dir, plan_readiness.sync_queue_cache_from_plan(plan_file)
         raise SystemExit(f"Missing queue: {queue_json}")
-    return plan_dir, json.loads(queue_json.read_text(encoding="utf-8"))
+    queue_data = json.loads(queue_json.read_text(encoding="utf-8"))
+    if plan_file.exists():
+        ensure_plan_skill_routing_manifest(plan_file, queue_data)
+        queue_data = plan_readiness.sync_queue_cache_from_plan(plan_file)
+    return plan_dir, queue_data
 
 
 def save_queue(plan_dir: Path, queue_data: dict) -> None:

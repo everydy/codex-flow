@@ -52,6 +52,9 @@ def test_planner_prompt_requires_skill_routing_manifest(tmp_path):
 
     assert "## Skill Routing Manifest" in prompt
     assert "Phase | Required skills | Optional skills | Evidence" in prompt
+    assert "plan-first-implementation" in prompt
+    assert "feature, UI/design/layout, refactor, integration, API/DB/routing" in prompt
+    assert "status, review, briefing, QA-only, or test-only" in prompt
     assert "review-all-in-one" in prompt
     assert "qa-gate" in prompt
 

@@ -32,6 +32,44 @@ class ManifestDroppingPlanner:
         )
 
 
+class ImplementationManifestPlanner:
+    def write_plan(self, input_data):
+        input_data.plan_path.write_text(
+            "\n".join(
+                [
+                    "# Codex Flow Plan: Planner Rewrite",
+                    "",
+                    f"Branch: {input_data.branch_name}",
+                    f"Title: {input_data.plan_title}",
+                    "",
+                    "## Skill Routing Manifest",
+                    "",
+                    "| Phase | Required skills | Optional skills | Evidence |",
+                    "| --- | --- | --- | --- |",
+                    "| Commit 1: Build account report UI | `mission-completion-harness` | `디자인올인원` | UI implementation changes code. |",
+                    "| Commit 2: Review only | `review-all-in-one` | `qa-gate` | Review and QA only. |",
+                    "| Final Gate | `review-all-in-one`, `qa-gate` | `checkpoint` | Review and verification decide readiness. |",
+                    "",
+                    "## Commit Units",
+                    "",
+                    "### Commit 1: Build account report UI",
+                    "",
+                    "Do the work.",
+                    "",
+                    "### Commit 2: Review only",
+                    "",
+                    "Check the work.",
+                    "",
+                ]
+            ),
+            encoding="utf-8",
+        )
+        return PlannerAgentResult(
+            path=str(input_data.plan_path),
+            final_message=f'PLAN_WRITTEN path="{input_data.plan_path}"',
+        )
+
+
 def test_create_plan_from_ticket_writes_plan_queue_and_handoff(tmp_path):
     ticket = tickets.submit_ticket("Codex Flow MVP 구현", repo=tmp_path)
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
@@ -51,11 +89,13 @@ def test_create_plan_from_ticket_writes_plan_queue_and_handoff(tmp_path):
     assert "Branch: codex/" in plan_text
     assert "### Commit 1:" in plan_text
     assert "## Skill Routing Manifest" in plan_text
-    assert "| Commit 1: 근거 수집과 범위 잠금 | `요청개선` |" in plan_text
+    assert "| Commit 1: 근거 수집과 범위 잠금 | `요청개선`, `plan-first-implementation` |" in plan_text
+    assert "| Commit 2: 좁은 구현 패치 | `plan-first-implementation`, `mission-completion-harness` |" in plan_text
     assert "| Final Gate | `review-all-in-one`, `qa-gate` |" in plan_text
     assert "unless the user explicitly approves" not in plan_text
     assert "finalize commands" in decisions_text
-    assert queue["units"][0]["required_skills"] == ["요청개선"]
+    assert queue["units"][0]["required_skills"] == ["요청개선", "plan-first-implementation"]
+    assert queue["units"][1]["required_skills"] == ["plan-first-implementation", "mission-completion-harness"]
 
 
 def test_create_plan_repairs_missing_manifest_after_planner_rewrite(tmp_path):
@@ -67,10 +107,61 @@ def test_create_plan_repairs_missing_manifest_after_planner_rewrite(tmp_path):
 
     assert "## Skill Routing Manifest" in plan_text
     assert plan_text.index("## Skill Routing Manifest") < plan_text.index("## Commit Units")
-    assert "| Commit 1: Planner rewrite | `요청개선` |" in plan_text
+    assert "| Commit 1: Planner rewrite | `요청개선`, `plan-first-implementation` |" in plan_text
     assert "| Final Gate | `review-all-in-one`, `qa-gate` |" in plan_text
     assert queue["units"][0]["title"] == "Planner rewrite"
-    assert queue["units"][0]["required_skills"] == ["요청개선"]
+    assert queue["units"][0]["required_skills"] == ["요청개선", "plan-first-implementation"]
+
+
+def test_create_plan_repairs_existing_manifest_plan_first_policy(tmp_path):
+    ticket = tickets.submit_ticket("Planner existing manifest repair", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path, planner=ImplementationManifestPlanner())
+
+    plan_text = plan.plan_path.read_text(encoding="utf-8")
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+
+    assert (
+        "| Commit 1: Build account report UI | `plan-first-implementation`, `mission-completion-harness` |"
+        in plan_text
+    )
+    assert "| Commit 2: Review only | `review-all-in-one` |" in plan_text
+    assert queue["units"][0]["required_skills"] == ["plan-first-implementation", "mission-completion-harness"]
+    assert queue["units"][1]["required_skills"] == ["review-all-in-one"]
+
+
+def test_manifest_repair_does_not_skip_phase_word_inside_row(tmp_path):
+    plan_dir = tmp_path / ".codex-flow" / "plans" / "phase-word"
+    plan_dir.mkdir(parents=True)
+    plan_path = plan_dir / "plan.md"
+    plan_path.write_text(
+        "\n".join(
+            [
+                "# Codex Flow Plan: Phase Word",
+                "",
+                "## Skill Routing Manifest",
+                "",
+                "| Phase | Required skills | Optional skills | Evidence |",
+                "| --- | --- | --- | --- |",
+                "| Commit 1: Phase 1 UI implementation | `mission-completion-harness` | `디자인올인원` | UI implementation changes code. |",
+                "",
+                "## Commit Units",
+                "",
+                "### Commit 1: Phase 1 UI implementation",
+                "",
+                "Do the work.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    changed = plans.ensure_plan_skill_routing_manifest(plan_path, {"units": []})
+
+    assert changed is True
+    assert (
+        "| Commit 1: Phase 1 UI implementation | `plan-first-implementation`, `mission-completion-harness` |"
+        in plan_path.read_text(encoding="utf-8")
+    )
 
 
 def test_mark_unit_updates_machine_and_markdown_queue(tmp_path):

@@ -158,10 +158,28 @@ def test_run_next_writes_prompt_and_marks_unit_prompted(tmp_path):
     assert result["prompt_path"].exists()
     prompt_text = result["prompt_path"].read_text(encoding="utf-8")
     assert "## Skill Routing Manifest" in prompt_text
-    assert "Required skills: `요청개선`" in prompt_text
+    assert "Required skills: `요청개선`, `plan-first-implementation`" in prompt_text
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["units"][0]["status"] == "prompted"
     assert queue["units"][0]["prompt_path"] == "prompts/unit-001.md"
+
+
+def test_run_next_repairs_existing_plan_manifest_before_prompt(tmp_path):
+    plan = make_plan(tmp_path)
+    plan_text = plan.plan_path.read_text(encoding="utf-8").replace("`요청개선`, `plan-first-implementation`", "`요청개선`")
+    plan.plan_path.write_text(plan_text, encoding="utf-8")
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0]["required_skills"] = ["요청개선"]
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    result = runner.run_next(plan.plan_path)
+
+    prompt_text = result["prompt_path"].read_text(encoding="utf-8")
+    repaired_plan_text = plan.plan_path.read_text(encoding="utf-8")
+    repaired_queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert "Required skills: `요청개선`, `plan-first-implementation`" in prompt_text
+    assert "| Commit 1: 근거 수집과 범위 잠금 | `요청개선`, `plan-first-implementation` |" in repaired_plan_text
+    assert repaired_queue["units"][0]["required_skills"] == ["요청개선", "plan-first-implementation"]
 
 
 def test_run_all_respects_max_units(tmp_path):

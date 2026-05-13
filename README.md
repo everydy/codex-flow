@@ -173,12 +173,13 @@ Codex Flow does not replace specialist skills such as `요청개선`, `mission-c
 
 | Phase | Required skills | Optional skills | Evidence |
 | --- | --- | --- | --- |
-| Commit 1: Scope lock | `요청개선` | `community-research` | Requirements need narrowing. |
-| Commit 2: Implementation | `mission-completion-harness` | `디자인올인원` | A focused code unit must be completed. |
+| Commit 1: Scope lock | `요청개선`, `plan-first-implementation` | `community-research` | Requirements and the implementation gate need locking. |
+| Commit 2: Implementation | `plan-first-implementation`, `mission-completion-harness` | `디자인올인원` | A focused code unit must be completed. |
 | Final Gate | `review-all-in-one`, `qa-gate` | `checkpoint` | Review and verification decide readiness. |
 ```
 
 `run-next` and `run-all` read the selected manifest entry and include it in the implementer prompt. `review` and `open-pr --dry-run` include the same manifest so the daytime review can check whether the right skills were used or explicitly skipped with a fallback reason.
+Codex Flow automatically repairs implementation-like manifest rows so `plan-first-implementation` is required for feature, UI/design/layout, refactor, integration, API/DB/routing, or other code implementation units. It leaves status, review, briefing, QA-only, and test-only rows alone unless they also need an implementation plan gate.
 
 ## Auto-Resolve Policy
 
