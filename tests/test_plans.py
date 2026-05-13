@@ -86,6 +86,7 @@ def test_create_plan_from_ticket_writes_plan_queue_and_handoff(tmp_path):
     assert queue["units"][0]["status"] == "ready"
     plan_text = plan.plan_path.read_text(encoding="utf-8")
     decisions_text = (plan.directory / "decisions.md").read_text(encoding="utf-8")
+    handoff_text = (plan.directory / "handoff.md").read_text(encoding="utf-8")
     assert "Branch: codex/" in plan_text
     assert "### Commit 1:" in plan_text
     assert "## Skill Routing Manifest" in plan_text
@@ -94,8 +95,27 @@ def test_create_plan_from_ticket_writes_plan_queue_and_handoff(tmp_path):
     assert "| Final Gate | `review-all-in-one`, `qa-gate` |" in plan_text
     assert "unless the user explicitly approves" not in plan_text
     assert "finalize commands" in decisions_text
+    assert "run-all --plan <plan.md> --auto-resolve" in handoff_text
+    assert "Single unit repair/manual step" in handoff_text
+    assert "run-next --plan <plan.md> --auto-resolve" in handoff_text
     assert queue["units"][0]["required_skills"] == ["요청개선", "plan-first-implementation"]
     assert queue["units"][1]["required_skills"] == ["plan-first-implementation", "mission-completion-harness"]
+
+
+def test_default_implementation_unit_allows_common_app_paths(tmp_path):
+    ticket = tickets.submit_ticket("프런트엔드 화면 구현", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    implementation_unit = queue["units"][1]
+    plan_text = plan.plan_path.read_text(encoding="utf-8")
+
+    assert "frontend/**" in implementation_unit["allowed_paths"]
+    assert "backend/**" in implementation_unit["allowed_paths"]
+    assert "functions/**" in implementation_unit["allowed_paths"]
+    assert "src/**" in implementation_unit["allowed_paths"]
+    assert "tests/**" in implementation_unit["allowed_paths"]
+    assert "frontend/**" in plan_text
 
 
 def test_create_plan_repairs_missing_manifest_after_planner_rewrite(tmp_path):

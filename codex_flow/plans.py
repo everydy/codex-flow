@@ -26,6 +26,25 @@ PLAN_FIRST_EXEMPT_RE = re.compile(
     flags=re.IGNORECASE,
 )
 
+DEFAULT_IMPLEMENTATION_ALLOWED_PATHS = [
+    "frontend/**",
+    "backend/**",
+    "functions/**",
+    "src/**",
+    "app/**",
+    "server/**",
+    "tests/**",
+    "docs/**",
+    "scripts/**",
+    "tools/**",
+    "package.json",
+    "package-lock.json",
+    "pnpm-lock.yaml",
+    "yarn.lock",
+    "vite.config.*",
+    "tsconfig*.json",
+]
+
 
 @dataclass(frozen=True)
 class Plan:
@@ -57,7 +76,7 @@ DEFAULT_UNITS = [
     {
         "id": "unit-002",
         "title": "좁은 구현 패치",
-        "allowed_paths": ["scripts/**", "tools/**", "docs/**"],
+        "allowed_paths": DEFAULT_IMPLEMENTATION_ALLOWED_PATHS,
         "verification": ["단위 테스트 또는 CLI smoke test 실행"],
         "required_skills": [PLAN_FIRST_SKILL, "mission-completion-harness"],
         "optional_skills": ["디자인올인원", "supabase-runtime-debugger", "env-deploy-audit"],
@@ -176,7 +195,8 @@ def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
                 "",
                 f"- Ticket: {ticket.id}",
                 f"- Plan: {plan.plan_path}",
-                "- Resume: run `codex_flow.py run-next --plan <plan.md>`.",
+                "- Resume all units: run `codex_flow.py run-all --plan <plan.md> --auto-resolve`.",
+                "- Single unit repair/manual step: run `codex_flow.py run-next --plan <plan.md> --auto-resolve`.",
                 "",
             ]
         ),

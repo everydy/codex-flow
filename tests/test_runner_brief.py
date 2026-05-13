@@ -190,6 +190,11 @@ def test_run_all_respects_max_units(tmp_path):
     assert len(results) == 2
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert [unit["status"] for unit in queue["units"]] == ["prompted", "prompted", "ready"]
+    first_prompt = (plan.directory / queue["units"][0]["prompt_path"]).read_text(encoding="utf-8")
+    second_prompt = (plan.directory / queue["units"][1]["prompt_path"]).read_text(encoding="utf-8")
+    assert "Required skills: `요청개선`, `plan-first-implementation`" in first_prompt
+    assert "Required skills: `plan-first-implementation`, `mission-completion-harness`" in second_prompt
+    assert "frontend/**" in second_prompt
 
 
 def test_execute_after_prompted_unit_still_runs_same_commit_unit(tmp_path):
