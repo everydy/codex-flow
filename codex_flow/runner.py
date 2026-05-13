@@ -185,16 +185,33 @@ def execute_unit(
 ) -> dict:
     repo = plan_dir.parents[2]
     branch = queue_data.get("branch") or f"codex/{queue_data.get('plan_slug', 'plan')}"
+    resume_needs_work = unit.get("status") == "needs_work"
+    resume_reason = str(unit.get("last_needs_work_reason") or unit.get("repair_reason") or "") if resume_needs_work else ""
+    resume_changed_paths = (
+        [str(path) for path in unit.get("changed_paths", []) if isinstance(path, str)]
+        if resume_needs_work
+        else []
+    )
     initial_status = status(repo)
     dirty = dirty_paths(initial_status)
     auto_resolved_dirty: list[str] = []
+    preserved_repair_dirty: list[str] = []
     if dirty and not allow_dirty:
         if not auto_resolve:
             raise SystemExit(f"Working tree must be clean before execute, excluding .codex-flow: {', '.join(dirty)}")
-        message = f"codex-flow auto-shelve before {unit['id']} {state.timestamp()}"
-        stash_paths(repo, dirty, message)
-        auto_resolved_dirty = dirty
-        append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by stash: {', '.join(dirty)}")
+        if resume_changed_paths:
+            resume_path_set = set(resume_changed_paths)
+            preserved_repair_dirty = [path for path in dirty if path in resume_path_set]
+            dirty = [path for path in dirty if path not in resume_path_set]
+            if preserved_repair_dirty:
+                append_log(plan_dir, f"Preserved previous needs_work changes for {unit['id']}: {', '.join(preserved_repair_dirty)}")
+        if not dirty:
+            append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by preserving previous needs_work changes.")
+        else:
+            message = f"codex-flow auto-shelve before {unit['id']} {state.timestamp()}"
+            stash_paths(repo, dirty, message)
+            auto_resolved_dirty = dirty
+            append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by stash: {', '.join(dirty)}")
     if not no_branch:
         prepare_branch(repo, branch)
     before = status(repo)
@@ -207,9 +224,12 @@ def execute_unit(
     selected_unit = commit_unit or plan_readiness.CommitUnit(number=unit.get("number") or int(str(unit["id"]).split("-")[-1]), title=unit["title"], content="")
     agent = CodexImplementerAgent(command=codex_command, extra_args=codex_args)
     agent_result = None
-    last_repair_reason = ""
+    last_repair_reason = resume_reason
+    previous_repair_attempts = int(unit.get("repair_attempts") or 0) if resume_needs_work else 0
     used_repair_attempts = 0
-    for attempt in range(max(0, repair_attempts) + 1):
+    attempts = execution_attempts(repair_attempts, resume_needs_work=resume_needs_work, previous_repair_attempts=previous_repair_attempts)
+    repair_attempt_limit = max(attempts)
+    for index, attempt in enumerate(attempts):
         if attempt > 0:
             used_repair_attempts = attempt
             unit["status"] = "in_progress"
@@ -217,7 +237,7 @@ def execute_unit(
             unit["last_needs_work_reason"] = last_repair_reason
             unit["updated_at"] = state.timestamp()
             plans.save_queue(plan_dir, queue_data)
-            append_log(plan_dir, f"Repair attempt {attempt}/{repair_attempts} for commit unit {selected_unit.number}: {last_repair_reason}")
+            append_log(plan_dir, f"Repair attempt {attempt}/{repair_attempt_limit} for commit unit {selected_unit.number}: {last_repair_reason}")
         agent_result = agent.implement(
             ImplementerAgentInput(
                 repo=repo,
@@ -233,13 +253,15 @@ def execute_unit(
         if agent_result.review.status != "needs_work":
             break
         last_repair_reason = agent_result.review.reason
-        if attempt < max(0, repair_attempts):
+        if index < len(attempts) - 1:
             append_log(plan_dir, f"Commit unit {selected_unit.number} requested repair: {last_repair_reason}")
             continue
         unit["status"] = "needs_work"
         unit["updated_at"] = state.timestamp()
         unit["repair_attempts"] = used_repair_attempts
         unit["last_needs_work_reason"] = last_repair_reason
+        partial_changed = merge_changed_paths(preserved_repair_dirty, changed_paths_since(before, status(repo)))
+        unit["changed_paths"] = partial_changed
         plans.save_queue(plan_dir, queue_data)
         append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work: {last_repair_reason}")
         state.refresh_dashboard(repo)
@@ -248,7 +270,7 @@ def execute_unit(
             "prompt_path": prompt_path,
             "action": "needs_work",
             "reason": last_repair_reason,
-            "changed_paths": [],
+            "changed_paths": partial_changed,
             "auto_resolved_dirty": auto_resolved_dirty,
             "repair_attempts": used_repair_attempts,
             "repair_reason": last_repair_reason,
@@ -257,7 +279,7 @@ def execute_unit(
         raise SystemExit("Codex implementer did not return a result")
 
     after = status(repo)
-    changed = changed_paths_since(before, after)
+    changed = merge_changed_paths(preserved_repair_dirty, changed_paths_since(before, after))
     commit_hash = ""
     action = "done"
     if commit and changed:
@@ -342,6 +364,29 @@ def run_all(
         if dry_run or result.get("action") == "needs_work":
             break
     return results
+
+
+def execution_attempts(
+    repair_attempts: int,
+    *,
+    resume_needs_work: bool,
+    previous_repair_attempts: int,
+) -> list[int]:
+    budget = max(0, repair_attempts)
+    if resume_needs_work:
+        return list(range(previous_repair_attempts + 1, previous_repair_attempts + max(1, budget) + 1))
+    return list(range(budget + 1))
+
+
+def merge_changed_paths(*path_groups: list[str]) -> list[str]:
+    paths: list[str] = []
+    seen: set[str] = set()
+    for group in path_groups:
+        for path in group:
+            if path not in seen:
+                seen.add(path)
+                paths.append(path)
+    return paths
 
 
 def append_log(plan_dir: Path, message: str) -> None:

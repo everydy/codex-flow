@@ -95,6 +95,60 @@ else:
     return fake_codex
 
 
+def write_fake_codex_dirty_needs_work(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_dirty_needs_work_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "resume" not in args:
+    work = pathlib.Path("work.txt")
+    previous = work.read_text(encoding="utf-8") if work.exists() else ""
+    line = "partial-repair\\n" if "Repair attempt:" in prompt else "partial-initial\\n"
+    work.write_text(previous + line, encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+else:
+    output.write_text('COMMIT_UNIT_NEEDS_WORK reason="still failing"\\n', encoding="utf-8")
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
+def write_fake_codex_resume_repair_ready(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_resume_repair_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+work = pathlib.Path("work.txt")
+if "resume" not in args:
+    if "Repair attempt:" in prompt and "Previous needs_work reason: still failing" in prompt and work.exists():
+        work.write_text(work.read_text(encoding="utf-8") + "final-repair\\n", encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+else:
+    if work.exists() and "partial-initial" in work.read_text(encoding="utf-8") and "final-repair" in work.read_text(encoding="utf-8"):
+        output.write_text('COMMIT_UNIT_READY title="Fake resumed repair" summary="resumed repair succeeded"\\n', encoding="utf-8")
+    else:
+        output.write_text('COMMIT_UNIT_NEEDS_WORK reason="resume context missing"\\n', encoding="utf-8")
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
 def test_run_next_writes_prompt_and_marks_unit_prompted(tmp_path):
     plan = make_plan(tmp_path)
 
@@ -357,6 +411,61 @@ def test_run_all_auto_resolve_repairs_transient_needs_work(tmp_path, capsys):
     assert "Repair attempt 1/1" in log
     assert "Repair succeeded for commit unit 1" in log
     assert "Completed commit unit 3." in log
+
+
+def test_run_next_auto_resolve_resumes_failed_needs_work_with_partial_changes(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    failing_codex = write_fake_codex_dirty_needs_work(tmp_path)
+    repairing_codex = write_fake_codex_resume_repair_ready(tmp_path)
+    plan = make_plan(tmp_path)
+
+    first_status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--auto-resolve",
+            "--codex-command",
+            str(failing_codex),
+        ]
+    )
+
+    first_output = capsys.readouterr().out
+    first_queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert first_status == 1
+    assert "action: needs_work" in first_output
+    assert first_queue["units"][0]["status"] == "needs_work"
+    assert first_queue["units"][0]["changed_paths"] == ["work.txt"]
+    assert "partial-initial" in (tmp_path / "work.txt").read_text(encoding="utf-8")
+
+    second_status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--auto-resolve",
+            "--codex-command",
+            str(repairing_codex),
+        ]
+    )
+
+    second_output = capsys.readouterr().out
+    second_queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    log = (plan.directory / "log.md").read_text(encoding="utf-8")
+    stash_list = subprocess.run(["git", "stash", "list"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
+    assert second_status == 0
+    assert "action: committed" in second_output
+    assert "repair_attempts: 2" in second_output
+    assert second_queue["units"][0]["status"] == "done"
+    assert second_queue["units"][0]["changed_paths"] == ["work.txt"]
+    assert "Preserved previous needs_work changes for unit-001: work.txt" in log
+    assert "Repair attempt 2/2" in log
+    assert "codex-flow auto-shelve" not in stash_list
+    assert "final-repair" in (tmp_path / "work.txt").read_text(encoding="utf-8")
 
 
 def test_run_next_auto_resolve_shelves_dirty_worktree_before_execution(tmp_path):

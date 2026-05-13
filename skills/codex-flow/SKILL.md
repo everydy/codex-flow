@@ -109,7 +109,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | merge가 중간에서 멈춤 | Codex Flow finalize 단계에서는 `merge --auto-resolve`를 사용한다. 이 경로는 미완료 unit을 먼저 해결하고 local merge를 실행하며, 필요하면 `--remote`로 원격 통합까지 진행한다. |
 | review가 transient `needs_work`를 반환 | `--auto-resolve`가 같은 unit을 기본 1회 repair context로 재실행한다. |
 
-기본 repair attempt 후에도 `needs_work`가 남으면 그것은 사용자 검토 요청이 아니라 더 좁은 repair unit의 입력이다. 이때는 실패 이유를 queue/log에 남기고, 다음 `run-next --auto-resolve --repair-attempts <n>` 또는 더 좁은 repair plan으로 이어간다.
+기본 repair attempt 후에도 `needs_work`가 남으면 그것은 사용자 검토 요청이 아니라 더 좁은 repair unit의 입력이다. 이때는 실패 이유와 partial changed paths를 queue/log에 남기고, 다음 `run-next --auto-resolve --repair-attempts <n>` 또는 더 좁은 repair plan으로 이어간다. 다음 repair 실행에서는 그 partial changed paths를 stash하지 않고 repair 입력으로 유지한다.
 
 ## Commands
 

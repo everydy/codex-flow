@@ -188,7 +188,7 @@ Codex Flow does not replace specialist skills such as `요청개선`, `mission-c
 | Active PR lock | Keeps the lock meaningful and queues new requests in inbox. |
 | Unfinished units before PR draft | Runs unfinished units before writing the PR artifact. |
 | Local merge readiness | Runs unfinished units before local merge. |
-| Transient `needs_work` review | Retries the same unit with bounded repair context when `--auto-resolve` is active. |
+| Transient `needs_work` review | Retries the same unit with bounded repair context when `--auto-resolve` is active; if the repair budget is exhausted, records partial changed paths so the next repair run can keep them as input. |
 
 Remote PR creation and remote merge are normal Codex Flow finalization steps when the current workflow calls for GitHub integration. They remain separate CLI modes so automation can choose them deliberately and log the result.
 
