@@ -4,6 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import subprocess
+from collections.abc import Mapping
 
 
 FLOW_PREFIX = ".codex-flow/"
@@ -30,7 +31,12 @@ class GitStatusSnapshot:
     entries: list[GitStatusEntry]
 
 
-def run_process(args: list[str], cwd: str | Path, input_text: str | None = None) -> ProcessResult:
+def run_process(
+    args: list[str],
+    cwd: str | Path,
+    input_text: str | None = None,
+    env: Mapping[str, str] | None = None,
+) -> ProcessResult:
     result = subprocess.run(
         args,
         cwd=Path(cwd),
@@ -38,6 +44,7 @@ def run_process(args: list[str], cwd: str | Path, input_text: str | None = None)
         text=True,
         capture_output=True,
         check=False,
+        env=env,
     )
     return ProcessResult(args=args, status=result.returncode, stdout=result.stdout, stderr=result.stderr)
 
