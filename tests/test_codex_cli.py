@@ -24,16 +24,34 @@ def test_run_codex_exec_reads_output_last_message(tmp_path):
     assert result.output_path.exists()
 
 
+def test_run_codex_exec_disables_closeout_hooks_for_machine_readable_agents(tmp_path):
+    fake = write_fake_codex(
+        tmp_path,
+        "FINAL_LINE\n",
+        assert_env={"CODEX_CLOSEOUT_HOOK_DISABLED": "1"},
+    )
+
+    result = run_codex_exec("hello", repo=tmp_path, command=str(fake), extra_args=[])
+
+    assert result.status == 0
+    assert result.final_message == "FINAL_LINE\n"
+
+
 def test_parse_session_id_from_jsonl_and_uuid_fallback():
     assert parse_session_id('{"session_id":"abc"}\n') == "abc"
     assert parse_session_id('noise 11111111-2222-3333-4444-555555555555') == "11111111-2222-3333-4444-555555555555"
 
 
-def write_fake_codex(tmp_path: Path, final_message: str) -> Path:
+def write_fake_codex(tmp_path: Path, final_message: str, *, assert_env: dict[str, str] | None = None) -> Path:
+    env_checks = ""
+    for key, value in (assert_env or {}).items():
+        env_checks += f"assert os.environ.get({key!r}) == {value!r}, os.environ.get({key!r})\n"
     fake = tmp_path / "fake_codex.py"
     fake.write_text(
         "#!/usr/bin/env python3\n"
+        "import os\n"
         "import pathlib, sys\n"
+        f"{env_checks}"
         "args = sys.argv[1:]\n"
         "out = pathlib.Path(args[args.index('--output-last-message') + 1])\n"
         f"out.write_text({final_message!r}, encoding='utf-8')\n"

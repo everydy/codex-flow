@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 import json
+import os
 import re
 import tempfile
 
@@ -12,6 +13,7 @@ from .git_ops import ProcessResult, command_failure, run_process
 CODEX_CLI_MODEL = "gpt-5.5"
 CODEX_CLI_REASONING_EFFORT = "xhigh"
 CODEX_CLI_SERVICE_TIER = "fast"
+MACHINE_READABLE_AGENT_ENV = {"CODEX_CLOSEOUT_HOOK_DISABLED": "1"}
 
 
 @dataclass(frozen=True)
@@ -77,7 +79,12 @@ def run_codex_exec(
                 *with_codex_cli_defaults(extra_args),
                 "-",
             ]
-        result = run_process(args, cwd=repo_path, input_text=prompt)
+        result = run_process(
+            args,
+            cwd=repo_path,
+            input_text=prompt,
+            env={**os.environ, **MACHINE_READABLE_AGENT_ENV},
+        )
         final_message = output_path.read_text(encoding="utf-8") if output_path.exists() else result.stdout
         with tempfile.NamedTemporaryFile(prefix="codex-flow-last-message-", suffix=".txt", delete=False) as stable_file:
             stable_output_path = Path(stable_file.name)
