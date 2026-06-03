@@ -1,6 +1,6 @@
 # 구현커밋
 
-구현커밋 is a small, local-first orchestration layer for running Codex work as ticketed commit units. It was formerly called Codex Flow; `codex-flow`, `$codex-flow`, `코덱스플로우`, and `$코덱스플로우` remain compatibility aliases.
+구현커밋 is a small, local-first orchestration layer for running Codex work as ticketed commit units. It keeps the internal `codex_flow` package and `.codex-flow/` state names for runtime compatibility, but the old skill aliases have been removed.
 
 It turns an approved plan-first Markdown document into:
 
@@ -137,7 +137,7 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
 
 ## Shortcut Skills
 
-This repository includes the canonical Korean Codex skill in `skills/구현커밋/SKILL.md`, plus compatibility aliases in `skills/codex-flow/SKILL.md` and `skills/코덱스플로우/SKILL.md`.
+This repository includes the canonical Korean Codex skill in `skills/구현커밋/SKILL.md`.
 
 Common commands:
 
@@ -152,16 +152,6 @@ $구현커밋 리뷰
 $구현커밋 PR초안
 $구현커밋 PR생성
 $구현커밋 병합
-$코덱스플로우
-$코덱스플로우 상태
-$코덱스플로우 라우트 <plan-first.md>
-$코덱스플로우 다음실행
-$코덱스플로우 모두실행
-$코덱스플로우 브리핑
-$코덱스플로우 리뷰
-$코덱스플로우 PR초안
-$코덱스플로우 PR생성
-$코덱스플로우 병합
 ```
 
 Core meanings:
@@ -216,7 +206,7 @@ Remote PR creation and remote merge are normal 구현커밋 finalization steps w
 - optional `run-all --open-pr` and `run-all --merge` finalize paths
 - local-first default behavior with remote operations kept in finalize commands
 
-구현커밋 differs by keeping explicit `--preview` and `--dry-run` escape hatches, shipping Korean Codex skill aliases, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
+구현커밋 differs by keeping explicit `--preview` and `--dry-run` escape hatches, shipping a Korean Codex skill, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
 
 ## Agent Architecture
 

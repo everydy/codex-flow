@@ -54,7 +54,7 @@ def default_repair_attempts(value: int | None, *, auto_resolve: bool) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="codex-flow",
-        description="Local 구현커밋 / implementation-commit / codex-flow ticket, plan, and review queue for Codex work.",
+        description="Local 구현커밋 / implementation-commit ticket, plan, and review queue for Codex work.",
     )
     parser.add_argument("--repo", type=Path, default=None, help="Repository root to operate on. Defaults to cwd or nearest git root.")
     subparsers = parser.add_subparsers(dest="command", required=True)

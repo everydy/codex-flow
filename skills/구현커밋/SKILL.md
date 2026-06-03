@@ -1,6 +1,6 @@
 ---
 name: 구현커밋
-description: "Use when the user wants the canonical 구현커밋 workflow orchestrator for plan-first implementation, commit-unit execution, review, repair, PR dry-run, PR creation, merge readiness, or morning briefs. `codex-flow`, `$codex-flow`, `코덱스플로우`, and `$코덱스플로우` remain compatibility aliases."
+description: "Use when the user wants the canonical 구현커밋 workflow orchestrator for plan-first implementation, commit-unit execution, review, repair, PR dry-run, PR creation, merge readiness, or morning briefs."
 metadata:
   short-description: "구현커밋 canonical plan-first implementation and commit-unit orchestrator"
 ---
@@ -9,7 +9,7 @@ metadata:
 
 ## Purpose
 
-`구현커밋` is the canonical user-facing skill for plan-first implementation, review, repair, and commit-unit orchestration. It was formerly called Codex Flow; `codex-flow` and `코덱스플로우` remain compatibility aliases.
+`구현커밋` is the canonical user-facing skill for plan-first implementation, review, repair, and commit-unit orchestration.
 
 구현커밋는 큰 작업을 `ticket -> plan/branch -> run-next -> Codex exec -> review decision -> commit -> run-all -> AI preflight repair -> PR/merge -> morning brief`로 나누는 자동 개발 공장 스킬이다.
 
@@ -23,22 +23,20 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 
 - Canonical user-facing skill name: `구현커밋`
 - English alias: `implementation-commit`
-- Compatibility aliases: `codex-flow`, `$codex-flow`, `코덱스플로우`, `$코덱스플로우`, `Codex Flow`
 - Internal package, state directory, and runtime script remain unchanged for compatibility: `codex_flow`, `.codex-flow`, `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py`
-- New docs and human-facing explanations should lead with `구현커밋` and mention old names only as aliases or historical/internal surfaces.
+- New docs and human-facing explanations should lead with `구현커밋`. Old skill aliases are removed and should not be routed as skill calls.
 
 ## Canonical Runtime
 
 - 실행 backend는 `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py` 하나다.
-- `codex-skills-user/scripts/codex_flow.py`는 과거 명령 호환을 위한 wrapper이며, 위 canonical entrypoint로만 넘긴다.
+- `codex-skills-user/scripts/implementation_commit.py`와 `codex-skills-user/scripts/구현커밋.py`는 위 canonical entrypoint로 넘긴다.
 - `codex-skills-user/tools/codex_flow` 내장 구현은 제거된 stale copy다. 다시 생기면 현재 runtime으로 쓰지 말고 중복 구현으로 취급한다.
 - 이름 마이그레이션 중에도 `codex_flow`, `.codex-flow`, `scripts/codex_flow.py`는 바꾸지 않는다. 이 이름들은 runtime compatibility surface다.
 
 ## When To Use
 
 - 사용자가 `$구현커밋`, `구현커밋`, `implementation-commit`, `implementation_commit`를 언급한다.
-- 사용자가 `$codex-flow`, `Codex Flow`, `run-next`, `run-all`, `morning brief`를 언급한다.
-- 사용자가 `$코덱스플로우`, `$코덱스플로우 라우트`, `$코덱스플로우 다음실행`, `$코덱스플로우 모두실행`을 언급한다.
+- 사용자가 `run-next`, `run-all`, `morning brief`를 언급하며 구현커밋 실행 흐름을 원한다.
 - 사용자가 밤에 작업을 쌓아 두고 낮에 이력을 검토하고 싶어 한다.
 - 여러 작업을 티켓처럼 쌓고, Codex가 작은 실행 단위를 실제로 구현/커밋하길 원한다.
 - Crack-CLI처럼 밤에 작업을 자동으로 돌리고 낮에 PR/브리프/로그를 검토하고 싶다.
@@ -94,8 +92,6 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | `$구현커밋 PR초안` | PR 초안 | 미완료 unit을 자동 실행한 뒤 PR dry-run 산출물을 만든다. |
 | `$구현커밋 PR생성` | PR 생성 | 미완료 unit을 자동 실행한 뒤 active PR lock이 없을 때 원격 draft PR을 만든다. |
 | `$구현커밋 병합` | 병합 | 미완료 unit을 자동 실행한 뒤 merge를 진행한다. finalize 흐름이면 remote merge까지 이어갈 수 있다. |
-| `$코덱스플로우 ...` | compatibility alias | 같은 인자를 `$구현커밋 ...`으로 해석한다. |
-| `$codex-flow ...` | compatibility alias | 같은 인자를 `$구현커밋 ...`으로 해석한다. |
 
 ## Guardrails
 
@@ -104,7 +100,6 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 - 현재 입력이 `플랜대로 실행`처럼 짧아도, 직전 대화 턴에서 단일 plan-first 문서 링크/경로를 찾을 수 있으면 그 문서로 route한다.
 - plan-first 문서를 찾을 수 없거나 후보가 여러 개면 실행하지 않는다. "plan-first 문서를 말해주거나 Markdown 경로를 넘겨 달라"고 묻고 멈춘다.
 - `$구현커밋`만 있고 요청문이 없으면 상태 확인을 실행하지 않는다. 실행할 plan-first 문서나 Markdown 경로가 필요하다고 짧게 안내하고, 상태 확인은 `$구현커밋 상태`로만 실행한다.
-- `$코덱스플로우`와 `$codex-flow`는 compatibility alias이므로 위 `$구현커밋` 규칙을 그대로 따른다.
 - GitHub PR 생성과 remote merge는 구현커밋의 finalize 단계로 취급한다. 자동 개발 공장, PR, merge, finalize 요청이 현재 작업에 포함되어 있으면 dry-run에 멈추지 않고 진행할 수 있다.
 - active PR lock이 있으면 remote PR 생성은 중단한다. 새 source plan route는 lock 해제 전까지 보류한다.
 - production deploy, 결제, 외부 게시, 계정 작업은 hard stop이다.
