@@ -202,28 +202,31 @@ def append_lock_resolution(repo: str | Path, message: str) -> Path:
 
 
 def drain_inbox(repo: str | Path) -> str:
-    from . import tickets
+    from . import source_plan
 
     if read_pr_lock(repo):
         return "drain: locked"
     flow = state.ensure_initialized(repo)
 
+    class SourcePlanRequiredError(Exception):
+        pass
+
     def route_structured(request: inbox.QueuedRequest) -> str:
-        ticket = tickets.submit_ticket(request.prompt, repo=repo)
-        plan = plans.create_plan_from_ticket(ticket.path, repo=repo, reason=request.reason)
-        tickets.update_ticket_status(ticket.path, "planned")
+        try:
+            source = source_plan.resolve_source_plan(request.prompt, repo=repo)
+        except SystemExit:
+            raise SourcePlanRequiredError from None
+        plan = plans.create_plan_from_source(source, repo=repo)
         return str(plan.plan_path)
 
     structured = inbox.read_inbox_requests(flow.inbox)
     if structured:
-        result = inbox.drain_inbox_requests(flow.inbox, lambda: read_pr_lock(repo) is not None, route_structured)
+        try:
+            result = inbox.drain_inbox_requests(flow.inbox, lambda: read_pr_lock(repo) is not None, route_structured)
+        except SourcePlanRequiredError:
+            return "drain: source plan required; queued request left in inbox"
         return result.message
-    ticket = tickets.first_inbox_ticket(repo)
-    if not ticket:
-        return "drain: empty"
-    plan = plans.create_plan_from_ticket(ticket.path, repo=repo)
-    tickets.update_ticket_status(ticket.path, "planned")
-    return f"drain: planned {plan.plan_path}"
+    return "drain: empty"
 
 
 def merge_plan(plan_path: str | Path, target: str = "main", remote: bool = False, execute: bool = False) -> str:

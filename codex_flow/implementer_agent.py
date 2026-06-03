@@ -42,6 +42,9 @@ class ImplementerAgent(Protocol):
         ...
 
 
+POST_UNIT_REVIEW_SKILL = "review-all-in-one"
+
+
 class CodexImplementerAgent:
     def __init__(self, command: str = "codex", extra_args: list[str] | None = None) -> None:
         self.command = command
@@ -141,6 +144,10 @@ def build_review_prompt(input_data: ImplementerAgentInput) -> str:
         [
             "Review the implementation for the current commit unit and make focused fixes if needed.",
             "Do not create a git commit; Codex Flow will commit after your review.",
+            "",
+            f"Mandatory post-unit review gate: load and apply `{POST_UNIT_REVIEW_SKILL}` before returning `COMMIT_UNIT_READY`.",
+            "Treat blocker or important findings from that review as commit blockers: fix them inside this same review pass when safe, or return `COMMIT_UNIT_NEEDS_WORK` with the reason.",
+            f"If `{POST_UNIT_REVIEW_SKILL}` is unavailable, return `COMMIT_UNIT_NEEDS_WORK` and explain the missing review gate.",
             "",
             "Return exactly one final line in one of these forms:",
             f'COMMIT_UNIT_READY title="{input_data.unit.title}" summary="..."',

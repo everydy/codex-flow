@@ -113,6 +113,49 @@ def submit_ticket(
     return load_ticket(ticket_path)
 
 
+def create_internal_ticket(
+    title: str,
+    repo: str | Path | None = None,
+    priority: str = "normal",
+    project: str = "codex-flow",
+    allow_draft_pr: bool = False,
+    no_implement: bool = True,
+) -> Ticket:
+    flow = state.ensure_initialized(repo)
+    date_prefix = state.today()
+    sequence = state.next_sequence(flow.tickets, date_prefix)
+    ticket_id = f"{date_prefix}-{sequence:03d}"
+    slug = state.slugify(title, fallback="ticket")
+    ticket_path = flow.tickets / f"{ticket_id}-{slug}.md"
+    created = state.timestamp()
+    content = [
+        "---",
+        f'id: "{ticket_id}"',
+        f'title: "{title}"',
+        "status: planned",
+        f"priority: {priority}",
+        f"project: {project}",
+        f"created_at: {created}",
+        f"allow_draft_pr: {_bool_text(allow_draft_pr)}",
+        f"no_implement: {_bool_text(no_implement)}",
+        "---",
+        "",
+        f"# {title}",
+        "",
+        "## Request",
+        "",
+        title,
+        "",
+        "## Notes",
+        "",
+        "- Created internally by Codex Flow.",
+        "",
+    ]
+    ticket_path.write_text("\n".join(content), encoding="utf-8")
+    state.refresh_dashboard(flow.repo)
+    return load_ticket(ticket_path)
+
+
 def append_inbox(flow: state.FlowPaths, ticket_id: str, title: str, created: str) -> None:
     line = f"| [{ticket_id}](tickets/{ticket_id}-{state.slugify(title, fallback='ticket')}.md) | inbox | {created} |"
     current = flow.inbox.read_text(encoding="utf-8") if flow.inbox.exists() else "# Codex Flow Inbox\n"

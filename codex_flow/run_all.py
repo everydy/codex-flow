@@ -28,6 +28,7 @@ class RunAllRunner:
         no_branch: bool = False,
         auto_resolve: bool = False,
         repair_attempts: int = 0,
+        accept_source_drift: bool = False,
         open_pr: bool = False,
         merge: bool = False,
         remote: bool = False,
@@ -45,7 +46,12 @@ class RunAllRunner:
             no_branch=no_branch,
             auto_resolve=auto_resolve,
             repair_attempts=repair_attempts,
+            accept_source_drift=accept_source_drift,
         )
+        if any(step.get("action") == "source_drift" for step in steps):
+            return RunAllResult("source_drift", steps, "run_all: source_drift")
+        if any(step.get("action") == "human_gate" for step in steps):
+            return RunAllResult("human_gate", steps, "run_all: human_gate")
         if any(step.get("action") == "needs_work" for step in steps):
             return RunAllResult("needs_work", steps, "run_all: needs_work")
         plan_dir, plan_content, log_content = plan_readiness.read_plan_file(plan_path)

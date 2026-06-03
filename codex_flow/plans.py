@@ -5,10 +5,10 @@ from pathlib import Path
 import json
 import re
 
-from . import plan_readiness, state
+from . import plan_first_extract, plan_readiness, source_plan, state
 from .git_ops import is_git_repo, prepare_branch
 from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
-from .tickets import Ticket, load_ticket, update_ticket_status
+from .tickets import Ticket, create_internal_ticket, load_ticket, update_ticket_status
 
 
 PLAN_FIRST_SKILL = "plan-first-implementation"
@@ -177,6 +177,101 @@ def create_plan_from_ticket(
     return plan
 
 
+def create_plan_from_source(
+    source: source_plan.SourcePlan,
+    repo: str | Path | None = None,
+    branch_name: str | None = None,
+    plan_title: str | None = None,
+    prepare_git_branch: bool = False,
+) -> Plan:
+    flow = state.ensure_initialized(repo)
+    title = plan_title or source.title
+    slug = unique_slug(title, flow.plans)
+    branch = branch_name or f"codex/{slug}"
+    if prepare_git_branch and is_git_repo(flow.repo):
+        prepare_branch(flow.repo, branch)
+    plan_dir = flow.plans / slug
+    plan_dir.mkdir(parents=True, exist_ok=False)
+    (plan_dir / "prompts").mkdir(parents=True, exist_ok=True)
+    (plan_dir / "tickets").mkdir(parents=True, exist_ok=True)
+
+    top_level_ticket = create_internal_ticket(
+        f"Adopt source plan: {title}",
+        repo=flow.repo,
+        project="codex-flow",
+        no_implement=True,
+    )
+    extracted = plan_first_extract.extract_tickets(source.content)
+    confidence = plan_first_extract.overall_confidence(extracted)
+    source_plan.snapshot_source_plan(source, plan_dir, extraction_confidence=confidence)
+    plan_first_extract.write_ticket_files(plan_dir / "tickets", extracted)
+
+    queue_data = queue_from_source_tickets(source, extracted, slug, title, branch, top_level_ticket, confidence)
+    plan = Plan(slug, plan_dir, plan_dir / "plan.md", plan_dir / "queue.json", plan_dir / "queue.md")
+    write_source_plan_files(plan, source, extracted, queue_data, top_level_ticket)
+    ensure_plan_skill_routing_manifest(plan.plan_path, queue_data)
+    plan_readiness.sync_queue_cache_from_plan(plan.plan_path)
+    update_ticket_status(top_level_ticket.path, "planned")
+    state.refresh_dashboard(flow.repo)
+    return plan
+
+
+def queue_from_source_tickets(
+    source: source_plan.SourcePlan,
+    extracted: list[plan_first_extract.ExtractedTicket],
+    slug: str,
+    title: str,
+    branch: str,
+    top_level_ticket: Ticket,
+    extraction_confidence: str,
+) -> dict:
+    source_ref_path = source_plan.relative_path(source.path, source.repo)
+    units: list[dict] = []
+    for index, ticket in enumerate(extracted, start=1):
+        template = DEFAULT_UNITS[0] if index == 1 else DEFAULT_UNITS[1]
+        unit = dict(template)
+        unit.update(
+            {
+                "id": f"unit-{index:03d}",
+                "number": index,
+                "title": ticket.title,
+                "status": "human_gate" if ticket.confidence == "low" else "ready",
+                "prompt_path": "",
+                "updated_at": state.timestamp(),
+                "ticket_id": ticket.id,
+                "source_plan_ref": {
+                    "path": source_ref_path,
+                    "section": ticket.source_section,
+                    "excerpt_hash": plan_first_extract.excerpt_hash(ticket.excerpt),
+                },
+                "extraction_confidence": ticket.confidence,
+                "allowed_paths": template.get("allowed_paths", DEFAULT_IMPLEMENTATION_ALLOWED_PATHS),
+                "verification": template.get("verification", ["Narrow CLI or test verification"]),
+                "required_skills": template.get("required_skills", [PLAN_FIRST_SKILL, "mission-completion-harness"]),
+                "optional_skills": template.get("optional_skills", []),
+                "skill_routing_evidence": f"Derived from source plan section: {ticket.source_section}",
+            }
+        )
+        units.append(unit)
+    return {
+        "ticket_id": top_level_ticket.id,
+        "ticket_title": top_level_ticket.title,
+        "plan_title": title,
+        "plan_slug": slug,
+        "branch": branch,
+        "created_at": state.timestamp(),
+        "route_mode": "plan_first_source",
+        "source_plan": {
+            "path": source_ref_path,
+            "title": source.title,
+            "sha256": source.sha256,
+            "extraction_confidence": extraction_confidence,
+        },
+        "units": units,
+        "final_gate": dict(DEFAULT_FINAL_GATE),
+    }
+
+
 def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
     plan.plan_path.write_text(render_plan_md(ticket, plan, queue_data), encoding="utf-8")
     plan.queue_json.write_text(json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
@@ -194,6 +289,49 @@ def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
                 "# Handoff",
                 "",
                 f"- Ticket: {ticket.id}",
+                f"- Plan: {plan.plan_path}",
+                "- Resume all units: run `codex_flow.py run-all --plan <plan.md> --auto-resolve`.",
+                "- Single unit repair/manual step: run `codex_flow.py run-next --plan <plan.md> --auto-resolve`.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+
+def write_source_plan_files(
+    plan: Plan,
+    source: source_plan.SourcePlan,
+    extracted: list[plan_first_extract.ExtractedTicket],
+    queue_data: dict,
+    top_level_ticket: Ticket,
+) -> None:
+    plan.plan_path.write_text(render_source_plan_md(source, plan, extracted, queue_data, top_level_ticket), encoding="utf-8")
+    (plan.directory / "macro-plan.md").write_text(render_macro_plan_md(source, extracted, queue_data), encoding="utf-8")
+    plan.queue_json.write_text(json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    plan.queue_md.write_text(render_queue_md(queue_data), encoding="utf-8")
+    (plan.directory / "requests.md").write_text("# Follow-up Requests\n\n- None yet.\n", encoding="utf-8")
+    (plan.directory / "log.md").write_text(f"# Log\n\n- {state.timestamp()} source plan adopted\n", encoding="utf-8")
+    (plan.directory / "decisions.md").write_text(
+        "\n".join(
+            [
+                "# Decisions",
+                "",
+                "- Route input is the plan-first source document.",
+                "- Original source file is not rewritten during route.",
+                "- Source drift stops run-next/run-all unless explicitly accepted.",
+                "",
+            ]
+        ),
+        encoding="utf-8",
+    )
+    (plan.directory / "artifacts.md").write_text("# Artifacts\n\n- source-plan.md\n- source.json\n- macro-plan.md\n", encoding="utf-8")
+    (plan.directory / "handoff.md").write_text(
+        "\n".join(
+            [
+                "# Handoff",
+                "",
+                f"- Source plan: {source_plan.relative_path(source.path, source.repo)}",
                 f"- Plan: {plan.plan_path}",
                 "- Resume all units: run `codex_flow.py run-all --plan <plan.md> --auto-resolve`.",
                 "- Single unit repair/manual step: run `codex_flow.py run-next --plan <plan.md> --auto-resolve`.",
@@ -270,6 +408,141 @@ def render_plan_md(ticket: Ticket, plan: Plan, queue_data: dict | None = None) -
             *commit_sections,
         ]
     )
+
+
+def render_source_plan_md(
+    source: source_plan.SourcePlan,
+    plan: Plan,
+    extracted: list[plan_first_extract.ExtractedTicket],
+    queue_data: dict,
+    top_level_ticket: Ticket,
+) -> str:
+    branch = queue_data.get("branch") or f"codex/{plan.slug}"
+    title = queue_data.get("plan_title") or source.title
+    units = queue_data.get("units") or []
+    commit_sections: list[str] = []
+    for index, unit in enumerate(units, start=1):
+        verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
+        allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
+        source_ref = unit.get("source_plan_ref") or {}
+        commit_sections.extend(
+            [
+                f"### Commit {index}: {unit['title']}",
+                "",
+                "Source ticket:",
+                f"- Ticket: {unit.get('ticket_id')}",
+                f"- Section: {source_ref.get('section', '-')}",
+                f"- Excerpt hash: {source_ref.get('excerpt_hash', '-')}",
+                "",
+                "Allowed paths:",
+                allowed,
+                "",
+                "Verification:",
+                verification,
+                "",
+            ]
+        )
+    ticket_lines = [
+        f"- {ticket.id}: {ticket.title} ({ticket.confidence}, {ticket.source_section})"
+        for ticket in extracted
+    ]
+    return "\n".join(
+        [
+            f"# Codex Flow Plan: {title}",
+            "",
+            f"Branch: {branch}",
+            f"Title: {title}",
+            "",
+            "## Source Plan",
+            "",
+            f"- Path: {source_plan.relative_path(source.path, source.repo)}",
+            f"- Title: {source.title}",
+            f"- SHA256: {source.sha256}",
+            "- Snapshot: source-plan.md",
+            "- Metadata: source.json",
+            "- Macro plan: macro-plan.md",
+            "",
+            "## Ticket",
+            "",
+            f"- ID: {top_level_ticket.id}",
+            f"- Priority: {top_level_ticket.priority}",
+            f"- Project: {top_level_ticket.project}",
+            f"- Source: {top_level_ticket.path}",
+            "",
+            "## Objective",
+            "",
+            "- Adopt the approved plan-first source document and execute its extracted work units.",
+            "",
+            "## Extracted Tickets",
+            "",
+            *ticket_lines,
+            "",
+            "## Queue",
+            "",
+            "- [Queue](queue.md)",
+            "- [Machine state](queue.json)",
+            "- [Source snapshot](source-plan.md)",
+            "- [Macro plan](macro-plan.md)",
+            "",
+            "## Verification",
+            "",
+            "- Run the narrowest relevant tests or CLI smoke commands.",
+            "- Check source drift before run-next/run-all.",
+            "- Update review artifacts before finalization.",
+            "",
+            "## Skill Routing Manifest",
+            "",
+            "Codex Flow does not duplicate specialist skills. This manifest tells each fresh Codex session which skills to load for each phase.",
+            "",
+            *render_skill_routing_manifest(units, queue_data.get("final_gate") or DEFAULT_FINAL_GATE),
+            "",
+            "## Commit Units",
+            "",
+            *commit_sections,
+        ]
+    )
+
+
+def render_macro_plan_md(source: source_plan.SourcePlan, extracted: list[plan_first_extract.ExtractedTicket], queue_data: dict) -> str:
+    source_path = source_plan.relative_path(source.path, source.repo)
+    lines = [
+        f"# Macro Plan: {source.title}",
+        "",
+        f"- Source plan: `{source_path}`",
+        f"- Extraction confidence: {queue_data.get('source_plan', {}).get('extraction_confidence', '-')}",
+        "",
+        "## Execution Phases",
+        "",
+    ]
+    for index, ticket in enumerate(extracted, start=1):
+        lines.extend(
+            [
+                f"### Phase {index}: {ticket.title}",
+                "",
+                f"- Ticket: `{ticket.id}`",
+                f"- Source section: {ticket.source_section}",
+                f"- Confidence: {ticket.confidence}",
+                f"- Depends on: {'none' if index == 1 else f'ticket-{index - 1:03d}'}",
+                "",
+            ]
+        )
+    lines.extend(
+        [
+            "## Stop And Revise Conditions",
+            "",
+            "- Source drift exists and the operator did not pass `--accept-source-drift`.",
+            "- Extraction confidence is low and the generated single ticket is too broad; Codex Flow holds it at `human_gate` instead of auto-running it.",
+            "- A commit unit review returns needs_work after repair attempts.",
+            "",
+            "## Final Gate",
+            "",
+            "- Review all completed units.",
+            "- Run the narrowest relevant verification.",
+            "- Only finalize PR/merge after all units are done.",
+            "",
+        ]
+    )
+    return "\n".join(lines)
 
 
 def render_skill_routing_manifest(units: list[dict], final_gate: dict) -> list[str]:

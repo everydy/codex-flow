@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import plan_readiness, plans, state
+from . import plan_readiness, plans, source_plan, state
 from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, stash_paths, status
-from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput
+from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
 
 
 def next_ready_unit(queue_data: dict) -> dict | None:
@@ -34,6 +34,12 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
     allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
     verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
     skill_routing = render_skill_routing_prompt(unit, plan_dir, commit_unit)
+    plan_path = plan_dir / "plan.md"
+    plan_content = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
+    source_plan_content = read_optional(plan_dir / "source-plan.md")
+    macro_plan_content = read_optional(plan_dir / "macro-plan.md")
+    ticket_id = str(unit.get("ticket_id") or "")
+    ticket_content = read_optional(plan_dir / "tickets" / f"{ticket_id}.md") if ticket_id else ""
     selected = ""
     if commit_unit:
         selected = "\n".join(["## Selected Commit Unit", "", f"### Commit {commit_unit.number}: {commit_unit.title}", "", commit_unit.content, ""])
@@ -71,6 +77,8 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             "## Execution Contract",
             "",
             "Implement only this unit. Keep the diff narrow. Do not create a git commit; Codex Flow will commit after review.",
+            f"Before a commit can be created, the post-unit review must load and apply `{POST_UNIT_REVIEW_SKILL}`.",
+            "Blocker or important findings from that review must be fixed in the review pass or returned as `COMMIT_UNIT_NEEDS_WORK`.",
             "",
             "Return one final line in one of these forms:",
             f'COMMIT_UNIT_READY title="{unit["title"]}" summary="..."',
@@ -81,9 +89,41 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             f"- Branch: {queue_data.get('branch', '-')}",
             f"- Previous commit: {head_summary(plan_dir.parents[2]) if (plan_dir.parents[2] / '.git').exists() else 'None'}",
             "",
+            "## Full Plan Context",
+            "",
+            "Read this plan as the source of truth for the selected commit unit. Do not rely only on the generic unit title.",
+            "",
+            "```md",
+            plan_content.strip() or "No plan.md content found.",
+            "```",
+            "",
+            "## Source Plan Snapshot",
+            "",
+            "This is the original plan-first document adopted by route. Treat it as the upstream source.",
+            "",
+            "```md",
+            source_plan_content.strip() or "No source-plan.md content found.",
+            "```",
+            "",
+            "## Macro Plan Context",
+            "",
+            "```md",
+            macro_plan_content.strip() or "No macro-plan.md content found.",
+            "```",
+            "",
+            "## Selected Ticket",
+            "",
+            "```md",
+            ticket_content.strip() or "No plan-local ticket found for this unit.",
+            "```",
+            "",
             selected,
         ]
     )
+
+
+def read_optional(path: Path) -> str:
+    return path.read_text(encoding="utf-8") if path.exists() else ""
 
 
 def render_skill_routing_prompt(unit: dict, plan_dir: Path, commit_unit: plan_readiness.CommitUnit | None) -> str:
@@ -117,6 +157,7 @@ def run_next(
     no_branch: bool = False,
     auto_resolve: bool = False,
     repair_attempts: int = 0,
+    accept_source_drift: bool = False,
 ) -> dict | None:
     plan_dir, queue_data = plans.load_queue(plan_path)
     queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
@@ -129,6 +170,14 @@ def run_next(
             return None
         commit_unit = readiness.next_unit
         unit = unit_for_commit(queue_data, commit_unit)
+        if unit.get("status") == "human_gate":
+            return {
+                "unit": unit,
+                "prompt_path": plan_dir / "prompts" / f"{unit['id']}.md",
+                "action": "human_gate",
+                "reason": "Unit is held at human_gate because the source plan needs manual split or approval.",
+                "changed": False,
+            }
     else:
         unit = next_ready_unit(queue_data)
         if unit is None:
@@ -136,6 +185,16 @@ def run_next(
         commit_unit = commit_units.get(unit["id"])
 
     prompt_path = plan_dir / "prompts" / f"{unit['id']}.md"
+    drift = source_plan.check_source_drift(plan_dir)
+    if drift.changed and not accept_source_drift:
+        return {
+            "unit": unit,
+            "prompt_path": prompt_path,
+            "action": "source_drift",
+            "reason": drift.reason,
+            "source_path": str(drift.source_path) if drift.source_path else "",
+            "changed": False,
+        }
     prompt_text = render_prompt(queue_data, unit, plan_dir, commit_unit)
     if dry_run:
         return {"unit": unit, "prompt_path": prompt_path, "prompt": prompt_text, "changed": False}
@@ -340,6 +399,7 @@ def run_all(
     no_branch: bool = False,
     auto_resolve: bool = False,
     repair_attempts: int = 0,
+    accept_source_drift: bool = False,
 ) -> list[dict]:
     results: list[dict] = []
     limit = max_units
@@ -357,11 +417,12 @@ def run_all(
             no_branch=no_branch,
             auto_resolve=auto_resolve,
             repair_attempts=repair_attempts,
+            accept_source_drift=accept_source_drift,
         )
         if result is None:
             break
         results.append(result)
-        if dry_run or result.get("action") == "needs_work":
+        if dry_run or result.get("action") in {"human_gate", "needs_work", "source_drift"}:
             break
     return results
 

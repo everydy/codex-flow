@@ -1,29 +1,30 @@
 from __future__ import annotations
 
-import json
 import subprocess
+
+import pytest
 
 from codex_flow import cli, plans, pr, tickets
 from codex_flow.dashboard import render_dashboard
 
 
-def test_route_reuses_single_active_plan(tmp_path, capsys):
+def test_route_short_request_fails_instead_of_reusing_active_plan(tmp_path, capsys):
     first = tickets.submit_ticket("Improve dashboard", repo=tmp_path)
-    plan = plans.create_plan_from_ticket(first.path, repo=tmp_path)
+    plans.create_plan_from_ticket(first.path, repo=tmp_path)
 
-    status = cli.main(["--repo", str(tmp_path), "route", "Improve dashboard copy", "--router", "heuristic", "--planner", "template"])
+    status = cli.main(["--repo", str(tmp_path), "route", "Improve dashboard copy", "--auto-resolve"])
 
     output = capsys.readouterr().out
-    assert status == 0
-    assert "route_to_existing_plan:" in output
-    assert "Improve dashboard copy" in (plan.directory / "requests.md").read_text(encoding="utf-8")
+    assert status == 1
+    assert "route requires a plan-first Markdown file path" in output
 
 
-def test_route_defaults_to_codex_router_and_planner():
-    args = cli.build_parser().parse_args(["route", "Improve dashboard"])
+def test_route_no_longer_accepts_router_or_planner_flags():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["route", "docs/plans/example.md", "--router", "codex"])
 
-    assert args.router == "codex"
-    assert args.planner == "codex"
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["route", "docs/plans/example.md", "--planner", "codex"])
 
 
 def test_pr_draft_and_pr_create_commands_are_distinct():
@@ -36,18 +37,17 @@ def test_pr_draft_and_pr_create_commands_are_distinct():
     assert not hasattr(create_args, "remote")
 
 
-def test_route_explicit_plan_appends_request(tmp_path, capsys):
+def test_route_explicit_plan_no_longer_appends_request(tmp_path, capsys):
     first = tickets.submit_ticket("Plan target", repo=tmp_path)
     plan = plans.create_plan_from_ticket(first.path, repo=tmp_path)
 
-    status = cli.main(["--repo", str(tmp_path), "route", "Attach this", "--plan", str(plan.plan_path), "--reason", "Manual attach"])
+    status = cli.main(["--repo", str(tmp_path), "route", "Attach this", "--auto-resolve"])
 
     output = capsys.readouterr().out
-    assert status == 0
-    assert "route_to_existing_plan:" in output
+    assert status == 1
+    assert "route requires a plan-first Markdown file path" in output
     requests = (plan.directory / "requests.md").read_text(encoding="utf-8")
-    assert "Attach this" in requests
-    assert "Manual attach" in requests
+    assert "Attach this" not in requests
 
 
 def test_dashboard_renders_plan_progress_and_suggested_command(tmp_path):
@@ -101,9 +101,9 @@ def test_pr_check_merged_clears_lock_and_drains_inbox(tmp_path, capsys):
     output = capsys.readouterr().out
     assert status == 0
     assert "cleared" in output
-    assert "drain: planned" in output
+    assert "drain: empty" in output
     assert not pr.read_pr_lock(tmp_path)
-    assert tickets.load_ticket(ticket.path).status == "planned"
+    assert tickets.load_ticket(ticket.path).status == "inbox"
 
 
 def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):

@@ -2,10 +2,10 @@
 
 Codex Flow is a small, local-first orchestration layer for running Codex work as ticketed commit units.
 
-It turns a broad request into:
+It turns an approved plan-first Markdown document into:
 
 ```text
-ticket -> plan queue -> run-next/run-all -> commit unit -> review artifact -> PR draft/merge gate
+plan-first source -> source snapshot -> tickets -> macro plan -> queue -> run-next/run-all -> post-unit review-all-in-one gate -> commit -> PR draft/merge gate
 ```
 
 The project is intentionally conservative. It keeps work in small units, records local state in `.codex-flow/`, and gives AI agents explicit recovery paths for common automation blockers.
@@ -14,16 +14,16 @@ Each plan also carries a `Skill Routing Manifest`, so a fresh Codex session can 
 ## What It Does
 
 - Creates a local `.codex-flow/` workspace for tickets, plans, queues, briefs, and locks.
-- Routes a natural-language request into an inbox, an existing plan, or a new plan queue.
-- Routes and plans through role-separated Codex Router and Planner agents by default.
+- Routes a plan-first Markdown source into a source snapshot, extracted tickets, a macro plan, and a queue.
+- Rejects short natural-language route input instead of creating an ad hoc plan.
 - Writes a `Skill Routing Manifest` into every plan, then feeds the selected entry into implementer prompts, review checklists, and PR draft artifacts.
 - Executes commit units by default, while still supporting prompt previews with `--preview` or `--dry-run`.
 - Can execute Codex CLI for one unit or a sequence of units with an implement-then-review agent loop.
-- Can commit changed files per completed unit.
+- Can commit changed files per completed unit after a mandatory post-unit `review-all-in-one` gate.
 - Writes morning briefs, review checklists, and PR dry-run artifacts.
 - Provides auto-resolve behavior for dirty worktrees, active PR locks, unfinished units, and local merge readiness.
 - Provides a detailed dashboard with PR lock, inbox, dirty file, active plan, progress, and suggested command summaries.
-- Supports PR lock management, PR status checks, and inbox drain after merged PRs.
+- Supports PR lock management, PR status checks, and source-plan-only inbox drain after merged PRs.
 
 ## Install
 
@@ -51,26 +51,10 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo init
 python3 scripts/codex_flow.py --repo /path/to/your/repo status
 ```
 
-Route a request:
+Route an approved plan-first document:
 
 ```bash
-python3 scripts/codex_flow.py --repo /path/to/your/repo route "Improve the onboarding flow" --auto-resolve
-```
-
-Route with the explicit offline-safe fallback:
-
-```bash
-python3 scripts/codex_flow.py --repo /path/to/your/repo route \
-  "Improve the onboarding flow" \
-  --router heuristic --planner template
-```
-
-Route directly to an existing plan:
-
-```bash
-python3 scripts/codex_flow.py --repo /path/to/your/repo route \
-  "Polish the copy in the same onboarding plan" \
-  --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md
+python3 scripts/codex_flow.py --repo /path/to/your/repo route docs/plans/example-plan.md --auto-resolve
 ```
 
 Inspect the dashboard:
@@ -88,6 +72,8 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-next \
   --auto-resolve
 ```
 
+Each executed unit is implemented, reviewed in the same Codex session with a mandatory `review-all-in-one` post-unit gate, and only then committed. If that review finds blocker or important issues, the unit returns `needs_work` instead of being committed.
+
 Run all executable commit units until the plan is complete or a unit needs work:
 
 ```bash
@@ -95,6 +81,8 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
   --auto-resolve
 ```
+
+If a source plan cannot be split into `### Commit N:` or `### Phase N:` sections, Codex Flow creates a low-confidence placeholder unit and holds it at `human_gate` instead of auto-running it. Split the source plan into clear phases, then route it again.
 
 Run all executable commit units and prepare a PR draft artifact:
 
@@ -179,6 +167,7 @@ Codex Flow does not replace specialist skills such as `요청개선`, `mission-c
 ```
 
 `run-next` and `run-all` read the selected manifest entry and include it in the implementer prompt. `review` and `open-pr --dry-run` include the same manifest so the daytime review can check whether the right skills were used or explicitly skipped with a fallback reason.
+Separately from the final gate, every executed commit unit has a mandatory post-unit `review-all-in-one` gate before Codex Flow creates the git commit. This between-commit gate is part of the execution loop, so it applies to `run-next`, `run-all`, and auto-resolve finalization paths that execute unfinished units.
 Codex Flow automatically repairs implementation-like manifest rows so `plan-first-implementation` is required for feature, UI/design/layout, refactor, integration, API/DB/routing, or other code implementation units. It leaves status, review, briefing, QA-only, and test-only rows alone unless they also need an implementation plan gate.
 
 ## Auto-Resolve Policy
@@ -202,7 +191,7 @@ Codex Flow intentionally borrows the strongest operational ideas from Crack-CLI 
 - plan-level `Skill Routing Manifest` that routes existing Codex skills per commit unit instead of hiding that decision in chat context
 - active-plan routing before creating unnecessary new branches
 - explicit PR lock files
-- PR lock clearing after merged PRs, plus inbox drain after review locks are cleared
+- PR lock clearing after merged PRs, plus source-plan-only inbox drain after review locks are cleared
 - dashboard summaries with suggested next commands
 - `run-next` and `run-all` commit-unit execution
 - optional `run-all --open-pr` and `run-all --merge` finalize paths
@@ -215,13 +204,13 @@ Codex Flow differs by keeping explicit `--preview` and `--dry-run` escape hatche
 Codex Flow now separates orchestration roles instead of treating every Codex call as one generic execution:
 
 ```text
-Router agent      decides inbox vs existing plan vs new plan
-Planner agent     writes commit-sized plan.md units
+Source route      adopts plan-first Markdown into source snapshots and queue units
+Planner helpers   maintain commit-sized plan.md units and Skill Routing Manifest rows
 Implementer agent implements one unit, then resumes the same session for review
 Merge agent       resolves only active merge conflicts
 ```
 
-The default route path now uses Codex Router and Planner agents. Use `--router heuristic --planner template` for offline smoke tests or public-safe demos. `run-next` and `run-all` execute by default and commit completed units unless `--no-commit` is explicit. Use `--preview` or `--dry-run` when you only want prompts.
+The default route path now adopts a plan-first Markdown source. Short natural-language route input fails with guidance instead of creating a generic plan. `run-next` and `run-all` execute by default and commit completed units unless `--no-commit` is explicit. Use `--preview` or `--dry-run` when you only want prompts. If the original plan-first source changes after route, `run-next` and `run-all` stop unless `--accept-source-drift` is explicit.
 
 Plan progress is read from readable Markdown:
 
@@ -229,6 +218,9 @@ Plan progress is read from readable Markdown:
 .codex-flow/plans/<slug>/
   plan.md       canonical commit units, with headings like ### Commit 1: ...
                 and Skill Routing Manifest entries for each unit
+  source-plan.md snapshot of the original plan-first source adopted by route
+  source.json   source metadata, including original path and hash
+  macro-plan.md extracted ticket order, dependencies, and stop conditions
   log.md        canonical completion records, including Completed commit unit N.
   queue.json    machine-readable cache for compatibility
   queue.md      rendered cache
@@ -248,14 +240,14 @@ tests/                   pytest test suite
 
 ```bash
 python3 scripts/codex_flow.py init
-python3 scripts/codex_flow.py route "request"
-python3 scripts/codex_flow.py route "request" --router heuristic --planner template
-python3 scripts/codex_flow.py route "request" --plan .codex-flow/plans/<slug>/plan.md
+python3 scripts/codex_flow.py route docs/plans/example-plan.md --auto-resolve
 python3 scripts/codex_flow.py dashboard
 python3 scripts/codex_flow.py dashboard --watch
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --accept-source-drift
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --preview
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --accept-source-drift
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --preview
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --open-pr
 python3 scripts/codex_flow.py create-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve

@@ -159,9 +159,29 @@ def test_run_next_writes_prompt_and_marks_unit_prompted(tmp_path):
     prompt_text = result["prompt_path"].read_text(encoding="utf-8")
     assert "## Skill Routing Manifest" in prompt_text
     assert "Required skills: `요청개선`, `plan-first-implementation`" in prompt_text
+    assert "post-unit review must load and apply `review-all-in-one`" in prompt_text
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["units"][0]["status"] == "prompted"
     assert queue["units"][0]["prompt_path"] == "prompts/unit-001.md"
+
+
+def test_run_next_prompt_includes_full_plan_context(tmp_path):
+    plan = make_plan(tmp_path)
+    plan_text = plan.plan_path.read_text(encoding="utf-8")
+    plan.plan_path.write_text(
+        plan_text
+        + "\n## Custom Implementation Detail\n\n"
+        + "- Preserve this plan-specific instruction in the implementer prompt.\n",
+        encoding="utf-8",
+    )
+
+    result = runner.run_next(plan.plan_path)
+
+    prompt_text = result["prompt_path"].read_text(encoding="utf-8")
+    assert "## Full Plan Context" in prompt_text
+    assert "Read this plan as the source of truth" in prompt_text
+    assert "Preserve this plan-specific instruction in the implementer prompt." in prompt_text
+    assert "## Selected Commit Unit" in prompt_text
 
 
 def test_run_next_repairs_existing_plan_manifest_before_prompt(tmp_path):
@@ -506,13 +526,16 @@ def test_run_next_auto_resolve_shelves_dirty_worktree_before_execution(tmp_path)
 
 
 def test_route_queues_when_pr_lock_is_active(tmp_path, capsys):
+    source = tmp_path / "docs" / "plans" / "locked-source.md"
+    source.parent.mkdir(parents=True)
+    source.write_text("# Locked Source\n\n### Commit 1: Wait\n\n- Wait for PR lock.\n", encoding="utf-8")
     pr.write_pr_lock(tmp_path, "codex/open", "https://github.com/example/repo/pull/1", "reviewing")
 
-    status = cli.main(["--repo", str(tmp_path), "route", "새 작업", "--auto-resolve"])
+    status = cli.main(["--repo", str(tmp_path), "route", str(source), "--auto-resolve"])
 
     output = capsys.readouterr().out
     assert status == 0
-    assert "queued due to active PR lock" in output
+    assert "queued source plan due to active PR lock" in output
     assert not list((tmp_path / ".codex-flow" / "plans").glob("*"))
 
 

@@ -5,19 +5,19 @@ from pathlib import Path
 import sys
 import time
 
-from . import briefs, dashboard as dashboard_view, inbox, plan_readiness, plans, pr, runner, state, tickets
-from .planner_agent import CodexPlannerAgent, TemplatePlannerAgent
-from .router_agent import CodexRouterAgent, HeuristicRouterAgent, RouterAgentDecision, RouterAgentInput, collect_active_plans
+from . import briefs, dashboard as dashboard_view, inbox, plan_readiness, plans, pr, runner, source_plan, state, tickets
 from .run_all import RunAllRunner
 
 
 FAILURE_ACTIONS = {
     "hard_stop",
+    "human_gate",
     "max_units_reached",
     "merge_needs_work",
     "needs_work",
     "not_ready",
     "pr_locked",
+    "source_drift",
 }
 
 
@@ -58,26 +58,14 @@ def build_parser() -> argparse.ArgumentParser:
 
     subparsers.add_parser("init", help="Create .codex-flow state directories.")
 
-    def add_ticket_args(command: argparse.ArgumentParser) -> None:
-        command.add_argument("title")
-        command.add_argument("--priority", default="normal")
-        command.add_argument("--project", default="default")
-        command.add_argument("--allow-draft-pr", action="store_true")
-        command.add_argument("--no-implement", action="store_true")
+    def add_route_source_args(command: argparse.ArgumentParser) -> None:
+        command.add_argument("source_plan", type=Path)
         command.add_argument("--auto-resolve", action="store_true", help="Let Codex Flow resolve route blockers without waiting for the user.")
-        command.add_argument("--plan", type=Path, help="Append the request to an existing plan instead of creating a new one.")
         command.add_argument("--branch", help="Branch name to use when creating a new plan.")
         command.add_argument("--title", dest="plan_title", help="Plan title to use when creating a new plan.")
-        command.add_argument("--reason", default="Routed by Codex Flow.")
-        command.add_argument("--router", choices=["heuristic", "codex"], default="codex")
-        command.add_argument("--planner", choices=["template", "codex"], default="codex")
-        command.add_argument("--codex-command", default="codex")
-        command.add_argument("--codex-arg", action="append", default=[])
 
-    submit = subparsers.add_parser("submit", help="Create a ticket from a natural-language request.")
-    add_ticket_args(submit)
-    route = subparsers.add_parser("route", help="Create a ticket and plan it immediately unless a PR lock is active.")
-    add_ticket_args(route)
+    route = subparsers.add_parser("route", help="Adopt a plan-first Markdown source and create an execution queue.")
+    add_route_source_args(route)
 
     subparsers.add_parser("status", help="Print numeric dashboard summary.")
     dashboard = subparsers.add_parser("dashboard", help="Print detailed dashboard.")
@@ -100,6 +88,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_next.add_argument("--no-branch", action="store_true")
     run_next.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
     run_next.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times. Defaults to 1 with --auto-resolve, otherwise 0.")
+    run_next.add_argument("--accept-source-drift", action="store_true", help="Continue even if the original source plan changed after route.")
 
     run_all = subparsers.add_parser("run-all", help="Execute remaining commit units by default; use --preview or --dry-run to inspect prompts only.")
     run_all.add_argument("--plan", type=Path, required=True)
@@ -115,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--no-branch", action="store_true")
     run_all.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
     run_all.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times. Defaults to 1 with --auto-resolve, otherwise 0.")
+    run_all.add_argument("--accept-source-drift", action="store_true", help="Continue even if the original source plan changed after route.")
     run_all.add_argument("--merge", action="store_true", help="Merge after all units are done.")
     run_all.add_argument("--target", default="main")
     run_all.add_argument("--remote", action="store_true", help="Use remote PR/merge mode for finalize steps.")
@@ -144,6 +134,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--allow-dirty", action="store_true")
         command.add_argument("--no-branch", action="store_true")
         command.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times while auto-resolving. Defaults to 1 with --auto-resolve, otherwise 0.")
+        command.add_argument("--accept-source-drift", action="store_true", help="Continue even if the original source plan changed after route.")
         if include_remote:
             command.add_argument("--remote", action="store_true", help="Create a real remote draft PR with gh.")
 
@@ -181,6 +172,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--allow-dirty", action="store_true")
     merge.add_argument("--no-branch", action="store_true")
     merge.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times while auto-resolving. Defaults to 1 with --auto-resolve, otherwise 0.")
+    merge.add_argument("--accept-source-drift", action="store_true", help="Continue even if the original source plan changed after route.")
 
     return parser
 
@@ -194,51 +186,28 @@ def main(argv: list[str] | None = None) -> int:
         print(f"initialized: {flow.root}")
         return 0
 
-    if args.command in {"submit", "route"}:
-        ticket = tickets.submit_ticket(
-            args.title,
+    if args.command == "route":
+        try:
+            source = source_plan.resolve_source_plan(args.source_plan, repo=args.repo)
+        except SystemExit as exc:
+            print(str(exc))
+            return 1
+        lock = pr.read_pr_lock(args.repo)
+        if lock:
+            repo = state.resolve_repo(args.repo)
+            inbox.append_inbox_request(repo, str(source.path), "PR lock is active; source plan route deferred.")
+            print("route: queued source plan due to active PR lock")
+            return 0
+        plan = plans.create_plan_from_source(
+            source,
             repo=args.repo,
-            priority=args.priority,
-            project=args.project,
-            allow_draft_pr=args.allow_draft_pr,
-            no_implement=args.no_implement,
+            branch_name=args.branch,
+            plan_title=args.plan_title,
+            prepare_git_branch=True,
         )
-        print(f"ticket_created: {ticket.path}")
-        if args.command == "route":
-            lock = pr.read_pr_lock(args.repo)
-            if lock:
-                inbox.append_inbox_request(args.repo, ticket.title, "PR lock is active.")
-                tickets.update_ticket_status(ticket.path, "inbox")
-                print("route: queued due to active PR lock")
-            elif args.plan:
-                request_path = plans.append_plan_request(args.plan, ticket.title, reason=args.reason)
-                tickets.update_ticket_status(ticket.path, "queued")
-                print(f"route_to_existing_plan: {request_path}")
-            else:
-                repo = state.resolve_repo(args.repo)
-                decision = route_decision(args, ticket.title, lock)
-                if decision.action == "pause_for_pr_review":
-                    inbox.append_inbox_request(repo, ticket.title, decision.reason)
-                    tickets.update_ticket_status(ticket.path, "inbox")
-                    print("route: queued due to router decision")
-                    return 0
-                if decision.action == "existing_plan":
-                    request_path = plans.append_plan_request(decision.plan_path, ticket.title, reason=decision.reason)
-                    tickets.update_ticket_status(ticket.path, "queued")
-                    print(f"route_to_existing_plan: {request_path}")
-                    return 0
-                planner = CodexPlannerAgent(command=args.codex_command, extra_args=args.codex_arg) if args.planner == "codex" else TemplatePlannerAgent()
-                plan = plans.create_plan_from_ticket(
-                    ticket.path,
-                    repo=args.repo,
-                    branch_name=decision.branch_name or args.branch,
-                    plan_title=decision.plan_title or args.plan_title,
-                    planner=planner,
-                    prepare_git_branch=True,
-                    reason=decision.reason,
-                )
-                print(f"plan_created: {plan.plan_path}")
-                print(f"queue_created: {plan.queue_md}")
+        print(f"source_plan_adopted: {plan.directory / 'source-plan.md'}")
+        print(f"plan_created: {plan.plan_path}")
+        print(f"queue_created: {plan.queue_md}")
         return 0
 
     if args.command == "status":
@@ -284,12 +253,25 @@ def main(argv: list[str] | None = None) -> int:
             no_branch=args.no_branch,
             auto_resolve=args.auto_resolve,
             repair_attempts=repair_attempts,
+            accept_source_drift=args.accept_source_drift,
         )
         if result is None:
             print("no_ready_units")
             return 0
         print(f"unit: {result['unit']['id']}")
         print(f"prompt: {result['prompt_path']}")
+        if result.get("action") == "source_drift":
+            print(f"action: {result.get('action')}")
+            if result.get("reason"):
+                print(f"reason: {result['reason']}")
+            if result.get("source_path"):
+                print(f"source_path: {result['source_path']}")
+            return exit_code_for_action(result.get("action", ""))
+        if result.get("action") == "human_gate":
+            print(f"action: {result.get('action')}")
+            if result.get("reason"):
+                print(f"reason: {result['reason']}")
+            return exit_code_for_action(result.get("action", ""))
         if args.dry_run:
             print("dry_run: prompt not written and queue not changed")
         elif execute_work:
@@ -322,6 +304,7 @@ def main(argv: list[str] | None = None) -> int:
             no_branch=args.no_branch,
             auto_resolve=args.auto_resolve,
             repair_attempts=repair_attempts,
+            accept_source_drift=args.accept_source_drift,
             open_pr=args.open_pr,
             merge=args.merge,
             remote=args.remote,
@@ -333,7 +316,8 @@ def main(argv: list[str] | None = None) -> int:
             suffix = f" {result.get('action')}" if result.get("action") else ""
             commit_suffix = f" commit={result['commit']}" if result.get("commit") else ""
             repair_suffix = f" repair_attempts={result['repair_attempts']}" if result.get("repair_attempts") else ""
-            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}{repair_suffix}")
+            reason_suffix = f" reason={result['reason']}" if result.get("reason") else ""
+            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}{repair_suffix}{reason_suffix}")
         if run_result.message:
             print(run_result.message)
         return exit_code_for_action(run_result.action)
@@ -358,6 +342,8 @@ def main(argv: list[str] | None = None) -> int:
             auto_complete_result = auto_complete_units(args)
             if auto_complete_result:
                 print(auto_complete_result)
+                if "source_drift" in auto_complete_result:
+                    return 1
         remote_pr_requested = args.command == "create-pr" or getattr(args, "remote", False)
         if remote_pr_requested:
             try:
@@ -400,6 +386,8 @@ def main(argv: list[str] | None = None) -> int:
             auto_complete_result = auto_complete_units(args)
             if auto_complete_result:
                 print(auto_complete_result)
+                if "source_drift" in auto_complete_result:
+                    return 1
         message = pr.merge_plan(args.plan, target=args.target, remote=args.remote, execute=args.execute or args.auto_resolve)
         print(message)
         return 0 if not message.startswith("merge: hard-stop") and not message.startswith("merge: needs_work") else 2
@@ -428,16 +416,20 @@ def auto_complete_units(args: argparse.Namespace) -> str:
         no_branch=args.no_branch,
         auto_resolve=args.auto_resolve,
         repair_attempts=repair_attempts,
+        accept_source_drift=getattr(args, "accept_source_drift", False),
     )
     refreshed_dir, refreshed = plans.load_queue(args.plan)
     refreshed = plan_readiness.sync_queue_cache_from_plan(refreshed_dir / "plan.md")
     remaining = plans.unfinished_units(refreshed)
+    source_drift_count = sum(1 for result in results if result.get("action") == "source_drift")
+    drift_suffix = f" source_drift={source_drift_count}" if source_drift_count else ""
     return (
         "auto_resolve_units: "
         f"unfinished_before={len(unfinished_before)} "
         f"requeued={len(requeued)} "
         f"processed={len(results)} "
         f"remaining={len(remaining)}"
+        f"{drift_suffix}"
     )
 
 
@@ -460,17 +452,6 @@ def finalize_after_run_all(args: argparse.Namespace) -> str:
         return f"opened_pr: {url}\npr_lock: {lock_path}"
     pr_path = pr.write_pr_dry_run(args.plan)
     return f"pr_dry_run: {pr_path}"
-
-
-def route_decision(args: argparse.Namespace, prompt: str, lock: Path | None) -> RouterAgentDecision:
-    if args.branch or args.plan_title:
-        title = args.plan_title or prompt.splitlines()[0][:80] or "User Request"
-        return RouterAgentDecision("new_plan", args.reason, branch_name=args.branch or f"codex/{state.slugify(title)}", plan_title=title)
-    repo = state.resolve_repo(args.repo)
-    lock_text = lock.read_text(encoding="utf-8") if lock else None
-    active_plans = collect_active_plans(repo)
-    agent = CodexRouterAgent(command=args.codex_command, extra_args=args.codex_arg) if args.router == "codex" else HeuristicRouterAgent()
-    return agent.decide(RouterAgentInput(repo=repo, prompt=prompt, pr_lock=lock_text, active_plans=active_plans))
 
 
 if __name__ == "__main__":

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import plan_readiness, plans, pr, state
+from . import plan_readiness, plans, pr, source_plan, state
 
 
 def iter_plan_dirs(flow: state.FlowPaths) -> list[Path]:
@@ -62,6 +62,7 @@ def write_review(plan_path: str | Path) -> Path:
     log_content = (plan_dir / "log.md").read_text(encoding="utf-8") if (plan_dir / "log.md").exists() else ""
     readiness = plan_readiness.check_plan_ready(plan_content, log_content)
     skill_manifest = plan_readiness.parse_skill_routing_manifest(plan_content)
+    drift = source_plan.check_source_drift(plan_dir)
     review_path = plan_dir / "review.md"
     lines = [
         f"# Review: {queue.get('ticket_title')}",
@@ -78,6 +79,16 @@ def write_review(plan_path: str | Path) -> Path:
     ]
     for unit in queue.get("units", []):
         lines.append(f"| {unit['id']} | {unit['status']} | {unit['title']} |")
+    if drift.reason != "no source metadata":
+        lines.extend(
+            [
+                "",
+                "## Source Drift",
+                "",
+                f"- Status: {drift.reason}",
+                f"- Source path: {drift.source_path or '-'}",
+            ]
+        )
     lines.extend(
         [
             "",
