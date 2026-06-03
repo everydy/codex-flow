@@ -95,6 +95,48 @@ else:
     return fake_codex
 
 
+def write_fake_codex_review_gate_blocks_then_passes(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_review_gate_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+work = pathlib.Path("work.txt")
+if "resume" not in args:
+    previous = work.read_text(encoding="utf-8") if work.exists() else ""
+    line = "gate-repair\\n" if "Repair attempt:" in prompt else "gate-initial\\n"
+    work.write_text(previous + line, encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"fake-session"}')
+else:
+    counter = pathlib.Path(__file__).with_suffix(".count")
+    count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
+    count += 1
+    counter.write_text(str(count), encoding="utf-8")
+    if count == 1:
+        output.write_text(
+            'REVIEW_GATE status="pass" blockers=0 important=1 minor=0 reason="important issue remains"\\n'
+            'COMMIT_UNIT_READY title="Fake gated implementation" summary="ready but gate blocks"\\n',
+            encoding="utf-8",
+        )
+    else:
+        output.write_text(
+            'REVIEW_GATE status="pass" blockers=0 important=0 minor=1 reason="minor follow-up only"\\n'
+            'COMMIT_UNIT_READY title="Fake gated repair" summary="gate passed"\\n',
+            encoding="utf-8",
+        )
+    print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
 def write_fake_codex_dirty_needs_work(tmp_path):
     fake_codex = tmp_path.parent / f"fake_codex_dirty_needs_work_{tmp_path.name}.py"
     fake_codex.write_text(
@@ -454,6 +496,43 @@ def test_run_all_auto_resolve_repairs_transient_needs_work(tmp_path, capsys):
     assert "Repair attempt 1/1" in log
     assert "Repair succeeded for commit unit 1" in log
     assert "Completed commit unit 3." in log
+
+
+def test_review_gate_blocks_commit_until_important_findings_are_repaired(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_review_gate_blocks_then_passes(tmp_path)
+    plan = make_plan(tmp_path)
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--auto-resolve",
+            "--codex-command",
+            str(fake_codex),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    log = (plan.directory / "log.md").read_text(encoding="utf-8")
+    attempt_0 = json.loads((plan.directory / "attempts" / "unit-001" / "attempt-0-review.json").read_text(encoding="utf-8"))
+    attempt_1 = json.loads((plan.directory / "attempts" / "unit-001" / "attempt-1-review.json").read_text(encoding="utf-8"))
+
+    assert status == 0
+    assert "action: committed" in output
+    assert "repair_attempts: 1" in output
+    assert queue["units"][0]["status"] == "done"
+    assert queue["units"][0]["review_gate"]["important"] == 0
+    assert queue["units"][0]["review_gate"]["minor"] == 1
+    assert attempt_0["status"] == "needs_work"
+    assert attempt_0["review_gate"]["important"] == 1
+    assert attempt_1["review_gate"]["passed"] is True
+    assert "Review gate for commit unit 1 attempt 0: review_gate=pass score=80 blockers=0 important=1 minor=0" in log
+    assert "Review gate for commit unit 1 attempt 1: review_gate=pass score=95 blockers=0 important=0 minor=1" in log
 
 
 def test_run_next_auto_resolve_resumes_failed_needs_work_with_partial_changes(tmp_path, capsys):

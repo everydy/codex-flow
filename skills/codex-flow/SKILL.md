@@ -62,6 +62,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 - Implementer prompt는 현재 commit unit의 manifest entry를 포함한다.
 - 실행 agent는 필수 스킬을 실제로 읽고 적용한다. 사용할 수 없는 스킬은 가까운 fallback을 쓰고 review summary에 이유를 남긴다.
 - 모든 실행 commit unit은 커밋 전에 `review-all-in-one` post-unit gate를 통과해야 한다. 이 게이트에서 blocker/important 문제가 나오면 고치거나 `needs_work`로 멈추며 커밋하지 않는다.
+- review agent는 가능하면 `REVIEW_GATE status="pass|needs_work" blockers=0 important=0 minor=0 reason="..."` 줄을 남긴다. Codex Flow는 이 줄을 읽어 `100 - blockers*50 - important*20 - minor*5` 점수를 기록하고, `status="pass"`, `blockers=0`, `important=0`일 때만 커밋한다.
 - `review`와 `PR초안`은 manifest를 다시 보여줘서 낮에 검토할 때 “어떤 스킬이 적용됐는지”를 확인할 수 있게 한다.
 - 레인러너는 Build 작업을 Codex Flow에 넘기고, 세부 스킬 라우팅은 이 manifest가 담당한다.
 

@@ -61,6 +61,7 @@ metadata:
 - `라우트`와 `plan` 결과물에는 `## Skill Routing Manifest`가 있어야 한다. 이 표는 각 commit unit에서 필수로 적용할 스킬과 선택 스킬을 기록한다.
 - `다음실행`과 `모두실행`은 현재 unit의 manifest entry를 실행 프롬프트에 포함시키고, 필수 스킬을 적용하거나 fallback 이유를 남기게 한다.
 - 모든 실행 commit unit은 커밋 전에 `review-all-in-one` post-unit gate를 통과해야 한다. 이 게이트에서 blocker/important 문제가 나오면 고치거나 `needs_work`로 멈추며 커밋하지 않는다.
+- review agent가 `REVIEW_GATE status="pass|needs_work" blockers=0 important=0 minor=0 reason="..."` 줄을 남기면 Codex Flow가 이 값을 읽어 점수를 기록한다. 커밋 조건은 `status="pass"`, `blockers=0`, `important=0`이다.
 - `리뷰`, `PR초안`, `PR생성`, `병합` 전 검토에서는 manifest에 적힌 스킬이 실제로 적용되었는지 확인한다.
 - PR 생성과 remote merge는 본체 `codex-flow`의 finalize 흐름을 따른다. deploy, 결제, 외부 게시, 계정 작업은 본체 guardrail을 따른다.
 

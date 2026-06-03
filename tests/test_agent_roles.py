@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from codex_flow.implementer_agent import ImplementerAgentInput, build_implementation_prompt, build_review_prompt, parse_commit_unit_review
+from codex_flow.implementer_agent import ImplementerAgentInput, build_implementation_prompt, build_review_prompt, parse_commit_unit_review, parse_review_gate
 from codex_flow.merge_agent import parse_merge_agent_result
 from codex_flow.plan_readiness import CommitUnit
 from codex_flow.planner_agent import PlannerAgentInput, build_planner_prompt, parse_plan_written
@@ -21,6 +21,29 @@ def test_parse_planner_implementer_and_merge_final_lines():
     assert needs_work.status == "needs_work"
     assert merge_ready.status == "ready"
     assert merge_needs_work.reason == "manual needed"
+
+
+def test_parse_review_gate_scores_and_blocks_important_findings():
+    gate = parse_review_gate('REVIEW_GATE status="pass" blockers=0 important=0 minor=2 reason="minor polish remains"')
+
+    assert gate is not None
+    assert gate.passed
+    assert gate.score == 90
+    assert gate.to_dict()["minor"] == 2
+
+    blocked = parse_commit_unit_review(
+        "\n".join(
+            [
+                'REVIEW_GATE status="pass" blockers=0 important=1 minor=0 reason="important regression risk"',
+                'COMMIT_UNIT_READY title="Done" summary="looks good"',
+            ]
+        )
+    )
+
+    assert blocked.status == "needs_work"
+    assert blocked.gate is not None
+    assert blocked.gate.important == 1
+    assert "important regression risk" in blocked.reason
 
 
 def test_planner_prompt_requires_skill_routing_manifest(tmp_path):
@@ -92,4 +115,6 @@ def test_commit_unit_review_prompt_requires_review_all_in_one_gate():
 
     assert "Mandatory post-unit review gate" in prompt
     assert "`review-all-in-one`" in prompt
+    assert 'REVIEW_GATE status="pass|needs_work"' in prompt
+    assert "blockers=0 important=0" in prompt
     assert "COMMIT_UNIT_NEEDS_WORK" in prompt

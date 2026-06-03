@@ -1,10 +1,11 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
 from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, stash_paths, status
-from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
+from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
 
 
 def next_ready_unit(queue_data: dict) -> dict | None:
@@ -309,6 +310,10 @@ def execute_unit(
                 repair_reason=last_repair_reason,
             )
         )
+        write_review_attempt(plan_dir, unit["id"], attempt, agent_result.review)
+        if agent_result.review.gate:
+            unit["review_gate"] = agent_result.review.gate.to_dict()
+            append_log(plan_dir, f"Review gate for commit unit {selected_unit.number} attempt {attempt}: {review_gate_summary(agent_result.review)}")
         if agent_result.review.status != "needs_work":
             break
         last_repair_reason = agent_result.review.reason
@@ -319,6 +324,8 @@ def execute_unit(
         unit["updated_at"] = state.timestamp()
         unit["repair_attempts"] = used_repair_attempts
         unit["last_needs_work_reason"] = last_repair_reason
+        if agent_result.review.gate:
+            unit["review_gate"] = agent_result.review.gate.to_dict()
         partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
         unit["changed_paths"] = partial_changed
         plans.save_queue(plan_dir, queue_data)
@@ -333,6 +340,7 @@ def execute_unit(
             "auto_resolved_dirty": auto_resolved_dirty,
             "repair_attempts": used_repair_attempts,
             "repair_reason": last_repair_reason,
+            "review_gate": review_gate_payload(agent_result.review),
         }
     if agent_result is None:
         raise SystemExit("Codex implementer did not return a result")
@@ -352,6 +360,8 @@ def execute_unit(
     unit["changed_paths"] = changed
     unit["commit"] = commit_hash
     unit["repair_attempts"] = used_repair_attempts
+    if agent_result.review.gate:
+        unit["review_gate"] = agent_result.review.gate.to_dict()
     if last_repair_reason:
         unit["last_repair_reason"] = last_repair_reason
     plans.save_queue(plan_dir, queue_data)
@@ -362,6 +372,8 @@ def execute_unit(
         log_parts.append(f"commit: {commit_hash}")
     if agent_result.review.summary:
         log_parts.append(f"summary: {agent_result.review.summary}")
+    if agent_result.review.gate:
+        log_parts.append(review_gate_summary(agent_result.review))
     if used_repair_attempts:
         log_parts.append(f"repair_attempts: {used_repair_attempts}")
     append_log(plan_dir, " | ".join(log_parts))
@@ -379,12 +391,41 @@ def execute_unit(
         "auto_resolved_dirty": auto_resolved_dirty,
         "repair_attempts": used_repair_attempts,
         "repair_reason": last_repair_reason,
+        "review_gate": review_gate_payload(agent_result.review),
     }
 
 
 def commit_message(unit: dict, title: str) -> str:
     base = title or unit.get("title") or unit.get("id") or "Codex Flow unit"
     return f"codex-flow: {unit.get('id', 'unit')} {base}"
+
+
+def review_gate_payload(review: CommitUnitReview) -> dict | None:
+    return review.gate.to_dict() if review.gate else None
+
+
+def review_gate_summary(review: CommitUnitReview) -> str:
+    if not review.gate:
+        return "review_gate=legacy"
+    gate = review.gate
+    return f"review_gate={gate.status} score={gate.score} blockers={gate.blockers} important={gate.important} minor={gate.minor}"
+
+
+def write_review_attempt(plan_dir: Path, unit_id: str, attempt: int, review: CommitUnitReview) -> Path:
+    attempts_dir = plan_dir / "attempts" / unit_id
+    attempts_dir.mkdir(parents=True, exist_ok=True)
+    path = attempts_dir / f"attempt-{attempt}-review.json"
+    payload = {
+        "unit": unit_id,
+        "attempt": attempt,
+        "status": review.status,
+        "title": review.title,
+        "summary": review.summary,
+        "reason": review.reason,
+        "review_gate": review_gate_payload(review),
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
 
 
 def run_all(

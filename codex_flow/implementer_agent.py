@@ -15,6 +15,35 @@ class CommitUnitReview:
     title: str = ""
     summary: str = ""
     reason: str = ""
+    gate: "ReviewGate | None" = None
+
+
+@dataclass(frozen=True)
+class ReviewGate:
+    status: str
+    blockers: int = 0
+    important: int = 0
+    minor: int = 0
+    reason: str = ""
+
+    @property
+    def score(self) -> int:
+        return 100 - (self.blockers * 50) - (self.important * 20) - (self.minor * 5)
+
+    @property
+    def passed(self) -> bool:
+        return self.status == "pass" and self.blockers == 0 and self.important == 0
+
+    def to_dict(self) -> dict[str, int | str | bool]:
+        return {
+            "status": self.status,
+            "blockers": self.blockers,
+            "important": self.important,
+            "minor": self.minor,
+            "score": self.score,
+            "passed": self.passed,
+            "reason": self.reason,
+        }
 
 
 @dataclass(frozen=True)
@@ -146,23 +175,56 @@ def build_review_prompt(input_data: ImplementerAgentInput) -> str:
             "Do not create a git commit; Codex Flow will commit after your review.",
             "",
             f"Mandatory post-unit review gate: load and apply `{POST_UNIT_REVIEW_SKILL}` before returning `COMMIT_UNIT_READY`.",
+            "Use review-all-in-one as the wrapper and include review-swarm style findings by severity.",
             "Treat blocker or important findings from that review as commit blockers: fix them inside this same review pass when safe, or return `COMMIT_UNIT_NEEDS_WORK` with the reason.",
             f"If `{POST_UNIT_REVIEW_SKILL}` is unavailable, return `COMMIT_UNIT_NEEDS_WORK` and explain the missing review gate.",
             "",
-            "Return exactly one final line in one of these forms:",
+            "Return these final machine-readable lines:",
+            'REVIEW_GATE status="pass|needs_work" blockers=0 important=0 minor=0 reason="..."',
             f'COMMIT_UNIT_READY title="{input_data.unit.title}" summary="..."',
             'COMMIT_UNIT_NEEDS_WORK reason="..."',
+            "",
+            "Commit condition: `REVIEW_GATE status=\"pass\" blockers=0 important=0`.",
+            "Minor findings may pass, but include the minor count so Codex Flow can record the score.",
             "",
             "Review requirement: confirm that required skills from the Skill Routing Manifest were applied or explicitly skipped with a fallback reason.",
         ]
     )
 
 
+def parse_review_gate(text: str) -> ReviewGate | None:
+    lines = [line.strip() for line in text.splitlines() if line.strip().startswith("REVIEW_GATE")]
+    if not lines:
+        return None
+    values = parse_key_values(lines[-1])
+    status = values.get("status", "needs_work").strip().lower()
+    if status not in {"pass", "needs_work"}:
+        status = "needs_work"
+    return ReviewGate(
+        status=status,
+        blockers=parse_non_negative_int(values.get("blockers", "0")),
+        important=parse_non_negative_int(values.get("important", "0")),
+        minor=parse_non_negative_int(values.get("minor", "0")),
+        reason=values.get("reason", ""),
+    )
+
+
+def parse_non_negative_int(value: str) -> int:
+    try:
+        return max(0, int(value))
+    except ValueError:
+        return 0
+
+
 def parse_commit_unit_review(text: str) -> CommitUnitReview:
     line = last_matching_line(text, "COMMIT_UNIT_")
     values = parse_key_values(line)
+    gate = parse_review_gate(text)
+    if gate and not gate.passed:
+        reason = gate.reason or f"review gate failed: blockers={gate.blockers} important={gate.important} minor={gate.minor} score={gate.score}"
+        return CommitUnitReview("needs_work", reason=reason, gate=gate)
     if line.startswith("COMMIT_UNIT_READY"):
-        return CommitUnitReview("ready", title=values.get("title", "Commit unit ready"), summary=values.get("summary", "Ready to commit."))
+        return CommitUnitReview("ready", title=values.get("title", "Commit unit ready"), summary=values.get("summary", "Ready to commit."), gate=gate)
     if line.startswith("COMMIT_UNIT_NEEDS_WORK"):
-        return CommitUnitReview("needs_work", reason=values.get("reason", "Implementer requested more work."))
+        return CommitUnitReview("needs_work", reason=values.get("reason", "Implementer requested more work."), gate=gate)
     raise ValueError(f"Unknown commit unit review: {line}")

@@ -74,6 +74,14 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-next \
 
 Each executed unit is implemented, reviewed in the same Codex session with a mandatory `review-all-in-one` post-unit gate, and only then committed. If that review finds blocker or important issues, the unit returns `needs_work` instead of being committed.
 
+The post-unit review gate is machine-readable when the reviewer returns:
+
+```text
+REVIEW_GATE status="pass|needs_work" blockers=0 important=0 minor=0 reason="..."
+```
+
+Codex Flow scores that gate as `100 - blockers*50 - important*20 - minor*5`. A unit can commit only when `status="pass"`, `blockers=0`, and `important=0`. Minor findings are recorded but do not block a commit.
+
 Run all executable commit units until the plan is complete or a unit needs work:
 
 ```bash
@@ -168,6 +176,7 @@ Codex Flow does not replace specialist skills such as `요청개선`, `mission-c
 
 `run-next` and `run-all` read the selected manifest entry and include it in the implementer prompt. `review` and `open-pr --dry-run` include the same manifest so the daytime review can check whether the right skills were used or explicitly skipped with a fallback reason.
 Separately from the final gate, every executed commit unit has a mandatory post-unit `review-all-in-one` gate before Codex Flow creates the git commit. This between-commit gate is part of the execution loop, so it applies to `run-next`, `run-all`, and auto-resolve finalization paths that execute unfinished units.
+When the review includes `REVIEW_GATE`, Codex Flow stores the gate status, counts, score, and pass/fail decision in `queue.json` and `.codex-flow/plans/<slug>/attempts/<unit>/attempt-<n>-review.json`.
 Codex Flow automatically repairs implementation-like manifest rows so `plan-first-implementation` is required for feature, UI/design/layout, refactor, integration, API/DB/routing, or other code implementation units. It leaves status, review, briefing, QA-only, and test-only rows alone unless they also need an implementation plan gate.
 
 ## Auto-Resolve Policy
