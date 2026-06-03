@@ -52,7 +52,10 @@ def default_repair_attempts(value: int | None, *, auto_resolve: bool) -> int:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="codex-flow", description="Local ticket, plan, and review queue for Codex work.")
+    parser = argparse.ArgumentParser(
+        prog="codex-flow",
+        description="Local 구현커밋 / implementation-commit / codex-flow ticket, plan, and review queue for Codex work.",
+    )
     parser.add_argument("--repo", type=Path, default=None, help="Repository root to operate on. Defaults to cwd or nearest git root.")
     subparsers = parser.add_subparsers(dest="command", required=True)
 
@@ -60,7 +63,7 @@ def build_parser() -> argparse.ArgumentParser:
 
     def add_route_source_args(command: argparse.ArgumentParser) -> None:
         command.add_argument("source_plan", type=Path)
-        command.add_argument("--auto-resolve", action="store_true", help="Let Codex Flow resolve route blockers without waiting for the user.")
+        command.add_argument("--auto-resolve", action="store_true", help="Let 구현커밋 resolve route blockers without waiting for the user.")
         command.add_argument("--branch", help="Branch name to use when creating a new plan.")
         command.add_argument("--title", dest="plan_title", help="Plan title to use when creating a new plan.")
 

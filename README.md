@@ -1,6 +1,6 @@
-# Codex Flow
+# 구현커밋
 
-Codex Flow is a small, local-first orchestration layer for running Codex work as ticketed commit units.
+구현커밋 is a small, local-first orchestration layer for running Codex work as ticketed commit units. It was formerly called Codex Flow; `codex-flow`, `$codex-flow`, `코덱스플로우`, and `$코덱스플로우` remain compatibility aliases.
 
 It turns an approved plan-first Markdown document into:
 
@@ -44,7 +44,7 @@ python3 -m pytest
 
 ## Quick Start
 
-Initialize Codex Flow in a target repository:
+Initialize 구현커밋 in a target repository:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo init
@@ -80,7 +80,7 @@ The post-unit review gate is machine-readable when the reviewer returns:
 REVIEW_GATE status="pass|needs_work" blockers=0 important=0 minor=0 reason="..."
 ```
 
-Codex Flow scores that gate as `100 - blockers*50 - important*20 - minor*5`. A unit can commit only when `status="pass"`, `blockers=0`, and `important=0`. Minor findings are recorded but do not block a commit.
+구현커밋 scores that gate as `100 - blockers*50 - important*20 - minor*5`. A unit can commit only when `status="pass"`, `blockers=0`, and `important=0`. Minor findings are recorded but do not block a commit.
 
 Run all executable commit units until the plan is complete or a unit needs work:
 
@@ -90,7 +90,7 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --auto-resolve
 ```
 
-If a source plan cannot be split into `### Commit N:` or `### Phase N:` sections, Codex Flow creates a low-confidence placeholder unit and holds it at `human_gate` instead of auto-running it. Split the source plan into clear phases, then route it again.
+If a source plan cannot be split into `### Commit N:` or `### Phase N:` sections, 구현커밋 creates a low-confidence placeholder unit and holds it at `human_gate` instead of auto-running it. Split the source plan into clear phases, then route it again.
 
 Run all executable commit units and prepare a PR draft artifact:
 
@@ -135,16 +135,26 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --preview
 ```
 
-## Korean Shortcut Skill
+## Shortcut Skills
 
-This repository includes a Korean Codex skill alias in `skills/코덱스플로우/SKILL.md`.
+This repository includes the canonical Korean Codex skill in `skills/구현커밋/SKILL.md`, plus compatibility aliases in `skills/codex-flow/SKILL.md` and `skills/코덱스플로우/SKILL.md`.
 
 Common commands:
 
 ```text
+$구현커밋
+$구현커밋 상태
+$구현커밋 라우트 <plan-first.md>
+$구현커밋 다음실행
+$구현커밋 모두실행
+$구현커밋 브리핑
+$구현커밋 리뷰
+$구현커밋 PR초안
+$구현커밋 PR생성
+$구현커밋 병합
 $코덱스플로우
 $코덱스플로우 상태
-$코덱스플로우 라우트 <요청>
+$코덱스플로우 라우트 <plan-first.md>
 $코덱스플로우 다음실행
 $코덱스플로우 모두실행
 $코덱스플로우 브리핑
@@ -156,13 +166,13 @@ $코덱스플로우 병합
 
 Core meanings:
 
-- `라우트`: create a ticket and plan queue from the request.
+- `라우트`: adopt a plan-first Markdown source and create a plan queue. It does not create a fresh plan from short natural-language input.
 - `다음실행`: run the next incomplete commit unit with `run-next`.
 - `모두실행`: run commit units with `run-all` until complete or needs_work.
 
 ## Skill Routing Manifest
 
-Codex Flow does not replace specialist skills such as `요청개선`, `mission-completion-harness`, `review-all-in-one`, or `qa-gate`. Instead, `plan.md` contains a routing table:
+구현커밋 does not replace specialist skills such as `요청개선`, `mission-completion-harness`, `review-all-in-one`, or `qa-gate`. Instead, `plan.md` contains a routing table:
 
 ```md
 ## Skill Routing Manifest
@@ -175,9 +185,9 @@ Codex Flow does not replace specialist skills such as `요청개선`, `mission-c
 ```
 
 `run-next` and `run-all` read the selected manifest entry and include it in the implementer prompt. `review` and `open-pr --dry-run` include the same manifest so the daytime review can check whether the right skills were used or explicitly skipped with a fallback reason.
-Separately from the final gate, every executed commit unit has a mandatory post-unit `review-all-in-one` gate before Codex Flow creates the git commit. This between-commit gate is part of the execution loop, so it applies to `run-next`, `run-all`, and auto-resolve finalization paths that execute unfinished units.
-When the review includes `REVIEW_GATE`, Codex Flow stores the gate status, counts, score, and pass/fail decision in `queue.json` and `.codex-flow/plans/<slug>/attempts/<unit>/attempt-<n>-review.json`.
-Codex Flow automatically repairs implementation-like manifest rows so `plan-first-implementation` is required for feature, UI/design/layout, refactor, integration, API/DB/routing, or other code implementation units. It leaves status, review, briefing, QA-only, and test-only rows alone unless they also need an implementation plan gate.
+Separately from the final gate, every executed commit unit has a mandatory post-unit `review-all-in-one` gate before 구현커밋 creates the git commit. This between-commit gate is part of the execution loop, so it applies to `run-next`, `run-all`, and auto-resolve finalization paths that execute unfinished units.
+When the review includes `REVIEW_GATE`, 구현커밋 stores the gate status, counts, score, and pass/fail decision in `queue.json` and `.codex-flow/plans/<slug>/attempts/<unit>/attempt-<n>-review.json`.
+구현커밋 automatically repairs implementation-like manifest rows so `plan-first-implementation` is required for feature, UI/design/layout, refactor, integration, API/DB/routing, or other code implementation units. It leaves status, review, briefing, QA-only, and test-only rows alone unless they also need an implementation plan gate.
 
 ## Auto-Resolve Policy
 
@@ -189,11 +199,11 @@ Codex Flow automatically repairs implementation-like manifest rows so `plan-firs
 | Local merge readiness | Runs unfinished units before local merge. |
 | Transient `needs_work` review | Retries the same unit with bounded repair context when `--auto-resolve` is active; if the repair budget is exhausted, records partial changed paths so the next repair run can keep them as input. |
 
-Remote PR creation and remote merge are normal Codex Flow finalization steps when the current workflow calls for GitHub integration. They remain separate CLI modes so automation can choose them deliberately and log the result.
+Remote PR creation and remote merge are normal 구현커밋 finalization steps when the current workflow calls for GitHub integration. They remain separate CLI modes so automation can choose them deliberately and log the result.
 
 ## Crack-CLI-Inspired Features
 
-Codex Flow intentionally borrows the strongest operational ideas from Crack-CLI while staying Python-first and skill-friendly:
+구현커밋 intentionally borrows the strongest operational ideas from Crack-CLI while staying Python-first and skill-friendly:
 
 - role-separated Router, Planner, Implementer, and Merge agent modules
 - Markdown `plan.md` plus `log.md` as the primary execution progress source, with `queue.json` kept as a compatibility cache
@@ -206,11 +216,11 @@ Codex Flow intentionally borrows the strongest operational ideas from Crack-CLI 
 - optional `run-all --open-pr` and `run-all --merge` finalize paths
 - local-first default behavior with remote operations kept in finalize commands
 
-Codex Flow differs by keeping explicit `--preview` and `--dry-run` escape hatches, shipping Korean Codex skill aliases, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
+구현커밋 differs by keeping explicit `--preview` and `--dry-run` escape hatches, shipping Korean Codex skill aliases, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
 
 ## Agent Architecture
 
-Codex Flow now separates orchestration roles instead of treating every Codex call as one generic execution:
+구현커밋 now separates orchestration roles instead of treating every Codex call as one generic execution:
 
 ```text
 Source route      adopts plan-first Markdown into source snapshots and queue units
@@ -269,6 +279,6 @@ python3 scripts/codex_flow.py clear-pr-lock
 
 ## Safety Notes
 
-Codex Flow does not use `git reset --hard` to clean user work. Auto-resolve preserves dirty files with `git stash`.
+구현커밋 does not use `git reset --hard` to clean user work. Auto-resolve preserves dirty files with `git stash`.
 
 The `.codex-flow/` directory may contain local planning context. Review it before publishing project-specific work.
