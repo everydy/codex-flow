@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from codex_flow.codex_cli import codex_cli_default_args, parse_session_id, run_codex_exec
+import pytest
+
+from codex_flow.codex_cli import CodexExecFailure, CodexExecTimeout, codex_cli_default_args, parse_session_id, run_codex_exec
 
 
 def test_codex_cli_default_args_include_model_and_fast_mode():
@@ -37,6 +39,44 @@ def test_run_codex_exec_disables_closeout_hooks_for_machine_readable_agents(tmp_
     assert result.final_message == "FINAL_LINE\n"
 
 
+def test_run_codex_exec_writes_diagnostics(tmp_path):
+    fake = write_fake_codex(tmp_path, "FINAL_LINE\n")
+    diagnostic_dir = tmp_path / "diagnostics"
+
+    result = run_codex_exec("hello", repo=tmp_path, command=str(fake), extra_args=[], diagnostic_dir=diagnostic_dir, phase="implementation")
+
+    assert result.status == 0
+    assert result.output_path == diagnostic_dir / "last-message.txt"
+    assert (diagnostic_dir / "prompt.md").read_text(encoding="utf-8") == "hello"
+    assert "fake-session" in (diagnostic_dir / "stdout.log").read_text(encoding="utf-8")
+    assert '"phase": "implementation"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+
+
+def test_run_codex_exec_timeout_preserves_diagnostics(tmp_path):
+    fake = write_sleeping_codex(tmp_path)
+    diagnostic_dir = tmp_path / "timeout-diagnostics"
+
+    with pytest.raises(CodexExecTimeout) as exc:
+        run_codex_exec("hello", repo=tmp_path, command=str(fake), extra_args=[], timeout_seconds=1, diagnostic_dir=diagnostic_dir)
+
+    assert exc.value.diagnostic_dir == diagnostic_dir.resolve()
+    assert (diagnostic_dir / "prompt.md").exists()
+    assert '"status": "timeout"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+
+
+def test_run_codex_exec_failure_preserves_diagnostics(tmp_path):
+    fake = write_failing_codex(tmp_path)
+    diagnostic_dir = tmp_path / "failure-diagnostics"
+
+    with pytest.raises(CodexExecFailure) as exc:
+        run_codex_exec("hello", repo=tmp_path, command=str(fake), extra_args=[], diagnostic_dir=diagnostic_dir)
+
+    assert exc.value.status == 7
+    assert exc.value.diagnostic_dir == diagnostic_dir.resolve()
+    assert "bad things" in (diagnostic_dir / "stderr.log").read_text(encoding="utf-8")
+    assert '"status": "failed"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+
+
 def test_parse_session_id_from_jsonl_and_uuid_fallback():
     assert parse_session_id('{"session_id":"abc"}\n') == "abc"
     assert parse_session_id('noise 11111111-2222-3333-4444-555555555555') == "11111111-2222-3333-4444-555555555555"
@@ -56,6 +96,31 @@ def write_fake_codex(tmp_path: Path, final_message: str, *, assert_env: dict[str
         "out = pathlib.Path(args[args.index('--output-last-message') + 1])\n"
         f"out.write_text({final_message!r}, encoding='utf-8')\n"
         "print('{\"session_id\":\"fake-session\"}')\n",
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | 0o111)
+    return fake
+
+
+def write_sleeping_codex(tmp_path: Path) -> Path:
+    fake = tmp_path / "sleeping_codex.py"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import time\n"
+        "time.sleep(5)\n",
+        encoding="utf-8",
+    )
+    fake.chmod(fake.stat().st_mode | 0o111)
+    return fake
+
+
+def write_failing_codex(tmp_path: Path) -> Path:
+    fake = tmp_path / "failing_codex.py"
+    fake.write_text(
+        "#!/usr/bin/env python3\n"
+        "import sys\n"
+        "print('bad things', file=sys.stderr)\n"
+        "raise SystemExit(7)\n",
         encoding="utf-8",
     )
     fake.chmod(fake.stat().st_mode | 0o111)

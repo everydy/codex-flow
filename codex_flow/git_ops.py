@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import fnmatch
 import json
 import subprocess
 from collections.abc import Mapping
@@ -36,6 +37,7 @@ def run_process(
     cwd: str | Path,
     input_text: str | None = None,
     env: Mapping[str, str] | None = None,
+    timeout_seconds: int | None = None,
 ) -> ProcessResult:
     result = subprocess.run(
         args,
@@ -45,6 +47,7 @@ def run_process(
         capture_output=True,
         check=False,
         env=env,
+        timeout=timeout_seconds,
     )
     return ProcessResult(args=args, status=result.returncode, stdout=result.stdout, stderr=result.stderr)
 
@@ -61,6 +64,8 @@ def require_git_repo(repo: str | Path) -> Path:
 
 
 def parse_status(raw: str) -> GitStatusSnapshot:
+    if "\0" in raw:
+        return parse_status_z(raw)
     entries = []
     for line in raw.splitlines():
         if not line.strip():
@@ -71,6 +76,24 @@ def parse_status(raw: str) -> GitStatusSnapshot:
             raw_path = raw_path.rsplit(" -> ", 1)[1]
         entries.append(GitStatusEntry(status=status, path=unquote_status_path(raw_path), raw=line))
     return GitStatusSnapshot(raw=raw, entries=entries)
+
+
+def parse_status_z(raw: str) -> GitStatusSnapshot:
+    entries: list[GitStatusEntry] = []
+    records = raw.split("\0")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        status = record[:2]
+        raw_path = record[3:] if len(record) > 3 else ""
+        if "R" in status or "C" in status:
+            index += 1
+        entries.append(GitStatusEntry(status=status, path=raw_path, raw=f"{status} {raw_path}"))
+    normalized = "\n".join(entry.raw for entry in entries)
+    return GitStatusSnapshot(raw=normalized, entries=entries)
 
 
 def unquote_status_path(value: str) -> str:
@@ -84,7 +107,7 @@ def unquote_status_path(value: str) -> str:
 
 def status(repo: str | Path) -> GitStatusSnapshot:
     repo_path = require_git_repo(repo)
-    result = run_process(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo_path)
+    result = run_process(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=repo_path)
     if result.status != 0:
         raise SystemExit(command_failure("git status failed", result))
     return parse_status(result.stdout)
@@ -123,6 +146,36 @@ def dirty_paths(snapshot: GitStatusSnapshot, ignore_flow: bool = True) -> list[s
     if ignore_flow:
         paths = [path for path in paths if not path.startswith(FLOW_PREFIX)]
     return paths
+
+
+def path_allowed(path: str, allowed_paths: list[str]) -> bool:
+    normalized = path.replace("\\", "/")
+    for raw_pattern in allowed_paths:
+        pattern = raw_pattern.replace("\\", "/").strip()
+        if not pattern:
+            continue
+        if pattern in {"*", "**"}:
+            return True
+        if pattern.endswith("/**") and normalized.startswith(pattern[:-3].rstrip("/") + "/"):
+            return True
+        if fnmatch.fnmatch(normalized, pattern):
+            return True
+        if normalized == pattern or normalized.startswith(pattern.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def scoped_status_summary(snapshot: GitStatusSnapshot, allowed_paths: list[str]) -> str:
+    if not snapshot.entries:
+        return ""
+    if not allowed_paths:
+        return snapshot.raw
+    visible = [entry.raw for entry in snapshot.entries if path_allowed(entry.path, allowed_paths)]
+    hidden_count = len(snapshot.entries) - len(visible)
+    lines = visible or ["Clean within allowed paths"]
+    if hidden_count:
+        lines.append(f"... {hidden_count} unrelated dirty path(s) hidden from implementer prompt")
+    return "\n".join(lines)
 
 
 def stash_paths(repo: str | Path, paths: list[str], message: str) -> str:

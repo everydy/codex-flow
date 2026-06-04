@@ -163,6 +163,20 @@ print('{"session_id":"fake-session"}')
     return fake_codex
 
 
+def write_fake_codex_timeout(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_timeout_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import time
+
+time.sleep(5)
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
 def write_fake_codex_resume_repair_ready(tmp_path):
     fake_codex = tmp_path.parent / f"fake_codex_resume_repair_{tmp_path.name}.py"
     fake_codex.write_text(
@@ -602,6 +616,38 @@ def test_run_next_auto_resolve_shelves_dirty_worktree_before_execution(tmp_path)
     assert result["auto_resolved_dirty"] == ["dirty-note.md"]
     stash_list = subprocess.run(["git", "stash", "list"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
     assert "codex-flow auto-shelve" in stash_list
+
+
+def test_run_next_timeout_marks_unit_needs_work_with_diagnostics(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_timeout(tmp_path)
+    plan = make_plan(tmp_path)
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--auto-resolve",
+            "--codex-command",
+            str(fake_codex),
+            "--codex-timeout-seconds",
+            "1",
+        ]
+    )
+
+    output = capsys.readouterr().out
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    diagnostic_path = plan.directory / queue["units"][0]["diagnostic_path"]
+    assert status == 1
+    assert "action: needs_work" in output
+    assert "diagnostic_path:" in output
+    assert queue["units"][0]["status"] == "needs_work"
+    assert "timed out" in queue["units"][0]["last_needs_work_reason"]
+    assert (diagnostic_path / "prompt.md").exists()
+    assert (diagnostic_path / "metadata.json").exists()
 
 
 def test_route_queues_when_pr_lock_is_active(tmp_path, capsys):

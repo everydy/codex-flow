@@ -4,7 +4,8 @@ import json
 from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
-from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, stash_paths, status
+from .codex_cli import CodexExecFailure, CodexExecTimeout
+from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, scoped_status_summary, stash_paths, status
 from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
 
 
@@ -159,6 +160,7 @@ def run_next(
     auto_resolve: bool = False,
     repair_attempts: int = 0,
     accept_source_drift: bool = False,
+    codex_timeout_seconds: int | None = None,
 ) -> dict | None:
     plan_dir, queue_data = plans.load_queue(plan_path)
     queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
@@ -217,6 +219,7 @@ def run_next(
             no_branch=no_branch,
             auto_resolve=auto_resolve,
             repair_attempts=repair_attempts,
+            codex_timeout_seconds=codex_timeout_seconds,
         )
 
     unit["status"] = "prompted"
@@ -242,6 +245,7 @@ def execute_unit(
     no_branch: bool,
     auto_resolve: bool,
     repair_attempts: int,
+    codex_timeout_seconds: int | None,
 ) -> dict:
     repo = plan_dir.parents[2]
     branch = queue_data.get("branch") or f"codex/{queue_data.get('plan_slug', 'plan')}"
@@ -298,18 +302,45 @@ def execute_unit(
             unit["updated_at"] = state.timestamp()
             plans.save_queue(plan_dir, queue_data)
             append_log(plan_dir, f"Repair attempt {attempt}/{repair_attempt_limit} for commit unit {selected_unit.number}: {last_repair_reason}")
-        agent_result = agent.implement(
-            ImplementerAgentInput(
-                repo=repo,
-                plan_path=plan_dir / "plan.md",
-                plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
-                unit=selected_unit,
-                previous_commit=head_summary(repo),
-                git_status=status(repo).raw,
-                repair_attempt=attempt,
-                repair_reason=last_repair_reason,
+        attempt_dir = execution_attempt_dir(plan_dir, unit["id"], attempt)
+        try:
+            agent_result = agent.implement(
+                ImplementerAgentInput(
+                    repo=repo,
+                    plan_path=plan_dir / "plan.md",
+                    plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
+                    unit=selected_unit,
+                    previous_commit=head_summary(repo),
+                    git_status=scoped_status_summary(status(repo), [str(path) for path in unit.get("allowed_paths", [])]),
+                    repair_attempt=attempt,
+                    repair_reason=last_repair_reason,
+                ),
+                diagnostic_dir=attempt_dir,
+                timeout_seconds=codex_timeout_seconds,
             )
-        )
+        except (CodexExecTimeout, CodexExecFailure) as exc:
+            partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
+            unit["status"] = "needs_work"
+            unit["updated_at"] = state.timestamp()
+            unit["repair_attempts"] = used_repair_attempts
+            unit["last_needs_work_reason"] = str(exc)
+            unit["diagnostic_path"] = str(exc.diagnostic_dir.relative_to(plan_dir))
+            unit["changed_paths"] = partial_changed
+            plans.save_queue(plan_dir, queue_data)
+            append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work: {exc}")
+            state.refresh_dashboard(repo)
+            return {
+                "unit": unit,
+                "prompt_path": prompt_path,
+                "action": "needs_work",
+                "reason": str(exc),
+                "diagnostic_path": exc.diagnostic_dir,
+                "changed_paths": partial_changed,
+                "auto_resolved_dirty": auto_resolved_dirty,
+                "repair_attempts": used_repair_attempts,
+                "repair_reason": str(exc),
+                "review_gate": None,
+            }
         write_review_attempt(plan_dir, unit["id"], attempt, agent_result.review)
         if agent_result.review.gate:
             unit["review_gate"] = agent_result.review.gate.to_dict()
@@ -428,6 +459,10 @@ def write_review_attempt(plan_dir: Path, unit_id: str, attempt: int, review: Com
     return path
 
 
+def execution_attempt_dir(plan_dir: Path, unit_id: str, attempt: int) -> Path:
+    return plan_dir / "attempts" / unit_id / f"attempt-{attempt}"
+
+
 def run_all(
     plan_path: str | Path,
     max_units: int | None = None,
@@ -441,6 +476,7 @@ def run_all(
     auto_resolve: bool = False,
     repair_attempts: int = 0,
     accept_source_drift: bool = False,
+    codex_timeout_seconds: int | None = None,
 ) -> list[dict]:
     results: list[dict] = []
     limit = max_units
@@ -459,6 +495,7 @@ def run_all(
             auto_resolve=auto_resolve,
             repair_attempts=repair_attempts,
             accept_source_drift=accept_source_drift,
+            codex_timeout_seconds=codex_timeout_seconds,
         )
         if result is None:
             break

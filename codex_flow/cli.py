@@ -87,6 +87,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_next.add_argument("--no-commit", dest="commit", action="store_false", help="Leave successful execution changes uncommitted.")
     run_next.add_argument("--codex-command", default="codex")
     run_next.add_argument("--codex-arg", action="append", default=[])
+    run_next.add_argument("--codex-timeout-seconds", type=int, default=900)
     run_next.add_argument("--allow-dirty", action="store_true")
     run_next.add_argument("--no-branch", action="store_true")
     run_next.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
@@ -103,6 +104,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--no-commit", dest="commit", action="store_false", help="Leave successful execution changes uncommitted.")
     run_all.add_argument("--codex-command", default="codex")
     run_all.add_argument("--codex-arg", action="append", default=[])
+    run_all.add_argument("--codex-timeout-seconds", type=int, default=900)
     run_all.add_argument("--allow-dirty", action="store_true")
     run_all.add_argument("--no-branch", action="store_true")
     run_all.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
@@ -134,6 +136,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--max-units", type=int, default=8)
         command.add_argument("--codex-command", default="codex")
         command.add_argument("--codex-arg", action="append", default=[])
+        command.add_argument("--codex-timeout-seconds", type=int, default=900)
         command.add_argument("--allow-dirty", action="store_true")
         command.add_argument("--no-branch", action="store_true")
         command.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times while auto-resolving. Defaults to 1 with --auto-resolve, otherwise 0.")
@@ -172,6 +175,7 @@ def build_parser() -> argparse.ArgumentParser:
     merge.add_argument("--max-units", type=int, default=8)
     merge.add_argument("--codex-command", default="codex")
     merge.add_argument("--codex-arg", action="append", default=[])
+    merge.add_argument("--codex-timeout-seconds", type=int, default=900)
     merge.add_argument("--allow-dirty", action="store_true")
     merge.add_argument("--no-branch", action="store_true")
     merge.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times while auto-resolving. Defaults to 1 with --auto-resolve, otherwise 0.")
@@ -257,6 +261,7 @@ def main(argv: list[str] | None = None) -> int:
             auto_resolve=args.auto_resolve,
             repair_attempts=repair_attempts,
             accept_source_drift=args.accept_source_drift,
+            codex_timeout_seconds=args.codex_timeout_seconds,
         )
         if result is None:
             print("no_ready_units")
@@ -287,6 +292,8 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"auto_resolved_dirty: {', '.join(result['auto_resolved_dirty'])}")
             if result.get("repair_attempts"):
                 print(f"repair_attempts: {result['repair_attempts']}")
+            if result.get("diagnostic_path"):
+                print(f"diagnostic_path: {result['diagnostic_path']}")
             return exit_code_for_action(result.get("action", ""))
         else:
             print("status: prompted")
@@ -308,6 +315,7 @@ def main(argv: list[str] | None = None) -> int:
             auto_resolve=args.auto_resolve,
             repair_attempts=repair_attempts,
             accept_source_drift=args.accept_source_drift,
+            codex_timeout_seconds=args.codex_timeout_seconds,
             open_pr=args.open_pr,
             merge=args.merge,
             remote=args.remote,
@@ -320,7 +328,8 @@ def main(argv: list[str] | None = None) -> int:
             commit_suffix = f" commit={result['commit']}" if result.get("commit") else ""
             repair_suffix = f" repair_attempts={result['repair_attempts']}" if result.get("repair_attempts") else ""
             reason_suffix = f" reason={result['reason']}" if result.get("reason") else ""
-            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}{repair_suffix}{reason_suffix}")
+            diagnostic_suffix = f" diagnostic_path={result['diagnostic_path']}" if result.get("diagnostic_path") else ""
+            print(f"- {result['unit']['id']}: {result['prompt_path']}{suffix}{commit_suffix}{repair_suffix}{reason_suffix}{diagnostic_suffix}")
         if run_result.message:
             print(run_result.message)
         return exit_code_for_action(run_result.action)
@@ -420,6 +429,7 @@ def auto_complete_units(args: argparse.Namespace) -> str:
         auto_resolve=args.auto_resolve,
         repair_attempts=repair_attempts,
         accept_source_drift=getattr(args, "accept_source_drift", False),
+        codex_timeout_seconds=args.codex_timeout_seconds,
     )
     refreshed_dir, refreshed = plans.load_queue(args.plan)
     refreshed = plan_readiness.sync_queue_cache_from_plan(refreshed_dir / "plan.md")

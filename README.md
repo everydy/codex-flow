@@ -221,6 +221,8 @@ Merge agent       resolves only active merge conflicts
 
 The default route path now adopts a plan-first Markdown source. Short natural-language route input fails with guidance instead of creating a generic plan. `run-next` and `run-all` execute by default and commit completed units unless `--no-commit` is explicit. Use `--preview` or `--dry-run` when you only want prompts. If the original plan-first source changes after route, `run-next` and `run-all` stop unless `--accept-source-drift` is explicit.
 
+Long-running Codex child processes are bounded by `--codex-timeout-seconds` on `run-next`, `run-all`, and auto-resolve finalize commands. The default is 900 seconds. When a child process times out or exits with a nonzero status during a commit unit, the unit is marked `needs_work` and `diagnostic_path` points to saved `prompt.md`, `args.json`, `stdout.log`, `stderr.log`, `last-message.txt`, and `metadata.json` files under the plan `attempts/` directory.
+
 Plan progress is read from readable Markdown:
 
 ```text
@@ -234,6 +236,7 @@ Plan progress is read from readable Markdown:
   queue.json    machine-readable cache for compatibility
   queue.md      rendered cache
   requests.md   plan-local follow-up requests
+  attempts/     per-unit implementation/review diagnostics
 ```
 
 ## Repository Layout
@@ -253,9 +256,11 @@ python3 scripts/codex_flow.py route docs/plans/example-plan.md --auto-resolve
 python3 scripts/codex_flow.py dashboard
 python3 scripts/codex_flow.py dashboard --watch
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --accept-source-drift
 python3 scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --preview
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --accept-source-drift
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --preview
 python3 scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --open-pr

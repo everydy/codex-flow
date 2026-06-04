@@ -226,16 +226,32 @@ def queue_from_source_tickets(
     extraction_confidence: str,
 ) -> dict:
     source_ref_path = source_plan.relative_path(source.path, source.repo)
+    source_manifest = source_manifest_by_number(source.content)
     units: list[dict] = []
     for index, ticket in enumerate(extracted, start=1):
         template = DEFAULT_UNITS[0] if index == 1 else DEFAULT_UNITS[1]
+        path_scope = plan_first_extract.extract_path_scope(ticket.excerpt, source.repo)
+        allowed_paths = path_scope.allowed_paths or template.get(
+            "allowed_paths",
+            DEFAULT_IMPLEMENTATION_ALLOWED_PATHS,
+        )
+        manifest_entry = source_manifest.get(index)
+        status = "human_gate" if ticket.confidence == "low" or path_scope.external_allowed_paths else "ready"
+        skill_routing_evidence = f"Derived from source plan section: {ticket.source_section}"
+        if manifest_entry:
+            skill_routing_evidence = manifest_entry.evidence or skill_routing_evidence
+        if path_scope.external_allowed_paths:
+            skill_routing_evidence = (
+                skill_routing_evidence.rstrip(".")
+                + f". External paths require operator review: {', '.join(path_scope.external_allowed_paths)}"
+            )
         unit = dict(template)
         unit.update(
             {
                 "id": f"unit-{index:03d}",
                 "number": index,
                 "title": ticket.title,
-                "status": "human_gate" if ticket.confidence == "low" else "ready",
+                "status": status,
                 "prompt_path": "",
                 "updated_at": state.timestamp(),
                 "ticket_id": ticket.id,
@@ -245,11 +261,14 @@ def queue_from_source_tickets(
                     "excerpt_hash": plan_first_extract.excerpt_hash(ticket.excerpt),
                 },
                 "extraction_confidence": ticket.confidence,
-                "allowed_paths": template.get("allowed_paths", DEFAULT_IMPLEMENTATION_ALLOWED_PATHS),
+                "allowed_paths": allowed_paths,
+                "external_allowed_paths": path_scope.external_allowed_paths,
                 "verification": template.get("verification", ["Narrow CLI or test verification"]),
-                "required_skills": template.get("required_skills", [PLAN_FIRST_SKILL, "mission-completion-harness"]),
-                "optional_skills": template.get("optional_skills", []),
-                "skill_routing_evidence": f"Derived from source plan section: {ticket.source_section}",
+                "required_skills": list(manifest_entry.required_skills)
+                if manifest_entry
+                else template.get("required_skills", [PLAN_FIRST_SKILL, "mission-completion-harness"]),
+                "optional_skills": list(manifest_entry.optional_skills) if manifest_entry else template.get("optional_skills", []),
+                "skill_routing_evidence": skill_routing_evidence,
             }
         )
         units.append(unit)
@@ -270,6 +289,20 @@ def queue_from_source_tickets(
         "units": units,
         "final_gate": dict(DEFAULT_FINAL_GATE),
     }
+
+
+def source_manifest_by_number(source_content: str) -> dict[int, plan_readiness.SkillRoutingEntry]:
+    entries: dict[int, plan_readiness.SkillRoutingEntry] = {}
+    for entry in plan_readiness.parse_skill_routing_manifest(source_content):
+        number = manifest_phase_number(entry.phase)
+        if number is not None:
+            entries[number] = entry
+    return entries
+
+
+def manifest_phase_number(phase: str) -> int | None:
+    match = re.search(r"\b(?:Commit|Phase)\s+(\d+)\b", phase, flags=re.IGNORECASE)
+    return int(match.group(1)) if match else None
 
 
 def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
@@ -424,6 +457,7 @@ def render_source_plan_md(
     for index, unit in enumerate(units, start=1):
         verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
         allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
+        external_allowed = "\n".join(f"- {item}" for item in unit.get("external_allowed_paths", [])) or "- None"
         source_ref = unit.get("source_plan_ref") or {}
         commit_sections.extend(
             [
@@ -436,6 +470,9 @@ def render_source_plan_md(
                 "",
                 "Allowed paths:",
                 allowed,
+                "",
+                "External allowed paths:",
+                external_allowed,
                 "",
                 "Verification:",
                 verification,

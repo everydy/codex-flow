@@ -185,6 +185,109 @@ def test_source_route_does_not_turn_later_commits_into_final_gate_units(tmp_path
     assert "review-all-in-one" not in queue["units"][3]["required_skills"]
 
 
+def test_source_route_derives_allowed_paths_from_commit_target_files(tmp_path, capsys):
+    source = write_source_plan(
+        tmp_path,
+        "\n".join(
+            [
+                "# Target Path Plan",
+                "",
+                "### Commit 1: Update contracts",
+                "",
+                "- 대상 파일:",
+                "  - `/Users/moonsoo/projects/example/ignored.md`",
+                f"  - `{tmp_path / 'flow-architecture-map' / 'SKILL.md'}`",
+                "  - `flow-architecture-map/references/views/user-flow.md`",
+                "",
+                "### Commit 2: Update templates",
+                "",
+                "- 대상 파일:",
+                "  - `flow-architecture-map/assets/templates/flow-architecture-map-folder/user-flow.html`",
+                "  - `flow-architecture-map/assets/templates/flow-architecture-map-folder/assets/styles.css`",
+                "",
+            ]
+        ),
+    )
+
+    status = cli.main(["--repo", str(tmp_path), "route", str(source), "--auto-resolve"])
+
+    assert status == 0
+    capsys.readouterr()
+    plan_dir = next((tmp_path / ".codex-flow" / "plans").glob("*"))
+    queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
+    plan_text = (plan_dir / "plan.md").read_text(encoding="utf-8")
+    assert queue["units"][0]["allowed_paths"] == [
+        "flow-architecture-map/SKILL.md",
+        "flow-architecture-map/references/views/user-flow.md",
+    ]
+    assert queue["units"][0]["external_allowed_paths"] == ["/Users/moonsoo/projects/example/ignored.md"]
+    assert queue["units"][0]["status"] == "human_gate"
+    assert queue["units"][1]["allowed_paths"] == [
+        "flow-architecture-map/assets/templates/flow-architecture-map-folder/user-flow.html",
+        "flow-architecture-map/assets/templates/flow-architecture-map-folder/assets/styles.css",
+    ]
+    assert "flow-architecture-map/SKILL.md" in plan_text
+    assert "/Users/moonsoo/projects/example/ignored.md" in plan_text
+    assert "frontend/**" not in queue["units"][1]["allowed_paths"]
+
+
+def test_source_route_preserves_source_skill_routing_manifest(tmp_path, capsys):
+    source = write_source_plan(
+        tmp_path,
+        "\n".join(
+            [
+                "# Routed Skill Plan",
+                "",
+                "## Skill Routing Manifest",
+                "",
+                "| Phase | Required skills | Optional skills | Evidence |",
+                "| --- | --- | --- | --- |",
+                "| Commit 1: Update contracts | `flow-architecture-map`, `structure-map-html` | `review-all-in-one` | Source-specific routing. |",
+                "| Commit 2: Update templates | `plan-first-implementation` | `qa-gate` | Template routing. |",
+                "| Final Gate | `review-all-in-one`, `qa-gate` | `테스트` | Final check. |",
+                "",
+                "## Implementation Plan",
+                "",
+                "### Commit 1: Update contracts",
+                "",
+                "- 대상 파일:",
+                "  - `flow-architecture-map/SKILL.md`",
+                "",
+                "### Commit 2: Update templates",
+                "",
+                "- 대상 파일:",
+                "  - `flow-architecture-map/assets/template.html`",
+                "",
+            ]
+        ),
+    )
+
+    status = cli.main(["--repo", str(tmp_path), "route", str(source), "--auto-resolve"])
+
+    assert status == 0
+    capsys.readouterr()
+    plan_dir = next((tmp_path / ".codex-flow" / "plans").glob("*"))
+    queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
+    plan_text = (plan_dir / "plan.md").read_text(encoding="utf-8")
+    synced = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+    assert queue["units"][0]["required_skills"] == [
+        "plan-first-implementation",
+        "flow-architecture-map",
+        "structure-map-html",
+    ]
+    assert queue["units"][0]["optional_skills"] == ["review-all-in-one"]
+    assert queue["units"][0]["skill_routing_evidence"] == "Source-specific routing."
+    assert synced["units"][0]["required_skills"] == [
+        "plan-first-implementation",
+        "flow-architecture-map",
+        "structure-map-html",
+    ]
+    assert (
+        "| Commit 1: Update contracts | `plan-first-implementation`, `flow-architecture-map`, `structure-map-html` "
+        "| `review-all-in-one` | Source-specific routing. |"
+    ) in plan_text
+
+
 def test_route_queues_valid_source_when_pr_lock_is_active(tmp_path, capsys):
     source = write_source_plan(tmp_path)
     pr.write_pr_lock(tmp_path, "codex/open", "https://github.com/example/repo/pull/1", "reviewing")

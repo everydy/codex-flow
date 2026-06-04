@@ -29,6 +29,7 @@ class RunAllRunner:
         auto_resolve: bool = False,
         repair_attempts: int = 0,
         accept_source_drift: bool = False,
+        codex_timeout_seconds: int | None = None,
         open_pr: bool = False,
         merge: bool = False,
         remote: bool = False,
@@ -47,6 +48,7 @@ class RunAllRunner:
             auto_resolve=auto_resolve,
             repair_attempts=repair_attempts,
             accept_source_drift=accept_source_drift,
+            codex_timeout_seconds=codex_timeout_seconds,
         )
         if any(step.get("action") == "source_drift" for step in steps):
             return RunAllResult("source_drift", steps, "run_all: source_drift")

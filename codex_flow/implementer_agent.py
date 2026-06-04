@@ -67,7 +67,12 @@ class ImplementerAgentResult:
 
 
 class ImplementerAgent(Protocol):
-    def implement(self, input_data: ImplementerAgentInput) -> ImplementerAgentResult:
+    def implement(
+        self,
+        input_data: ImplementerAgentInput,
+        diagnostic_dir: Path | None = None,
+        timeout_seconds: int | None = None,
+    ) -> ImplementerAgentResult:
         ...
 
 
@@ -79,13 +84,21 @@ class CodexImplementerAgent:
         self.command = command
         self.extra_args = extra_args or []
 
-    def implement(self, input_data: ImplementerAgentInput) -> ImplementerAgentResult:
+    def implement(
+        self,
+        input_data: ImplementerAgentInput,
+        diagnostic_dir: Path | None = None,
+        timeout_seconds: int | None = None,
+    ) -> ImplementerAgentResult:
         implementation = run_codex_exec(
             build_implementation_prompt(input_data),
             repo=input_data.repo,
             command=self.command,
             sandbox="workspace-write",
             extra_args=self.extra_args,
+            timeout_seconds=timeout_seconds,
+            diagnostic_dir=diagnostic_dir / "implementation" if diagnostic_dir else None,
+            phase="implementation",
         )
         session_id = parse_session_id(implementation.stdout) or ""
         if not session_id:
@@ -97,6 +110,9 @@ class CodexImplementerAgent:
             sandbox="workspace-write",
             extra_args=self.extra_args,
             resume_session_id=session_id,
+            timeout_seconds=timeout_seconds,
+            diagnostic_dir=diagnostic_dir / "review" if diagnostic_dir else None,
+            phase="review",
         )
         return ImplementerAgentResult(
             session_id=session_id,

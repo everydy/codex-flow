@@ -16,8 +16,15 @@ class ExtractedTicket:
     confidence: str
 
 
+@dataclass(frozen=True)
+class ExtractedPaths:
+    allowed_paths: list[str]
+    external_allowed_paths: list[str]
+
+
 COMMIT_RE = re.compile(r"^###\s+Commit\s+(\d+):\s*(.+?)\s*$", re.MULTILINE)
 PHASE_RE = re.compile(r"^###\s+Phase\s+(\d+):?\s*(.+?)\s*$", re.MULTILINE | re.IGNORECASE)
+CODE_SPAN_RE = re.compile(r"`([^`\n]+)`")
 
 
 def extract_tickets(source_content: str) -> list[ExtractedTicket]:
@@ -90,3 +97,53 @@ def render_ticket_md(ticket: ExtractedTicket) -> str:
             "",
         ]
     )
+
+
+def extract_allowed_paths(excerpt: str, repo: str | Path) -> list[str]:
+    return extract_path_scope(excerpt, repo).allowed_paths
+
+
+def extract_path_scope(excerpt: str, repo: str | Path) -> ExtractedPaths:
+    repo_path = Path(repo).expanduser().resolve()
+    allowed_paths: list[str] = []
+    external_allowed_paths: list[str] = []
+    seen_allowed: set[str] = set()
+    seen_external: set[str] = set()
+    for match in CODE_SPAN_RE.finditer(excerpt):
+        candidate = normalize_allowed_path_candidate(match.group(1), repo_path)
+        if not candidate:
+            continue
+        if Path(candidate).is_absolute():
+            if candidate not in seen_external:
+                seen_external.add(candidate)
+                external_allowed_paths.append(candidate)
+            continue
+        if candidate not in seen_allowed:
+            seen_allowed.add(candidate)
+            allowed_paths.append(candidate)
+    return ExtractedPaths(allowed_paths=allowed_paths, external_allowed_paths=external_allowed_paths)
+
+
+def normalize_allowed_path_candidate(value: str, repo: Path) -> str:
+    candidate = value.strip().strip(".,;:")
+    if not candidate:
+        return ""
+    if re.match(r"^[a-z][a-z0-9+.-]*://", candidate, flags=re.IGNORECASE):
+        return ""
+    if any(char.isspace() for char in candidate):
+        return ""
+    if "<" in candidate or ">" in candidate:
+        return ""
+    if "/" not in candidate and "\\" not in candidate and "*" not in candidate:
+        return ""
+    candidate = candidate.replace("\\", "/")
+    if candidate.startswith("/"):
+        repo_text = str(repo)
+        if candidate == repo_text:
+            return "."
+        if candidate.startswith(repo_text + "/"):
+            return candidate[len(repo_text) + 1 :]
+        return candidate
+    while candidate.startswith("./"):
+        candidate = candidate[2:]
+    return candidate

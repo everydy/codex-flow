@@ -48,9 +48,10 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 2. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py route <plan-first.md>`로 승인된 plan-first Markdown 문서를 실행 source로 채택하고 plan/branch queue를 만든다. 짧은 자연어 요청으로 새 plan을 만들지 않는다.
 3. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan <plan.md>`로 commit unit 하나를 구현하고 같은 Codex session에서 `review-all-in-one` post-unit gate를 통과한 뒤 자동 커밋한다. 프롬프트만 만들 때는 `--preview`, 큐 변경도 없이 볼 때는 `--dry-run`을 붙인다.
 4. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan <plan.md>`로 plan이 complete 또는 needs_work가 될 때까지 반복 처리하며 각 성공 unit을 `review-all-in-one` post-unit gate 후 자동 커밋한다. `--auto-resolve`에서는 transient needs_work를 기본 1회 repair하고, preview prompt만 만들 때는 `--preview`를 붙인다.
-5. 아침에는 `morning-brief`와 `review`로 검토 자료를 만든다.
-6. PR 초안은 `open-pr --auto-resolve --dry-run`으로 남은 unit을 먼저 끝내고 자동 커밋한 뒤 만든다. 실제 원격 PR은 `create-pr --auto-resolve`로 분리해 실행한다.
-7. merge는 `merge --auto-resolve`로 미완료 unit을 끝내고 자동 커밋한 뒤 readiness를 확인하고 진행한다. 현재 작업 흐름상 원격 통합이 자연스러운 완료 조건이면 `--remote`까지 사용할 수 있다.
+5. 긴 Codex child process는 `--codex-timeout-seconds`로 제한한다. 기본값은 900초다. timeout 또는 nonzero child failure가 나면 해당 unit은 `needs_work`가 되고, `diagnostic_path`에 prompt/args/stdout/stderr/last-message/metadata 파일 위치가 남는다.
+6. 아침에는 `morning-brief`와 `review`로 검토 자료를 만든다.
+7. PR 초안은 `open-pr --auto-resolve --dry-run`으로 남은 unit을 먼저 끝내고 자동 커밋한 뒤 만든다. 실제 원격 PR은 `create-pr --auto-resolve`로 분리해 실행한다.
+8. merge는 `merge --auto-resolve`로 미완료 unit을 끝내고 자동 커밋한 뒤 readiness를 확인하고 진행한다. 현재 작업 흐름상 원격 통합이 자연스러운 완료 조건이면 `--remote`까지 사용할 수 있다.
 
 ## Skill Routing Manifest
 
@@ -135,8 +136,10 @@ source plan에서 `### Commit N:` 또는 `### Phase N:` 단위를 찾지 못하�
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py plan --ticket .codex-flow/tickets/<ticket>.md
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --preview
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --preview
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py dashboard
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py dashboard --watch
