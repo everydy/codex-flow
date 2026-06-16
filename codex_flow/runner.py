@@ -33,6 +33,7 @@ def unit_for_commit(queue_data: dict, commit_unit: plan_readiness.CommitUnit) ->
 
 
 def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: plan_readiness.CommitUnit | None = None) -> str:
+    repo = state.repo_for_plan(plan_dir)
     allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
     verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
     skill_routing = render_skill_routing_prompt(unit, plan_dir, commit_unit)
@@ -89,7 +90,7 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             "## Context",
             "",
             f"- Branch: {queue_data.get('branch', '-')}",
-            f"- Previous commit: {head_summary(plan_dir.parents[2]) if (plan_dir.parents[2] / '.git').exists() else 'None'}",
+            f"- Previous commit: {head_summary(repo) if (repo / '.git').exists() else 'None'}",
             "",
             "## Full Plan Context",
             "",
@@ -227,7 +228,7 @@ def run_next(
     unit["updated_at"] = state.timestamp()
     plans.save_queue(plan_dir, queue_data)
     append_log(plan_dir, f"Prompted commit unit {unit.get('number') or unit['id']}: {unit['title']} -> {unit['prompt_path']}")
-    state.refresh_dashboard(plan_dir.parents[2])
+    state.refresh_dashboard(state.repo_for_plan(plan_dir))
     return {"unit": unit, "prompt_path": prompt_path, "prompt": prompt_text, "changed": True}
 
 
@@ -247,7 +248,7 @@ def execute_unit(
     repair_attempts: int,
     codex_timeout_seconds: int | None,
 ) -> dict:
-    repo = plan_dir.parents[2]
+    repo = state.repo_for_plan(plan_dir)
     branch = queue_data.get("branch") or f"codex/{queue_data.get('plan_slug', 'plan')}"
     resume_needs_work = unit.get("status") == "needs_work"
     resume_reason = str(unit.get("last_needs_work_reason") or unit.get("repair_reason") or "") if resume_needs_work else ""

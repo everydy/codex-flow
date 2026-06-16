@@ -44,7 +44,7 @@ class MergeRunner:
             return MergeResult("needs_work", "merge: needs_work plan is not complete", branch, target)
         if not execute:
             return MergeResult("hard_stop", "merge: hard-stop use --execute to run an actual merge", branch, target)
-        repo = plan_dir.parents[2]
+        repo = state.repo_for_plan(plan_dir)
         dirty = dirty_paths(status(repo))
         if dirty:
             return MergeResult("needs_work", f"merge: needs_work dirty worktree: {', '.join(dirty)}", branch, target)
@@ -67,7 +67,7 @@ class MergeRunner:
             return MergeResult("needs_work", "merge: needs_work plan is not complete", branch, target)
         if not execute:
             return MergeResult("hard_stop", "merge: hard-stop use --execute to run an actual merge", branch, target)
-        repo = plan_dir.parents[2]
+        repo = state.repo_for_plan(plan_dir)
         active_lock = read_active_pr_lock(repo)
         if active_lock and active_lock[1] != branch:
             return MergeResult("needs_work", f"merge: needs_work pr_locked active branch={active_lock[1]} lock={active_lock[0]}", branch, target)

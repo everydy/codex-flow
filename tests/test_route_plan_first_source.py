@@ -132,6 +132,35 @@ def test_route_creates_task_worktree_for_git_source_repo(tmp_path, capsys):
     assert queue["source_plan_path"] == str(source.resolve())
 
 
+def test_run_next_dry_run_uses_task_worktree_plan(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    source = write_source_plan(tmp_path)
+    worktree_root = tmp_path.parent / f"{tmp_path.name}-worktrees"
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "route",
+            str(source),
+            "--auto-resolve",
+            "--worktree-root",
+            str(worktree_root),
+        ]
+    )
+    assert status == 0
+    capsys.readouterr()
+    task_worktree = worktree_root / "example-plan"
+    plan_path = next((task_worktree / ".codex-flow" / "plans").glob("*/plan.md"))
+
+    status = cli.main(["run-next", "--plan", str(plan_path), "--dry-run"])
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert f"prompt: {task_worktree.resolve()}" in output
+    assert "dry_run: prompt not written and queue not changed" in output
+
+
 def test_route_holds_low_confidence_source_at_human_gate(tmp_path, capsys):
     source = write_source_plan(
         tmp_path,

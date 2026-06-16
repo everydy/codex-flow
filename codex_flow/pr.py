@@ -87,7 +87,7 @@ def create_remote_pr(plan_path: str | Path, draft: bool = True) -> tuple[str, Pa
     queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
     if not plan_is_complete(queue, plan_dir / "plan.md"):
         raise SystemExit("Plan is not complete; remote PR creation stopped.")
-    repo = plan_dir.parents[2]
+    repo = state.repo_for_plan(plan_dir)
     lock_path = read_pr_lock(repo)
     if lock_path:
         raise ActivePrLockError(lock_path)
