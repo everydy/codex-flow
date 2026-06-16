@@ -161,6 +161,44 @@ def test_run_next_dry_run_uses_task_worktree_plan(tmp_path, capsys):
     assert "dry_run: prompt not written and queue not changed" in output
 
 
+def test_run_all_finalizes_completed_task_worktree(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    source = write_source_plan(tmp_path)
+    worktree_root = tmp_path.parent / f"{tmp_path.name}-worktrees"
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "route",
+            str(source),
+            "--auto-resolve",
+            "--worktree-root",
+            str(worktree_root),
+        ]
+    )
+    assert status == 0
+    capsys.readouterr()
+    task_worktree = worktree_root / "example-plan"
+    plan_dir = next((task_worktree / ".codex-flow" / "plans").glob("*"))
+    (plan_dir / "log.md").write_text("# Log\n\n- Completed commit unit 1\n- Completed commit unit 2\n", encoding="utf-8")
+
+    status = cli.main(["run-all", "--plan", str(plan_dir / "plan.md"), "--auto-resolve"])
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "cleanup: archived=" in output
+    assert (worktree_root / "_archive" / "example-plan" / ".codex-flow").exists()
+    assert not task_worktree.exists()
+    branch = subprocess.run(
+        ["git", "branch", "--list", "codex/example-plan"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    assert branch == ""
+
+
 def test_route_holds_low_confidence_source_at_human_gate(tmp_path, capsys):
     source = write_source_plan(
         tmp_path,

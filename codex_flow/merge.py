@@ -4,17 +4,22 @@ from dataclasses import dataclass
 from pathlib import Path
 import json
 import re
+import shutil
 
 from . import plan_readiness, state
 from .git_ops import (
+    branch_is_ancestor,
     command_failure,
     commit_merge,
+    delete_local_branch,
     dirty_paths,
     fetch_branch,
     has_pending_merge_commit,
     merge_branch,
     merge_current_branch,
+    prune_worktrees,
     push_branch,
+    remove_worktree,
     run_process,
     status,
     unmerged_paths,
@@ -31,12 +36,25 @@ class MergeResult:
     pr_url: str = ""
 
 
+@dataclass(frozen=True)
+class CleanupResult:
+    status: str
+    message: str
+    archive_path: Path | None = None
+
+
 class MergeRunner:
     def __init__(self, agent: MergeAgent | None = None, gh_command: str = "gh") -> None:
         self.agent = agent or CodexMergeAgent()
         self.gh_command = gh_command
 
-    def merge_local(self, plan_path: str | Path, target: str = "main", execute: bool = False) -> MergeResult:
+    def merge_local(
+        self,
+        plan_path: str | Path,
+        target: str = "main",
+        execute: bool = False,
+        cleanup: bool = True,
+    ) -> MergeResult:
         plan_dir, plan_content, log_content = plan_readiness.read_plan_file(plan_path)
         readiness = plan_readiness.check_plan_ready(plan_content, log_content)
         branch = plan_readiness.branch_name_from_plan(plan_content, f"codex/{plan_dir.name}")
@@ -44,15 +62,21 @@ class MergeRunner:
             return MergeResult("needs_work", "merge: needs_work plan is not complete", branch, target)
         if not execute:
             return MergeResult("hard_stop", "merge: hard-stop use --execute to run an actual merge", branch, target)
-        repo = state.repo_for_plan(plan_dir)
-        dirty = dirty_paths(status(repo))
+        task_repo = state.repo_for_plan(plan_dir)
+        source_repo = state.source_repo_for_plan(plan_dir)
+        dirty = dirty_paths(status(task_repo))
         if dirty:
             return MergeResult("needs_work", f"merge: needs_work dirty worktree: {', '.join(dirty)}", branch, target)
-        result = merge_branch(repo, branch, target)
+        result = merge_branch(source_repo, branch, target)
         if result.status == 0:
             append_merge_log(plan_dir, f"Merged local branch `{branch}` into `{target}`.")
+            if cleanup:
+                cleanup_result = cleanup_generated_worktree(plan_dir, branch, target)
+                if cleanup_result.status != "branch_closed":
+                    return MergeResult("cleanup_held", f"merge: cleanup_held {cleanup_result.message}", branch, target)
+                return MergeResult("branch_closed", f"merge: local merged {branch} into {target}; cleanup: {cleanup_result.message}", branch, target)
             return MergeResult("merged_local", f"merge: local merged {branch} into {target}", branch, target)
-        resolved = self.resolve_conflict(repo, plan_dir / "plan.md", branch, target, "local", command_failure("git merge failed", result))
+        resolved = self.resolve_conflict(source_repo, plan_dir / "plan.md", branch, target, "local", command_failure("git merge failed", result))
         if resolved.action == "merge_needs_work":
             append_merge_log(plan_dir, resolved.message)
             return resolved
@@ -169,6 +193,52 @@ def append_merge_log(plan_dir: Path, message: str) -> None:
     log_path = plan_dir / "log.md"
     current = log_path.read_text(encoding="utf-8") if log_path.exists() else "# Log\n"
     log_path.write_text(current.rstrip() + f"\n- {message}\n", encoding="utf-8")
+
+
+def cleanup_generated_worktree(plan_dir: Path, branch: str, target: str) -> CleanupResult:
+    task_repo = state.repo_for_plan(plan_dir)
+    source_repo = state.source_repo_for_plan(plan_dir)
+    dirty = dirty_paths(status(task_repo), ignore_flow=True)
+    if dirty:
+        return hold_cleanup(plan_dir, f"dirty paths: {', '.join(dirty)}")
+    if not branch_is_ancestor(source_repo, branch, target):
+        return hold_cleanup(plan_dir, f"branch {branch} is not contained in {target}")
+    archive_path = archive_flow_state(plan_dir)
+    if not archive_path.exists():
+        return hold_cleanup(plan_dir, "archive verification failed")
+    shutil.rmtree(task_repo / state.FLOW_DIR)
+    remove = remove_worktree(source_repo, task_repo)
+    if remove.status != 0:
+        return hold_cleanup(plan_dir, command_failure("git worktree remove failed", remove), archive_path)
+    delete = delete_local_branch(source_repo, branch)
+    if delete.status != 0:
+        return CleanupResult("held", command_failure("git branch -d failed", delete), archive_path)
+    prune_worktrees(source_repo)
+    return CleanupResult("branch_closed", f"archived={archive_path}", archive_path)
+
+
+def archive_flow_state(plan_dir: Path) -> Path:
+    task_repo = state.repo_for_plan(plan_dir)
+    source_repo = state.source_repo_for_plan(plan_dir)
+    slug = plan_dir.name
+    worktree_path = Path(state.read_plan_metadata(plan_dir).get("worktree_path", task_repo)).expanduser().resolve()
+    archive_root = worktree_path.parent / "_archive" if worktree_path.parent.name else Path.home() / ".config" / "superpowers" / "worktrees" / source_repo.name / "_archive"
+    archive_path = archive_root / slug
+    if archive_path.exists():
+        shutil.rmtree(archive_path)
+    archive_path.parent.mkdir(parents=True, exist_ok=True)
+    state.write_plan_metadata(plan_dir, {"archive_path": str(archive_path), "cleanup_status": "archived"})
+    shutil.copytree(task_repo / state.FLOW_DIR, archive_path / state.FLOW_DIR)
+    return archive_path
+
+
+def hold_cleanup(plan_dir: Path, reason: str, archive_path: Path | None = None) -> CleanupResult:
+    try:
+        state.write_plan_metadata(plan_dir, {"cleanup_status": "held", "cleanup_reason": reason})
+    except OSError:
+        pass
+    append_merge_log(plan_dir, f"cleanup_held: {reason}")
+    return CleanupResult("held", reason, archive_path)
 
 
 def parse_existing_pr(output: str) -> dict | None:

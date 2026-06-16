@@ -32,6 +32,8 @@ class RunAllRunner:
         codex_timeout_seconds: int | None = None,
         open_pr: bool = False,
         merge: bool = False,
+        no_merge: bool = False,
+        keep_worktree: bool = False,
         remote: bool = False,
         target: str = "main",
     ) -> RunAllResult:
@@ -65,8 +67,12 @@ class RunAllRunner:
                 next_unit = readiness.next_unit.number if readiness.next_unit else "unknown"
                 return RunAllResult("prompts_generated", steps, f"run_all: prompts_generated remaining={next_unit}")
             return RunAllResult("not_ready", steps, readiness.reason)
-        if merge:
-            merge_result = MergeRunner().merge_remote(plan_path, target=target, execute=True) if remote else MergeRunner().merge_local(plan_path, target=target, execute=True)
+        should_merge_local = merge or (not remote and not open_pr and not no_merge and not dry_run)
+        if remote and merge:
+            merge_result = MergeRunner().merge_remote(plan_path, target=target, execute=True)
+            return RunAllResult(merge_result.action, steps, merge_result.message)
+        if should_merge_local:
+            merge_result = MergeRunner().merge_local(plan_path, target=target, execute=True, cleanup=not keep_worktree)
             return RunAllResult(merge_result.action, steps, merge_result.message)
         if remote:
             try:

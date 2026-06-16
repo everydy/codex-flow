@@ -112,6 +112,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times. Defaults to 1 with --auto-resolve, otherwise 0.")
     run_all.add_argument("--accept-source-drift", action="store_true", help="Continue even if the original source plan changed after route.")
     run_all.add_argument("--merge", action="store_true", help="Merge after all units are done.")
+    run_all.add_argument("--no-merge", action="store_true", help="Do not merge or clean up the task worktree after all units are done.")
+    run_all.add_argument("--keep-worktree", action="store_true", help="Merge when ready but keep the task worktree for inspection.")
     run_all.add_argument("--target", default="main")
     run_all.add_argument("--remote", action="store_true", help="Use remote PR/merge mode for finalize steps.")
     run_all.add_argument("--open-pr", action="store_true", help="Create a PR dry-run or remote PR after all units are done.")
@@ -320,6 +322,8 @@ def main(argv: list[str] | None = None) -> int:
             codex_timeout_seconds=args.codex_timeout_seconds,
             open_pr=args.open_pr,
             merge=args.merge,
+            no_merge=args.no_merge,
+            keep_worktree=args.keep_worktree,
             remote=args.remote,
             target=args.target,
         )
