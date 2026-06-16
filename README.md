@@ -11,10 +11,12 @@ plan-first source -> source snapshot -> tickets -> macro plan -> queue -> run-ne
 The project is intentionally conservative. It keeps work in small units, records local state in `.codex-flow/`, and gives AI agents explicit recovery paths for common automation blockers.
 Each plan also carries a `Skill Routing Manifest`, so a fresh Codex session can see which existing skills should guide each commit unit and final review gate.
 
+For git-backed source repositories, `route` creates or reuses a task-specific worktree first. The active plan state then lives in that task worktree's `.codex-flow/`, not in a long-lived source checkout. Completed default `run-all --auto-resolve` merges into the target branch, archives task-local `.codex-flow`, removes the generated task worktree without force, and closes the task branch with `git branch -d`.
+
 ## What It Does
 
-- Creates a local `.codex-flow/` workspace for tickets, plans, queues, briefs, and locks.
-- Routes a plan-first Markdown source into a source snapshot, extracted tickets, a macro plan, and a queue.
+- Creates a task-local `.codex-flow/` workspace for tickets, plans, queues, briefs, and locks.
+- Routes a plan-first Markdown source into a task worktree, source snapshot, extracted tickets, a macro plan, and a queue.
 - Rejects short natural-language route input instead of creating an ad hoc plan.
 - Writes a `Skill Routing Manifest` into every plan, then feeds the selected entry into implementer prompts, review checklists, and PR draft artifacts.
 - Executes commit units by default, while still supporting prompt previews with `--preview` or `--dry-run`.
@@ -22,6 +24,7 @@ Each plan also carries a `Skill Routing Manifest`, so a fresh Codex session can 
 - Can commit changed files per completed unit after a mandatory post-unit `review-all-in-one` gate.
 - Writes morning briefs, review checklists, and PR dry-run artifacts.
 - Provides auto-resolve behavior for dirty worktrees, active PR locks, unfinished units, and local merge readiness.
+- Archives task-local `.codex-flow` diagnostics before removing generated task worktrees.
 - Provides a detailed dashboard with PR lock, inbox, dirty file, active plan, progress, and suggested command summaries.
 - Supports PR lock management, PR status checks, and source-plan-only inbox drain after merged PRs.
 
@@ -57,6 +60,14 @@ Route an approved plan-first document:
 python3 scripts/codex_flow.py --repo /path/to/your/repo route docs/plans/example-plan.md --auto-resolve
 ```
 
+For git repos, the resulting plan path is under the generated task worktree:
+
+```text
+~/.config/superpowers/worktrees/<repo-name>/<slug>/.codex-flow/plans/<slug>/plan.md
+```
+
+Use `--worktree-root <path>` when you need a deterministic task worktree location for tests or inspection.
+
 Inspect the dashboard:
 
 ```bash
@@ -68,7 +79,7 @@ Run the next unit:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-next \
-  --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
+  --plan ~/.config/superpowers/worktrees/<repo-name>/<slug>/.codex-flow/plans/<slug>/plan.md \
   --auto-resolve
 ```
 
@@ -86,9 +97,11 @@ Run all executable commit units until the plan is complete or a unit needs work:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
-  --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
+  --plan ~/.config/superpowers/worktrees/<repo-name>/<slug>/.codex-flow/plans/<slug>/plan.md \
   --auto-resolve
 ```
+
+When the plan is complete, this default path performs local merge, archive, generated worktree removal, and branch close. Use `--no-merge` to skip finalization or `--keep-worktree` to merge but keep the task worktree for inspection.
 
 If a source plan cannot be split into `### Commit N:` or `### Phase N:` sections, 구현커밋 creates a low-confidence placeholder unit and holds it at `human_gate` instead of auto-running it. Split the source plan into clear phases, then route it again.
 
@@ -100,11 +113,11 @@ python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
   --auto-resolve --open-pr
 ```
 
-Run all executable commit units and merge locally after completion:
+Run all executable commit units and explicitly merge locally after completion:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo run-all \
-  --plan /path/to/your/repo/.codex-flow/plans/<slug>/plan.md \
+  --plan ~/.config/superpowers/worktrees/<repo-name>/<slug>/.codex-flow/plans/<slug>/plan.md \
   --auto-resolve --merge --target main
 ```
 
@@ -158,7 +171,7 @@ Core meanings:
 
 - `라우트`: adopt a plan-first Markdown source and create a plan queue. It does not create a fresh plan from short natural-language input.
 - `다음실행`: run the next incomplete commit unit with `run-next`.
-- `모두실행`: run commit units with `run-all` until complete or needs_work.
+- `모두실행`: run commit units with `run-all` until complete or needs_work; when complete, merge, archive state, remove the generated task worktree, and close the branch unless an escape hatch is explicit.
 
 ## Skill Routing Manifest
 
@@ -187,6 +200,8 @@ When the review includes `REVIEW_GATE`, 구현커밋 stores the gate status, cou
 | Active PR lock | Keeps the lock meaningful and queues new requests in inbox. |
 | Unfinished units before PR draft | Runs unfinished units before writing the PR artifact. |
 | Local merge readiness | Runs unfinished units before local merge. |
+| Generated worktree remains | Archives `.codex-flow`, removes the generated task worktree without force, and closes the branch after merge containment. |
+| Cleanup cannot safely finish | Reports `cleanup_held` and keeps the remaining worktree/branch state instead of forcing deletion. |
 | Transient `needs_work` review | Retries the same unit with bounded repair context when `--auto-resolve` is active; if the repair budget is exhausted, records partial changed paths so the next repair run can keep them as input. |
 
 Remote PR creation and remote merge are normal 구현커밋 finalization steps when the current workflow calls for GitHub integration. They remain separate CLI modes so automation can choose them deliberately and log the result.
@@ -203,7 +218,7 @@ Remote PR creation and remote merge are normal 구현커밋 finalization steps w
 - PR lock clearing after merged PRs, plus source-plan-only inbox drain after review locks are cleared
 - dashboard summaries with suggested next commands
 - `run-next` and `run-all` commit-unit execution
-- optional `run-all --open-pr` and `run-all --merge` finalize paths
+- optional `run-all --open-pr`, `run-all --merge`, `run-all --no-merge`, and `run-all --keep-worktree` finalize paths
 - local-first default behavior with remote operations kept in finalize commands
 
 구현커밋 differs by keeping explicit `--preview` and `--dry-run` escape hatches, shipping a Korean Codex skill, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
