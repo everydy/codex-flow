@@ -70,7 +70,7 @@ class MergeRunner:
         result = merge_branch(source_repo, branch, target)
         if result.status == 0:
             append_merge_log(plan_dir, f"Merged local branch `{branch}` into `{target}`.")
-            if cleanup:
+            if cleanup and is_generated_task_worktree(plan_dir):
                 cleanup_result = cleanup_generated_worktree(plan_dir, branch, target)
                 if cleanup_result.status != "branch_closed":
                     return MergeResult("cleanup_held", f"merge: cleanup_held {cleanup_result.message}", branch, target)
@@ -195,7 +195,19 @@ def append_merge_log(plan_dir: Path, message: str) -> None:
     log_path.write_text(current.rstrip() + f"\n- {message}\n", encoding="utf-8")
 
 
+def is_generated_task_worktree(plan_dir: Path) -> bool:
+    metadata = state.read_plan_metadata(plan_dir)
+    worktree_path = metadata.get("worktree_path")
+    if not worktree_path:
+        return False
+    worktree = Path(worktree_path).expanduser().resolve()
+    source_repo = state.source_repo_for_plan(plan_dir)
+    return worktree != source_repo
+
+
 def cleanup_generated_worktree(plan_dir: Path, branch: str, target: str) -> CleanupResult:
+    if not is_generated_task_worktree(plan_dir):
+        return CleanupResult("skipped", "not a generated task worktree")
     task_repo = state.repo_for_plan(plan_dir)
     source_repo = state.source_repo_for_plan(plan_dir)
     dirty = dirty_paths(status(task_repo), ignore_flow=True)
@@ -237,7 +249,8 @@ def hold_cleanup(plan_dir: Path, reason: str, archive_path: Path | None = None) 
         state.write_plan_metadata(plan_dir, {"cleanup_status": "held", "cleanup_reason": reason})
     except OSError:
         pass
-    append_merge_log(plan_dir, f"cleanup_held: {reason}")
+    if plan_dir.exists():
+        append_merge_log(plan_dir, f"cleanup_held: {reason}")
     return CleanupResult("held", reason, archive_path)
 
 

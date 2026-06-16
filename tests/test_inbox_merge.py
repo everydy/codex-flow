@@ -40,6 +40,7 @@ def test_merge_runner_local_merge_success(tmp_path):
 
     assert result.action == "merged_local"
     assert (tmp_path / "feature.txt").read_text(encoding="utf-8") == "feature\n"
+    assert (tmp_path / ".codex-flow").exists()
 
 
 def init_git_repo(tmp_path):
