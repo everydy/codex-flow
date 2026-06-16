@@ -65,6 +65,9 @@ def snapshot_source_plan(source: SourcePlan, plan_dir: Path, extraction_confiden
         "source_path": relative_path(source.path, source.repo),
         "source_sha256": source.sha256,
         "source_title": source.title,
+        "source_repo": str(source.repo),
+        "source_plan_path": str(source.path),
+        "source_plan_sha256": source.sha256,
         "adopted_at": state.timestamp(),
         "route_mode": "plan_first_source",
         "extraction_confidence": extraction_confidence,
@@ -78,12 +81,15 @@ def check_source_drift(plan_dir: str | Path) -> SourceDrift:
     if not metadata_path.exists():
         return SourceDrift(False, "no source metadata")
     metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
-    source_path = Path(metadata["source_path"])
-    if not source_path.is_absolute():
-        source_path = directory.parents[2] / source_path
+    source_path = state.source_plan_path_for_plan(directory)
+    if source_path is None:
+        source_path = Path(metadata["source_path"])
+        if not source_path.is_absolute():
+            source_path = state.source_repo_for_plan(directory) / source_path
     if not source_path.exists():
         return SourceDrift(True, "source file missing", source_path)
     current = sha256_text(source_path.read_text(encoding="utf-8"))
-    if current != metadata["source_sha256"]:
+    expected_sha = metadata.get("source_plan_sha256") or metadata["source_sha256"]
+    if current != expected_sha:
         return SourceDrift(True, "source changed", source_path)
     return SourceDrift(False, "clean", source_path)

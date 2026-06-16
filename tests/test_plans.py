@@ -82,6 +82,11 @@ def test_create_plan_from_ticket_writes_plan_queue_and_handoff(tmp_path):
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["ticket_id"] == ticket.id
     assert queue["branch"].startswith("codex/")
+    assert queue["execution_repo"] == str(tmp_path.resolve())
+    assert queue["worktree_path"] == str(tmp_path.resolve())
+    assert queue["source_repo"] == str(tmp_path.resolve())
+    assert queue["source_plan_path"] == str(ticket.path)
+    assert queue["source_plan_sha256"]
     assert len(queue["units"]) == 3
     assert queue["units"][0]["status"] == "ready"
     plan_text = plan.plan_path.read_text(encoding="utf-8")

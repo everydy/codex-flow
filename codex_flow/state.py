@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
+import json
 import re
 
 
@@ -141,6 +142,93 @@ def relative_to_repo(flow: FlowPaths, path: Path) -> str:
         return str(path.relative_to(flow.repo))
     except ValueError:
         return str(path)
+
+
+def read_plan_metadata(plan_dir: str | Path) -> dict:
+    directory = Path(plan_dir).expanduser().resolve()
+    metadata: dict = {}
+    queue_path = directory / "queue.json"
+    if queue_path.exists():
+        try:
+            queue_data = json.loads(queue_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            queue_data = {}
+        for key in (
+            "execution_repo",
+            "worktree_path",
+            "source_repo",
+            "source_plan_path",
+            "source_plan_sha256",
+        ):
+            if queue_data.get(key):
+                metadata[key] = queue_data[key]
+        source_plan = queue_data.get("source_plan")
+        if isinstance(source_plan, dict):
+            if source_plan.get("path") and not metadata.get("source_plan_path"):
+                metadata["source_plan_path"] = source_plan["path"]
+            if source_plan.get("sha256") and not metadata.get("source_plan_sha256"):
+                metadata["source_plan_sha256"] = source_plan["sha256"]
+    source_path = directory / "source.json"
+    if source_path.exists():
+        try:
+            source_data = json.loads(source_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            source_data = {}
+        if source_data.get("source_repo") and not metadata.get("source_repo"):
+            metadata["source_repo"] = source_data["source_repo"]
+        if source_data.get("source_plan_path") and not metadata.get("source_plan_path"):
+            metadata["source_plan_path"] = source_data["source_plan_path"]
+        if source_data.get("source_plan_sha256") and not metadata.get("source_plan_sha256"):
+            metadata["source_plan_sha256"] = source_data["source_plan_sha256"]
+        if source_data.get("source_path") and not metadata.get("source_plan_path"):
+            metadata["source_plan_path"] = source_data["source_path"]
+        if source_data.get("source_sha256") and not metadata.get("source_plan_sha256"):
+            metadata["source_plan_sha256"] = source_data["source_sha256"]
+    return metadata
+
+
+def write_plan_metadata(plan_dir: str | Path, metadata: dict) -> dict:
+    directory = Path(plan_dir).expanduser().resolve()
+    queue_path = directory / "queue.json"
+    queue_data: dict = {}
+    if queue_path.exists():
+        try:
+            queue_data = json.loads(queue_path.read_text(encoding="utf-8"))
+        except (OSError, ValueError):
+            queue_data = {}
+    queue_data.update({key: value for key, value in metadata.items() if value})
+    queue_path.write_text(json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return queue_data
+
+
+def repo_for_plan(plan_dir: str | Path) -> Path:
+    directory = Path(plan_dir).expanduser().resolve()
+    metadata = read_plan_metadata(directory)
+    execution_repo = metadata.get("execution_repo") or metadata.get("worktree_path")
+    if execution_repo:
+        return Path(execution_repo).expanduser().resolve()
+    return directory.parents[2]
+
+
+def source_repo_for_plan(plan_dir: str | Path) -> Path:
+    directory = Path(plan_dir).expanduser().resolve()
+    metadata = read_plan_metadata(directory)
+    source_repo = metadata.get("source_repo")
+    if source_repo:
+        return Path(source_repo).expanduser().resolve()
+    return repo_for_plan(directory)
+
+
+def source_plan_path_for_plan(plan_dir: str | Path) -> Path | None:
+    directory = Path(plan_dir).expanduser().resolve()
+    metadata = read_plan_metadata(directory)
+    source_path = metadata.get("source_plan_path")
+    if not source_path:
+        return None
+    candidate = Path(source_path).expanduser()
+    if candidate.is_absolute():
+        return candidate.resolve()
+    return (source_repo_for_plan(directory) / candidate).resolve()
 
 
 def count_plan_units(flow: FlowPaths) -> dict[str, int]:

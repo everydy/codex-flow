@@ -145,6 +145,11 @@ def create_plan_from_ticket(
         "plan_slug": slug,
         "branch": branch,
         "created_at": state.timestamp(),
+        "execution_repo": str(flow.repo),
+        "worktree_path": str(flow.repo),
+        "source_repo": str(flow.repo),
+        "source_plan_path": str(ticket.path),
+        "source_plan_sha256": source_plan.sha256_text(ticket.path.read_text(encoding="utf-8")),
         "units": units,
         "final_gate": dict(DEFAULT_FINAL_GATE),
     }
@@ -206,7 +211,16 @@ def create_plan_from_source(
     source_plan.snapshot_source_plan(source, plan_dir, extraction_confidence=confidence)
     plan_first_extract.write_ticket_files(plan_dir / "tickets", extracted)
 
-    queue_data = queue_from_source_tickets(source, extracted, slug, title, branch, top_level_ticket, confidence)
+    queue_data = queue_from_source_tickets(
+        source,
+        extracted,
+        slug,
+        title,
+        branch,
+        top_level_ticket,
+        confidence,
+        execution_repo=flow.repo,
+    )
     plan = Plan(slug, plan_dir, plan_dir / "plan.md", plan_dir / "queue.json", plan_dir / "queue.md")
     write_source_plan_files(plan, source, extracted, queue_data, top_level_ticket)
     ensure_plan_skill_routing_manifest(plan.plan_path, queue_data)
@@ -224,6 +238,7 @@ def queue_from_source_tickets(
     branch: str,
     top_level_ticket: Ticket,
     extraction_confidence: str,
+    execution_repo: Path | None = None,
 ) -> dict:
     source_ref_path = source_plan.relative_path(source.path, source.repo)
     source_manifest = source_manifest_by_number(source.content)
@@ -272,6 +287,7 @@ def queue_from_source_tickets(
             }
         )
         units.append(unit)
+    execution_path = (execution_repo or source.repo).expanduser().resolve()
     return {
         "ticket_id": top_level_ticket.id,
         "ticket_title": top_level_ticket.title,
@@ -280,6 +296,11 @@ def queue_from_source_tickets(
         "branch": branch,
         "created_at": state.timestamp(),
         "route_mode": "plan_first_source",
+        "execution_repo": str(execution_path),
+        "worktree_path": str(execution_path),
+        "source_repo": str(source.repo),
+        "source_plan_path": str(source.path),
+        "source_plan_sha256": source.sha256,
         "source_plan": {
             "path": source_ref_path,
             "title": source.title,
@@ -884,5 +905,5 @@ def mark_unit(plan_path: str | Path, unit_id: str, status_name: str) -> dict:
     unit["status"] = status_name
     unit["updated_at"] = state.timestamp()
     save_queue(plan_dir, queue_data)
-    state.refresh_dashboard(plan_dir.parents[2])
+    state.refresh_dashboard(state.repo_for_plan(plan_dir))
     return unit

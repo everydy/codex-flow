@@ -66,9 +66,17 @@ def test_route_adopts_plan_first_markdown_source(tmp_path, capsys):
     assert (plan_dir / "source-plan.md").read_text(encoding="utf-8") == source.read_text(encoding="utf-8")
     metadata = json.loads((plan_dir / "source.json").read_text(encoding="utf-8"))
     assert metadata["source_path"] == "docs/plans/example-plan.md"
+    assert metadata["source_repo"] == str(tmp_path.resolve())
+    assert metadata["source_plan_path"] == str(source.resolve())
+    assert metadata["source_plan_sha256"] == metadata["source_sha256"]
     assert metadata["route_mode"] == "plan_first_source"
     assert metadata["extraction_confidence"] == "high"
     queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
+    assert queue["execution_repo"] == str(tmp_path.resolve())
+    assert queue["worktree_path"] == str(tmp_path.resolve())
+    assert queue["source_repo"] == str(tmp_path.resolve())
+    assert queue["source_plan_path"] == str(source.resolve())
+    assert queue["source_plan_sha256"] == metadata["source_sha256"]
     assert [unit["ticket_id"] for unit in queue["units"]] == ["ticket-001", "ticket-002"]
     assert queue["units"][0]["source_plan_ref"]["section"] == "### Commit 1: Prepare source route"
     assert (plan_dir / "macro-plan.md").exists()
