@@ -138,7 +138,7 @@ def write_pr_lock(repo: str | Path, branch: str, url: str, status_name: str) -> 
 
 
 def read_pr_lock(repo: str | Path) -> Path | None:
-    flow = state.ensure_initialized(repo)
+    flow = state.paths(repo)
     lock_path = flow.locks / "pr-lock.md"
     return lock_path if lock_path.exists() else None
 

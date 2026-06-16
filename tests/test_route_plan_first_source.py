@@ -1,11 +1,22 @@
 from __future__ import annotations
 
 import json
+import subprocess
 
 import pytest
 
 from codex_flow import briefs, cli, inbox, plan_readiness, pr, runner
 from codex_flow.dashboard import render_dashboard
+
+
+def init_git_repo(tmp_path):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "switch", "-c", "main"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "codex-flow@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Codex Flow"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("# Test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
 
 
 def write_source_plan(tmp_path, content: str | None = None):
@@ -81,6 +92,44 @@ def test_route_adopts_plan_first_markdown_source(tmp_path, capsys):
     assert queue["units"][0]["source_plan_ref"]["section"] == "### Commit 1: Prepare source route"
     assert (plan_dir / "macro-plan.md").exists()
     assert (plan_dir / "tickets" / "ticket-001.md").exists()
+
+
+def test_route_creates_task_worktree_for_git_source_repo(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    source = write_source_plan(tmp_path)
+    worktree_root = tmp_path.parent / f"{tmp_path.name}-worktrees"
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "route",
+            str(source),
+            "--auto-resolve",
+            "--worktree-root",
+            str(worktree_root),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert status == 0
+    assert "plan_created:" in output
+    assert subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == "main"
+    task_worktree = worktree_root / "example-plan"
+    plan_dirs = list((task_worktree / ".codex-flow" / "plans").glob("*"))
+    assert len(plan_dirs) == 1
+    assert not (tmp_path / ".codex-flow" / "plans").exists()
+    queue = json.loads((plan_dirs[0] / "queue.json").read_text(encoding="utf-8"))
+    assert queue["execution_repo"] == str(task_worktree.resolve())
+    assert queue["worktree_path"] == str(task_worktree.resolve())
+    assert queue["source_repo"] == str(tmp_path.resolve())
+    assert queue["source_plan_path"] == str(source.resolve())
 
 
 def test_route_holds_low_confidence_source_at_human_gate(tmp_path, capsys):

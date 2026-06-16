@@ -6,7 +6,7 @@ import json
 import re
 
 from . import plan_first_extract, plan_readiness, source_plan, state
-from .git_ops import is_git_repo, prepare_branch
+from .git_ops import ensure_worktree, is_git_repo, prepare_branch
 from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
 from .tickets import Ticket, create_internal_ticket, load_ticket, update_ticket_status
 
@@ -188,13 +188,21 @@ def create_plan_from_source(
     branch_name: str | None = None,
     plan_title: str | None = None,
     prepare_git_branch: bool = False,
+    worktree_root: str | Path | None = None,
 ) -> Plan:
-    flow = state.ensure_initialized(repo)
+    source_repo = source.repo
     title = plan_title or source.title
+    initial_slug = state.slugify(title, fallback="plan")
+    branch = branch_name or f"codex/{initial_slug}"
+    execution_repo = source_repo
+    if prepare_git_branch and is_git_repo(source_repo):
+        execution_repo = ensure_worktree(
+            source_repo,
+            branch,
+            task_worktree_path(source_repo, initial_slug, worktree_root),
+        )
+    flow = state.ensure_initialized(execution_repo)
     slug = unique_slug(title, flow.plans)
-    branch = branch_name or f"codex/{slug}"
-    if prepare_git_branch and is_git_repo(flow.repo):
-        prepare_branch(flow.repo, branch)
     plan_dir = flow.plans / slug
     plan_dir.mkdir(parents=True, exist_ok=False)
     (plan_dir / "prompts").mkdir(parents=True, exist_ok=True)
@@ -228,6 +236,12 @@ def create_plan_from_source(
     update_ticket_status(top_level_ticket.path, "planned")
     state.refresh_dashboard(flow.repo)
     return plan
+
+
+def task_worktree_path(source_repo: str | Path, slug: str, worktree_root: str | Path | None = None) -> Path:
+    source_path = Path(source_repo).expanduser().resolve()
+    root = Path(worktree_root).expanduser() if worktree_root else Path.home() / ".config" / "superpowers" / "worktrees" / source_path.name
+    return (root / slug).resolve()
 
 
 def queue_from_source_tickets(

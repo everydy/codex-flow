@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--auto-resolve", action="store_true", help="Let 구현커밋 resolve route blockers without waiting for the user.")
         command.add_argument("--branch", help="Branch name to use when creating a new plan.")
         command.add_argument("--title", dest="plan_title", help="Plan title to use when creating a new plan.")
+        command.add_argument("--worktree-root", type=Path, help="Root directory for generated task worktrees.")
 
     route = subparsers.add_parser("route", help="Adopt a plan-first Markdown source and create an execution queue.")
     add_route_source_args(route)
@@ -211,6 +212,7 @@ def main(argv: list[str] | None = None) -> int:
             branch_name=args.branch,
             plan_title=args.plan_title,
             prepare_git_branch=True,
+            worktree_root=args.worktree_root,
         )
         print(f"source_plan_adopted: {plan.directory / 'source-plan.md'}")
         print(f"plan_created: {plan.plan_path}")

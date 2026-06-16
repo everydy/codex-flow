@@ -141,6 +141,31 @@ def prepare_branch(repo: str | Path, branch_name: str) -> None:
         raise SystemExit(command_failure(f"failed to prepare branch {trimmed}", result))
 
 
+def ensure_worktree(source_repo: str | Path, branch_name: str, worktree_path: str | Path) -> Path:
+    repo_path = require_git_repo(source_repo)
+    trimmed = branch_name.strip()
+    if not trimmed:
+        raise SystemExit("branch name is required")
+    target = Path(worktree_path).expanduser().resolve()
+    if target.exists():
+        if not is_git_repo(target):
+            raise SystemExit(f"worktree path exists but is not a git worktree: {target}")
+        branch = current_branch(target)
+        if branch != trimmed:
+            raise SystemExit(f"worktree path uses branch {branch}, expected {trimmed}: {target}")
+        return target
+
+    target.parent.mkdir(parents=True, exist_ok=True)
+    existing = run_process(["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{trimmed}"], cwd=repo_path)
+    if existing.status == 0:
+        result = run_process(["git", "worktree", "add", str(target), trimmed], cwd=repo_path)
+    else:
+        result = run_process(["git", "worktree", "add", "-b", trimmed, str(target), "HEAD"], cwd=repo_path)
+    if result.status != 0:
+        raise SystemExit(command_failure(f"failed to create worktree {target}", result))
+    return target
+
+
 def dirty_paths(snapshot: GitStatusSnapshot, ignore_flow: bool = True) -> list[str]:
     paths = [entry.path for entry in snapshot.entries]
     if ignore_flow:
