@@ -12,7 +12,7 @@ import tempfile
 from .git_ops import ProcessResult, command_failure, run_process
 
 
-CODEX_CLI_MODEL = "gpt-5.5"
+CODEX_FLOW_MODEL_ENV = "CODEX_FLOW_MODEL"
 CODEX_CLI_REASONING_EFFORT = "xhigh"
 CODEX_CLI_SERVICE_TIER = "fast"
 MACHINE_READABLE_AGENT_ENV = {"CODEX_CLOSEOUT_HOOK_DISABLED": "1"}
@@ -41,21 +41,31 @@ class CodexExecFailure(RuntimeError):
         self.diagnostic_dir = diagnostic_dir
 
 
-def codex_cli_default_args() -> list[str]:
-    return [
-        "--model",
-        CODEX_CLI_MODEL,
+def codex_cli_default_args(*, include_model: bool = True) -> list[str]:
+    args: list[str] = []
+    requested_model = os.environ.get(CODEX_FLOW_MODEL_ENV, "").strip()
+    if include_model and requested_model:
+        args.extend(["--model", requested_model])
+    args.extend(
+        [
         "--config",
         f'model_reasoning_effort="{CODEX_CLI_REASONING_EFFORT}"',
         "--config",
         f'service_tier="{CODEX_CLI_SERVICE_TIER}"',
         "--config",
         "features.fast_mode=true",
-    ]
+        ]
+    )
+    return args
 
 
 def with_codex_cli_defaults(extra_args: list[str] | None = None) -> list[str]:
-    return [*(extra_args or []), *codex_cli_default_args()]
+    provided_args = extra_args or []
+    return [*codex_cli_default_args(include_model=not has_explicit_model_arg(provided_args)), *provided_args]
+
+
+def has_explicit_model_arg(args: list[str]) -> bool:
+    return any(arg == "--model" or arg.startswith("--model=") or arg == "-m" or arg.startswith("-m=") for arg in args)
 
 
 def run_codex_exec(

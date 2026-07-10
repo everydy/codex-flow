@@ -4,16 +4,25 @@ from pathlib import Path
 
 import pytest
 
-from codex_flow.codex_cli import CodexExecFailure, CodexExecTimeout, codex_cli_default_args, parse_session_id, run_codex_exec
+from codex_flow.codex_cli import CodexExecFailure, CodexExecTimeout, codex_cli_default_args, parse_session_id, run_codex_exec, with_codex_cli_defaults
 
 
-def test_codex_cli_default_args_include_model_and_fast_mode():
+def test_codex_cli_default_args_use_explicit_environment_model_and_fast_mode(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "terra")
     args = codex_cli_default_args()
 
-    assert "gpt-5.5" in args
+    assert "terra" in args
     assert 'model_reasoning_effort="xhigh"' in args
     assert 'service_tier="fast"' in args
     assert "features.fast_mode=true" in args
+
+
+def test_explicit_codex_model_arg_overrides_environment_model(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "terra")
+
+    args = with_codex_cli_defaults(["--model", "operator-selected"])
+
+    assert args[-2:] == ["--model", "operator-selected"]
 
 
 def test_run_codex_exec_reads_output_last_message(tmp_path):

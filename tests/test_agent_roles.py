@@ -46,6 +46,22 @@ def test_parse_review_gate_scores_and_blocks_important_findings():
     assert "important regression risk" in blocked.reason
 
 
+def test_parse_review_rejects_conflicting_terminal_signals_without_retry():
+    review = parse_commit_unit_review(
+        "\n".join(
+            [
+                'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"',
+                'COMMIT_UNIT_READY title="Done" summary="ready"',
+                'COMMIT_UNIT_NEEDS_WORK reason=""',
+            ]
+        )
+    )
+
+    assert review.status == "needs_work"
+    assert review.retryable is False
+    assert "exactly one" in review.reason
+
+
 def test_planner_prompt_requires_skill_routing_manifest(tmp_path):
     prompt = build_planner_prompt(
         PlannerAgentInput(

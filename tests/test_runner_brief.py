@@ -95,6 +95,35 @@ else:
     return fake_codex
 
 
+def write_fake_codex_conflicting_review_protocol(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_conflicting_review_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "resume" not in args:
+    work = pathlib.Path("work.txt")
+    previous = work.read_text(encoding="utf-8") if work.exists() else ""
+    work.write_text(previous + "implemented\\n", encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+else:
+    output.write_text(
+        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'COMMIT_UNIT_READY title="Fake" summary="ready"\\n'
+        'COMMIT_UNIT_NEEDS_WORK reason=""\\n',
+        encoding="utf-8",
+    )
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
 def write_fake_codex_review_gate_blocks_then_passes(tmp_path):
     fake_codex = tmp_path.parent / f"fake_codex_review_gate_{tmp_path.name}.py"
     fake_codex.write_text(
@@ -479,6 +508,35 @@ def test_run_next_auto_resolve_stops_after_repair_budget(tmp_path, capsys):
     assert "repair_attempts: 1" in output
     assert "Repair attempt 1/1" in log
     assert "Commit unit 1 needs_work: fake failure" in log
+
+
+def test_run_next_does_not_retry_conflicting_review_protocol(tmp_path, capsys):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_conflicting_review_protocol(tmp_path)
+    plan = make_plan(tmp_path)
+
+    status = cli.main(
+        [
+            "--repo",
+            str(tmp_path),
+            "run-next",
+            "--plan",
+            str(plan.plan_path),
+            "--auto-resolve",
+            "--codex-command",
+            str(fake_codex),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    log = (plan.directory / "log.md").read_text(encoding="utf-8")
+    assert status == 1
+    assert "action: needs_work" in output
+    assert queue["units"][0]["status"] == "needs_work"
+    assert queue["units"][0]["repair_attempts"] == 0
+    assert "exactly one" in queue["units"][0]["last_needs_work_reason"]
+    assert "Repair attempt" not in log
 
 
 def test_run_all_auto_resolve_repairs_transient_needs_work(tmp_path, capsys):

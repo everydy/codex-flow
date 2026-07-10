@@ -348,6 +348,29 @@ def execute_unit(
         if agent_result.review.status != "needs_work":
             break
         last_repair_reason = agent_result.review.reason
+        if not agent_result.review.retryable:
+            unit["status"] = "needs_work"
+            unit["updated_at"] = state.timestamp()
+            unit["repair_attempts"] = used_repair_attempts
+            unit["last_needs_work_reason"] = last_repair_reason
+            if agent_result.review.gate:
+                unit["review_gate"] = agent_result.review.gate.to_dict()
+            partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
+            unit["changed_paths"] = partial_changed
+            plans.save_queue(plan_dir, queue_data)
+            append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work without retry: {last_repair_reason}")
+            state.refresh_dashboard(repo)
+            return {
+                "unit": unit,
+                "prompt_path": prompt_path,
+                "action": "needs_work",
+                "reason": last_repair_reason,
+                "changed_paths": partial_changed,
+                "auto_resolved_dirty": auto_resolved_dirty,
+                "repair_attempts": used_repair_attempts,
+                "repair_reason": last_repair_reason,
+                "review_gate": review_gate_payload(agent_result.review),
+            }
         if index < len(attempts) - 1:
             append_log(plan_dir, f"Commit unit {selected_unit.number} requested repair: {last_repair_reason}")
             continue

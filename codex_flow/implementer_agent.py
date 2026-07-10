@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Protocol
 
-from .codex_cli import fence, last_matching_line, parse_key_values, parse_session_id, run_codex_exec
+from .codex_cli import fence, parse_key_values, parse_session_id, run_codex_exec
 from . import plan_readiness
 from .plan_readiness import CommitUnit
 
@@ -16,6 +16,7 @@ class CommitUnitReview:
     summary: str = ""
     reason: str = ""
     gate: "ReviewGate | None" = None
+    retryable: bool = True
 
 
 @dataclass(frozen=True)
@@ -195,10 +196,12 @@ def build_review_prompt(input_data: ImplementerAgentInput) -> str:
             "Treat blocker or important findings from that review as commit blockers: fix them inside this same review pass when safe, or return `COMMIT_UNIT_NEEDS_WORK` with the reason.",
             f"If `{POST_UNIT_REVIEW_SKILL}` is unavailable, return `COMMIT_UNIT_NEEDS_WORK` and explain the missing review gate.",
             "",
-            "Return these final machine-readable lines:",
+            "Return exactly two final machine-readable lines:",
             'REVIEW_GATE status="pass|needs_work" blockers=0 important=0 minor=0 reason="..."',
+            "Then return exactly one of the following decision lines (never both, and never an empty reason):",
             f'COMMIT_UNIT_READY title="{input_data.unit.title}" summary="..."',
             'COMMIT_UNIT_NEEDS_WORK reason="..."',
+            "Do not echo the unused decision form.",
             "",
             "Commit condition: `REVIEW_GATE status=\"pass\" blockers=0 important=0`.",
             "Minor findings may pass, but include the minor count so Codex Flow can record the score.",
@@ -233,14 +236,29 @@ def parse_non_negative_int(value: str) -> int:
 
 
 def parse_commit_unit_review(text: str) -> CommitUnitReview:
-    line = last_matching_line(text, "COMMIT_UNIT_")
-    values = parse_key_values(line)
     gate = parse_review_gate(text)
+    terminal_lines = [line.strip() for line in text.splitlines() if line.strip().startswith("COMMIT_UNIT_")]
+    if len(terminal_lines) != 1:
+        return CommitUnitReview(
+            "needs_work",
+            reason=f"review protocol error: expected exactly one COMMIT_UNIT terminal line, received {len(terminal_lines)}",
+            gate=gate,
+            retryable=False,
+        )
+    line = terminal_lines[0]
+    values = parse_key_values(line)
+    if line.startswith("COMMIT_UNIT_NEEDS_WORK") and not values.get("reason", "").strip():
+        return CommitUnitReview(
+            "needs_work",
+            reason="review protocol error: COMMIT_UNIT_NEEDS_WORK requires a non-empty reason",
+            gate=gate,
+            retryable=False,
+        )
     if gate and not gate.passed:
         reason = gate.reason or f"review gate failed: blockers={gate.blockers} important={gate.important} minor={gate.minor} score={gate.score}"
         return CommitUnitReview("needs_work", reason=reason, gate=gate)
     if line.startswith("COMMIT_UNIT_READY"):
         return CommitUnitReview("ready", title=values.get("title", "Commit unit ready"), summary=values.get("summary", "Ready to commit."), gate=gate)
     if line.startswith("COMMIT_UNIT_NEEDS_WORK"):
-        return CommitUnitReview("needs_work", reason=values.get("reason", "Implementer requested more work."), gate=gate)
+        return CommitUnitReview("needs_work", reason=values["reason"], gate=gate)
     raise ValueError(f"Unknown commit unit review: {line}")
