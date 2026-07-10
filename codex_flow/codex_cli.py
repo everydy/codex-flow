@@ -13,6 +13,13 @@ from .git_ops import ProcessResult, command_failure, run_process
 
 
 CODEX_FLOW_MODEL_ENV = "CODEX_FLOW_MODEL"
+CODEX_FLOW_SUPPORTED_MODELS_ENV = "CODEX_FLOW_SUPPORTED_MODELS"
+CODEX_FLOW_FALLBACK_MODEL = "gpt-5.5"
+CODEX_FLOW_DEFAULT_SUPPORTED_MODELS = (
+    "gpt-5.5",
+    "gpt-5.4",
+    "gpt-5.4-mini",
+)
 CODEX_CLI_REASONING_EFFORT = "xhigh"
 CODEX_CLI_SERVICE_TIER = "fast"
 MACHINE_READABLE_AGENT_ENV = {"CODEX_CLOSEOUT_HOOK_DISABLED": "1"}
@@ -43,9 +50,8 @@ class CodexExecFailure(RuntimeError):
 
 def codex_cli_default_args(*, include_model: bool = True) -> list[str]:
     args: list[str] = []
-    requested_model = os.environ.get(CODEX_FLOW_MODEL_ENV, "").strip()
-    if include_model and requested_model:
-        args.extend(["--model", requested_model])
+    if include_model:
+        args.extend(["--model", resolve_codex_model(os.environ.get(CODEX_FLOW_MODEL_ENV, ""))])
     args.extend(
         [
         "--config",
@@ -61,11 +67,47 @@ def codex_cli_default_args(*, include_model: bool = True) -> list[str]:
 
 def with_codex_cli_defaults(extra_args: list[str] | None = None) -> list[str]:
     provided_args = extra_args or []
-    return [*codex_cli_default_args(include_model=not has_explicit_model_arg(provided_args)), *provided_args]
+    requested_model, remaining_args = pop_explicit_model_arg(provided_args)
+    if requested_model is None:
+        return [*codex_cli_default_args(), *remaining_args]
+    return [*codex_cli_default_args(include_model=False), *remaining_args, "--model", resolve_codex_model(requested_model)]
 
 
 def has_explicit_model_arg(args: list[str]) -> bool:
     return any(arg == "--model" or arg.startswith("--model=") or arg == "-m" or arg.startswith("-m=") for arg in args)
+
+
+def supported_codex_models() -> set[str]:
+    configured = os.environ.get(CODEX_FLOW_SUPPORTED_MODELS_ENV, "").strip()
+    values = configured.split(",") if configured else CODEX_FLOW_DEFAULT_SUPPORTED_MODELS
+    models = {value.strip() for value in values if value.strip()}
+    models.add(CODEX_FLOW_FALLBACK_MODEL)
+    return models
+
+
+def resolve_codex_model(requested_model: str | None) -> str:
+    requested = (requested_model or "").strip() or CODEX_FLOW_FALLBACK_MODEL
+    return requested if requested in supported_codex_models() else CODEX_FLOW_FALLBACK_MODEL
+
+
+def pop_explicit_model_arg(args: list[str]) -> tuple[str | None, list[str]]:
+    requested: str | None = None
+    remaining: list[str] = []
+    index = 0
+    while index < len(args):
+        arg = args[index]
+        if arg in {"--model", "-m"}:
+            if index + 1 < len(args):
+                requested = args[index + 1]
+                index += 2
+                continue
+        elif arg.startswith("--model=") or arg.startswith("-m="):
+            requested = arg.split("=", 1)[1]
+            index += 1
+            continue
+        remaining.append(arg)
+        index += 1
+    return requested, remaining
 
 
 def run_codex_exec(

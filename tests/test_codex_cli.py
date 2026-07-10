@@ -7,22 +7,57 @@ import pytest
 from codex_flow.codex_cli import CodexExecFailure, CodexExecTimeout, codex_cli_default_args, parse_session_id, run_codex_exec, with_codex_cli_defaults
 
 
-def test_codex_cli_default_args_use_explicit_environment_model_and_fast_mode(monkeypatch):
-    monkeypatch.setenv("CODEX_FLOW_MODEL", "terra")
+def test_codex_cli_default_args_use_supported_environment_model_and_fast_mode(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.4")
     args = codex_cli_default_args()
 
-    assert "terra" in args
+    assert args[:2] == ["--model", "gpt-5.4"]
     assert 'model_reasoning_effort="xhigh"' in args
     assert 'service_tier="fast"' in args
     assert "features.fast_mode=true" in args
 
 
-def test_explicit_codex_model_arg_overrides_environment_model(monkeypatch):
-    monkeypatch.setenv("CODEX_FLOW_MODEL", "terra")
+def test_codex_cli_defaults_to_verified_model_when_environment_is_unset(monkeypatch):
+    monkeypatch.delenv("CODEX_FLOW_MODEL", raising=False)
 
-    args = with_codex_cli_defaults(["--model", "operator-selected"])
+    args = codex_cli_default_args()
 
-    assert args[-2:] == ["--model", "operator-selected"]
+    assert args[:2] == ["--model", "gpt-5.5"]
+
+
+def test_unsupported_environment_model_falls_back_to_verified_model(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.6-sol")
+
+    args = codex_cli_default_args()
+
+    assert args[:2] == ["--model", "gpt-5.5"]
+    assert "gpt-5.6-sol" not in args
+
+
+def test_supported_explicit_codex_model_arg_overrides_environment_model(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.4")
+
+    args = with_codex_cli_defaults(["--model", "gpt-5.4-mini"])
+
+    assert args[-2:] == ["--model", "gpt-5.4-mini"]
+
+
+def test_unsupported_explicit_codex_model_arg_is_replaced_with_verified_fallback(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.4")
+
+    args = with_codex_cli_defaults(["--model", "gpt-5.6-sol"])
+
+    assert args[-2:] == ["--model", "gpt-5.5"]
+    assert "gpt-5.6-sol" not in args
+
+
+def test_supported_model_allowlist_can_be_extended_explicitly(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "future-model")
+    monkeypatch.setenv("CODEX_FLOW_SUPPORTED_MODELS", "gpt-5.5,future-model")
+
+    args = codex_cli_default_args()
+
+    assert args[:2] == ["--model", "future-model"]
 
 
 def test_run_codex_exec_reads_output_last_message(tmp_path):
