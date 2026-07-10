@@ -33,13 +33,13 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 - `codex-skills-user/tools/codex_flow` 내장 구현은 제거된 stale copy다. 다시 생기면 현재 runtime으로 쓰지 말고 중복 구현으로 취급한다.
 - 이름 마이그레이션 중에도 `codex_flow`, `.codex-flow`, `scripts/codex_flow.py`는 바꾸지 않는다. 이 이름들은 runtime compatibility surface다.
 
-## Model Compatibility Gate
+## Child Codex Runtime Selection
 
-- 구현커밋 child process는 전역 Codex 기본 모델을 암묵적으로 상속하지 않고 항상 검증된 모델을 명시한다.
-- 기본 모델과 fallback은 `gpt-5.5`다. 기본 허용 목록은 `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`다.
-- `CODEX_FLOW_MODEL` 또는 `--codex-arg=--model`이 허용 목록 밖 모델을 요청하면 실행 전에 `gpt-5.5`로 치환한다. 지원되지 않는 모델을 먼저 실행해 본 뒤 실패시키지 않는다.
-- 새 모델은 현재 설치된 Codex CLI에서 실제 `codex exec`가 통과한 뒤에만 `CODEX_FLOW_SUPPORTED_MODELS` 쉼표 목록으로 명시 승인한다.
-- 모델 선택 결과는 attempt의 `args.json`에 남겨 재현 가능하게 한다. `requires a newer version of Codex` 오류가 발생하면 해당 모델을 허용 목록에서 제거하고 검증된 fallback으로 같은 unit을 재시도한다.
+- 구현커밋 child process는 별도 모델을 지정하지 않으면 설치된 Codex CLI의 profile, user config, trusted-project config를 그대로 따른다.
+- 작업별 모델이 필요하면 `CODEX_FLOW_MODEL` 또는 `--codex-arg=--model`/`-m`으로 명시한다. 명시 인자는 환경변수보다 우선하며 값은 치환하지 않는다.
+- 구현커밋은 reasoning effort, service tier, fast mode를 기본으로 강제하지 않는다. Codex 설정 또는 명시적인 `--codex-arg`가 선택한다.
+- 모델/config/auth/CLI 호환 오류는 다른 모델로 조용히 fallback하지 않고 해당 unit을 `needs_work`로 멈춘다. review repair budget도 소비하지 않는다.
+- attempt의 `args.json`과 `metadata.json`에는 child 인자와 선택 출처(`explicit`, `environment`, `inherited`)를 남긴다. 상속된 실제 모델이 child output으로 확인되지 않았다면 effective model이라고 추측해 기록하지 않는다.
 
 ## When To Use
 

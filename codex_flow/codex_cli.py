@@ -13,15 +13,6 @@ from .git_ops import ProcessResult, command_failure, run_process
 
 
 CODEX_FLOW_MODEL_ENV = "CODEX_FLOW_MODEL"
-CODEX_FLOW_SUPPORTED_MODELS_ENV = "CODEX_FLOW_SUPPORTED_MODELS"
-CODEX_FLOW_FALLBACK_MODEL = "gpt-5.5"
-CODEX_FLOW_DEFAULT_SUPPORTED_MODELS = (
-    "gpt-5.5",
-    "gpt-5.4",
-    "gpt-5.4-mini",
-)
-CODEX_CLI_REASONING_EFFORT = "xhigh"
-CODEX_CLI_SERVICE_TIER = "fast"
 MACHINE_READABLE_AGENT_ENV = {"CODEX_CLOSEOUT_HOOK_DISABLED": "1"}
 
 
@@ -50,49 +41,23 @@ class CodexExecFailure(RuntimeError):
 
 def codex_cli_default_args(*, include_model: bool = True) -> list[str]:
     args: list[str] = []
-    if include_model:
-        args.extend(["--model", resolve_codex_model(os.environ.get(CODEX_FLOW_MODEL_ENV, ""))])
-    args.extend(
-        [
-        "--config",
-        f'model_reasoning_effort="{CODEX_CLI_REASONING_EFFORT}"',
-        "--config",
-        f'service_tier="{CODEX_CLI_SERVICE_TIER}"',
-        "--config",
-        "features.fast_mode=true",
-        ]
-    )
+    requested_model = os.environ.get(CODEX_FLOW_MODEL_ENV, "").strip()
+    if include_model and requested_model:
+        args.extend(["--model", requested_model])
     return args
 
 
 def with_codex_cli_defaults(extra_args: list[str] | None = None) -> list[str]:
     provided_args = extra_args or []
-    requested_model, remaining_args = pop_explicit_model_arg(provided_args)
-    if requested_model is None:
-        return [*codex_cli_default_args(), *remaining_args]
-    return [*codex_cli_default_args(include_model=False), *remaining_args, "--model", resolve_codex_model(requested_model)]
+    return [*codex_cli_default_args(include_model=not has_explicit_model_arg(provided_args)), *provided_args]
 
 
 def has_explicit_model_arg(args: list[str]) -> bool:
     return any(arg == "--model" or arg.startswith("--model=") or arg == "-m" or arg.startswith("-m=") for arg in args)
 
 
-def supported_codex_models() -> set[str]:
-    configured = os.environ.get(CODEX_FLOW_SUPPORTED_MODELS_ENV, "").strip()
-    values = configured.split(",") if configured else CODEX_FLOW_DEFAULT_SUPPORTED_MODELS
-    models = {value.strip() for value in values if value.strip()}
-    models.add(CODEX_FLOW_FALLBACK_MODEL)
-    return models
-
-
-def resolve_codex_model(requested_model: str | None) -> str:
-    requested = (requested_model or "").strip() or CODEX_FLOW_FALLBACK_MODEL
-    return requested if requested in supported_codex_models() else CODEX_FLOW_FALLBACK_MODEL
-
-
-def pop_explicit_model_arg(args: list[str]) -> tuple[str | None, list[str]]:
+def explicit_model_arg(args: list[str]) -> str | None:
     requested: str | None = None
-    remaining: list[str] = []
     index = 0
     while index < len(args):
         arg = args[index]
@@ -105,9 +70,18 @@ def pop_explicit_model_arg(args: list[str]) -> tuple[str | None, list[str]]:
             requested = arg.split("=", 1)[1]
             index += 1
             continue
-        remaining.append(arg)
         index += 1
-    return requested, remaining
+    return requested
+
+
+def model_selection_metadata(extra_args: list[str] | None) -> dict[str, str | None]:
+    explicit = explicit_model_arg(extra_args or [])
+    if explicit is not None:
+        return {"source": "explicit", "requested": explicit}
+    environment = os.environ.get(CODEX_FLOW_MODEL_ENV, "").strip()
+    if environment:
+        return {"source": "environment", "requested": environment}
+    return {"source": "inherited", "requested": None}
 
 
 def run_codex_exec(
@@ -122,6 +96,7 @@ def run_codex_exec(
     phase: str = "codex-exec",
 ) -> CodexExecResult:
     repo_path = Path(repo).expanduser().resolve()
+    model_selection = model_selection_metadata(extra_args)
     with tempfile.TemporaryDirectory(prefix="codex-flow-agent-") as temp_dir:
         diag_dir = Path(diagnostic_dir).expanduser().resolve() if diagnostic_dir else None
         output_path = (diag_dir if diag_dir else Path(temp_dir)) / "last-message.txt"
@@ -162,6 +137,7 @@ def run_codex_exec(
                     "status": "started",
                     "started_at": utc_now(),
                     "timeout_seconds": timeout_seconds,
+                    "model_selection": model_selection,
                 },
             )
         started = datetime.now(timezone.utc)
@@ -187,6 +163,7 @@ def run_codex_exec(
                         "finished_at": utc_now(),
                         "timeout_seconds": timeout_seconds,
                         "elapsed_seconds": elapsed_seconds(started),
+                        "model_selection": model_selection,
                     },
                 )
                 raise CodexExecTimeout(timeout_seconds or elapsed_seconds(started), diag_dir) from exc
@@ -207,6 +184,7 @@ def run_codex_exec(
                     "finished_at": utc_now(),
                     "timeout_seconds": timeout_seconds,
                     "elapsed_seconds": elapsed_seconds(started),
+                    "model_selection": model_selection,
                 },
             )
         else:

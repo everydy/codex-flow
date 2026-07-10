@@ -7,57 +7,35 @@ import pytest
 from codex_flow.codex_cli import CodexExecFailure, CodexExecTimeout, codex_cli_default_args, parse_session_id, run_codex_exec, with_codex_cli_defaults
 
 
-def test_codex_cli_default_args_use_supported_environment_model_and_fast_mode(monkeypatch):
-    monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.4")
+def test_codex_cli_default_args_use_environment_model_without_forcing_runtime_tuning(monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.6-sol")
     args = codex_cli_default_args()
 
-    assert args[:2] == ["--model", "gpt-5.4"]
-    assert 'model_reasoning_effort="xhigh"' in args
-    assert 'service_tier="fast"' in args
-    assert "features.fast_mode=true" in args
+    assert args == ["--model", "gpt-5.6-sol"]
 
 
-def test_codex_cli_defaults_to_verified_model_when_environment_is_unset(monkeypatch):
+def test_codex_cli_inherits_codex_config_when_environment_is_unset(monkeypatch):
     monkeypatch.delenv("CODEX_FLOW_MODEL", raising=False)
 
     args = codex_cli_default_args()
 
-    assert args[:2] == ["--model", "gpt-5.5"]
+    assert args == []
 
 
-def test_unsupported_environment_model_falls_back_to_verified_model(monkeypatch):
-    monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.6-sol")
-
-    args = codex_cli_default_args()
-
-    assert args[:2] == ["--model", "gpt-5.5"]
-    assert "gpt-5.6-sol" not in args
-
-
-def test_supported_explicit_codex_model_arg_overrides_environment_model(monkeypatch):
+def test_explicit_codex_model_arg_overrides_environment_model_without_rewriting(monkeypatch):
     monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.4")
 
-    args = with_codex_cli_defaults(["--model", "gpt-5.4-mini"])
+    args = with_codex_cli_defaults(["--model", "operator-selected-model"])
 
-    assert args[-2:] == ["--model", "gpt-5.4-mini"]
+    assert args == ["--model", "operator-selected-model"]
 
 
-def test_unsupported_explicit_codex_model_arg_is_replaced_with_verified_fallback(monkeypatch):
+def test_short_explicit_model_arg_is_preserved(monkeypatch):
     monkeypatch.setenv("CODEX_FLOW_MODEL", "gpt-5.4")
 
-    args = with_codex_cli_defaults(["--model", "gpt-5.6-sol"])
+    args = with_codex_cli_defaults(["-m", "gpt-5.6-terra", "--ephemeral"])
 
-    assert args[-2:] == ["--model", "gpt-5.5"]
-    assert "gpt-5.6-sol" not in args
-
-
-def test_supported_model_allowlist_can_be_extended_explicitly(monkeypatch):
-    monkeypatch.setenv("CODEX_FLOW_MODEL", "future-model")
-    monkeypatch.setenv("CODEX_FLOW_SUPPORTED_MODELS", "gpt-5.5,future-model")
-
-    args = codex_cli_default_args()
-
-    assert args[:2] == ["--model", "future-model"]
+    assert args == ["-m", "gpt-5.6-terra", "--ephemeral"]
 
 
 def test_run_codex_exec_reads_output_last_message(tmp_path):
@@ -94,6 +72,24 @@ def test_run_codex_exec_writes_diagnostics(tmp_path):
     assert (diagnostic_dir / "prompt.md").read_text(encoding="utf-8") == "hello"
     assert "fake-session" in (diagnostic_dir / "stdout.log").read_text(encoding="utf-8")
     assert '"phase": "implementation"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+    assert '"source": "inherited"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+
+
+def test_run_codex_exec_records_explicit_model_source(tmp_path):
+    fake = write_fake_codex(tmp_path, "FINAL_LINE\n")
+    diagnostic_dir = tmp_path / "diagnostics"
+
+    run_codex_exec(
+        "hello",
+        repo=tmp_path,
+        command=str(fake),
+        extra_args=["--model", "operator-selected-model"],
+        diagnostic_dir=diagnostic_dir,
+    )
+
+    metadata = (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+    assert '"source": "explicit"' in metadata
+    assert '"requested": "operator-selected-model"' in metadata
 
 
 def test_run_codex_exec_timeout_preserves_diagnostics(tmp_path):
