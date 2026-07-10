@@ -92,6 +92,9 @@ def test_child_runtime_environment_isolates_safe_config_outside_repo(tmp_path, m
                 '[mcp_servers.noisy]',
                 'url = "https://example.invalid"',
                 '',
+                f'[projects."{repo}"]',
+                'trust_level = "trusted"',
+                '',
             ]
         ),
         encoding="utf-8",
@@ -113,6 +116,8 @@ def test_child_runtime_environment_isolates_safe_config_outside_repo(tmp_path, m
     assert 'model_reasoning_effort = "medium"' in child_config
     assert 'service_tier = "default"' in child_config
     assert "mcp_servers" not in child_config
+    assert f'[projects."{repo.resolve()}"]' in child_config
+    assert 'trust_level = "trusted"' in child_config
     assert "enabled = false" in child_config
     assert env["CODEX_BOOTSTRAP_HOOK_DISABLED"] == "1"
     assert env["CODEX_REQUEST_REFINER_HOOK_DISABLED"] == "1"

@@ -97,7 +97,7 @@ def child_runtime_environment(
     ensure_private_directory(child_home)
     link_child_auth(parent_home, child_home)
     if managed_config:
-        write_sanitized_child_config(parent_home, child_home)
+        write_sanitized_child_config(parent_home, child_home, repo_path)
     env["CODEX_HOME"] = str(child_home)
     return env, {"mode": "isolated", "source": source, "home": str(child_home)}
 
@@ -127,7 +127,7 @@ def link_child_auth(parent_home: Path, child_home: Path) -> None:
     child_auth.symlink_to(parent_auth)
 
 
-def write_sanitized_child_config(parent_home: Path, child_home: Path) -> None:
+def write_sanitized_child_config(parent_home: Path, child_home: Path, target_path: Path) -> None:
     source_path = parent_home / "config.toml"
     source: dict[str, object] = {}
     if source_path.exists():
@@ -150,6 +150,22 @@ def write_sanitized_child_config(parent_home: Path, child_home: Path) -> None:
             lines.append(f"{key} = {json.dumps(value, ensure_ascii=False)}")
     if lines:
         lines.append("")
+    projects = source.get("projects")
+    if isinstance(projects, dict):
+        for project_path, project_config in projects.items():
+            if not isinstance(project_path, str) or not isinstance(project_config, dict):
+                continue
+            if Path(project_path).expanduser().resolve() != target_path:
+                continue
+            if project_config.get("trust_level") == "trusted":
+                lines.extend(
+                    [
+                        f"[projects.{json.dumps(str(target_path), ensure_ascii=False)}]",
+                        'trust_level = "trusted"',
+                        "",
+                    ]
+                )
+            break
     lines.extend(["[skills.bundled]", "enabled = false", ""])
     target = child_home / "config.toml"
     with tempfile.NamedTemporaryFile(
