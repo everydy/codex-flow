@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>구현커밋 진단 구조도</title>
+  <style>
+    :root { --ink:#172033; --muted:#5d697c; --line:#d7dfeb; --paper:#f5f7fb; --panel:#fff; --blue:#2563eb; --green:#15803d; --amber:#b45309; --red:#b91c1c; --radius:8px; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--paper); color:var(--ink); }
+    main { max-width:1180px; margin:0 auto; padding:28px 18px 36px; }
+    h1 { margin:0 0 8px; font-size:30px; letter-spacing:0; }
+    .lead { margin:0 0 22px; color:var(--muted); line-height:1.7; }
+    .map { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:14px; align-items:stretch; }
+    .node { background:var(--panel); border:1px solid var(--line); border-radius:var(--radius); padding:16px; min-height:150px; position:relative; }
+    .node h2 { margin:0 0 8px; font-size:17px; }
+    .node p { margin:0; color:var(--muted); line-height:1.55; font-size:14px; }
+    .tag { display:inline-block; margin:0 0 10px; padding:5px 8px; border-radius:var(--radius); background:#eef4ff; color:#1d4ed8; font-size:12px; font-weight:700; }
+    .tag.green { background:#ecfdf3; color:var(--green); }
+    .tag.amber { background:#fff7ed; color:var(--amber); }
+    .tag.red { background:#fef2f2; color:var(--red); }
+    .arrow { display:flex; align-items:center; justify-content:center; color:#7c8798; font-weight:800; font-size:22px; }
+    .row { display:grid; grid-template-columns:1fr 44px 1fr 44px 1fr; gap:10px; margin:14px 0; align-items:center; }
+    .wide { margin-top:18px; display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:14px; }
+    .check { border-left:4px solid var(--green); }
+    .warn { border-left:4px solid var(--amber); }
+    .fail { border-left:4px solid var(--red); }
+    code { background:#eef2f7; border:1px solid #dbe3ef; padding:1px 5px; border-radius:5px; }
+    @media (max-width: 860px) { .map,.wide,.row { grid-template-columns:1fr; } .arrow { transform:rotate(90deg); } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>구현커밋 진단 구조도</h1>
+  <p class="lead">이번 구현은 <b>run-all</b>이 조용히 멈췄을 때 “왜 멈췄는지 알 수 없는 상태”를 “어디를 보면 되는지 남는 상태”로 바꾼 작업입니다.</p>
+
+  <section class="row" aria-label="핵심 구조">
+    <article class="node">
+      <span class="tag">입력</span>
+      <h2>plan-first 문서</h2>
+      <p><b>plan-first</b>(계획을 먼저 문서로 잠그는 방식) 문서를 받아 commit unit으로 쪼갭니다.</p>
+    </article>
+    <div class="arrow">→</div>
+    <article class="node">
+      <span class="tag green">정리</span>
+      <h2>queue unit</h2>
+      <p><b>queue unit</b>(작업 하나의 상태 데이터)에 수정 가능 경로와 필요한 스킬을 보존합니다.</p>
+    </article>
+    <div class="arrow">→</div>
+    <article class="node">
+      <span class="tag amber">실행</span>
+      <h2>Codex child process</h2>
+      <p><b>child process</b>(구현커밋이 따로 실행하는 Codex 작업)가 실제 구현과 리뷰를 수행합니다.</p>
+    </article>
+  </section>
+
+  <section class="wide" aria-label="보강된 연결">
+    <article class="node check">
+      <span class="tag green">스킬 보존</span>
+      <h2>Skill Routing Manifest</h2>
+      <p><b>Skill Routing Manifest</b>(작업별로 꼭 읽어야 할 스킬 표)를 source plan에서 queue와 generated plan까지 유지합니다.</p>
+    </article>
+    <article class="node check">
+      <span class="tag green">경로 분리</span>
+      <h2>allowed / external paths</h2>
+      <p><b>allowed_paths</b>(현재 repo 안에서 자동 수정 가능한 경로)와 <b>external_allowed_paths</b>(repo 밖이라 자동 수정하면 위험한 경로)를 나눕니다.</p>
+    </article>
+    <article class="node check">
+      <span class="tag green">프롬프트 축소</span>
+      <h2>scoped dirty status</h2>
+      <p><b>dirty status</b>(아직 커밋되지 않은 변경 목록)는 allowed path 안쪽만 자세히 보여주고, 나머지는 개수만 보여줍니다.</p>
+    </article>
+  </section>
+
+  <section class="wide" aria-label="실패 처리">
+    <article class="node warn">
+      <span class="tag amber">제한</span>
+      <h2>timeout</h2>
+      <p><b>timeout</b>(너무 오래 걸리면 끊는 시간 제한)을 기본 900초로 두고 <code>--codex-timeout-seconds</code>로 바꿀 수 있게 했습니다.</p>
+    </article>
+    <article class="node fail">
+      <span class="tag red">멈춤</span>
+      <h2>needs_work</h2>
+      <p><b>needs_work</b>(사람이나 다음 실행이 다시 봐야 하는 상태)로 unit을 멈추고 다음 unit으로 넘어가지 않습니다.</p>
+    </article>
+    <article class="node check">
+      <span class="tag green">증거</span>
+      <h2>diagnostic_path</h2>
+      <p><b>diagnostic_path</b>(실패 증거 파일 위치)에 <code>prompt.md</code>, <code>stdout.log</code>, <code>stderr.log</code>, <code>metadata.json</code> 등을 남깁니다.</p>
+    </article>
+  </section>
+</main>
+</body>
+</html>

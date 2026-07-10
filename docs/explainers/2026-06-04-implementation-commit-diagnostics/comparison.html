@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>구현 전후 비교</title>
+  <style>
+    :root { --ink:#172033; --muted:#5e6b7e; --line:#d7dfeb; --paper:#f5f7fb; --panel:#fff; --red:#b91c1c; --green:#15803d; --blue:#2563eb; --radius:8px; }
+    * { box-sizing:border-box; }
+    body { margin:0; font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif; background:var(--paper); color:var(--ink); }
+    main { max-width:1120px; margin:0 auto; padding:30px 18px 38px; }
+    h1 { margin:0 0 8px; font-size:30px; }
+    .lead { margin:0 0 22px; color:var(--muted); line-height:1.7; }
+    table { width:100%; border-collapse:separate; border-spacing:0; background:#fff; border:1px solid var(--line); border-radius:var(--radius); overflow:hidden; }
+    th,td { padding:15px; border-bottom:1px solid var(--line); vertical-align:top; text-align:left; line-height:1.55; }
+    th { background:#eef3fb; font-size:14px; }
+    tr:last-child td { border-bottom:0; }
+    .before { color:var(--red); font-weight:800; }
+    .after { color:var(--green); font-weight:800; }
+    code { background:#eef2f7; border:1px solid #dbe3ef; padding:1px 5px; border-radius:5px; }
+    .note { margin-top:16px; padding:14px 16px; border:1px solid #bfd0ff; background:#eff5ff; border-radius:var(--radius); color:#1d3f77; line-height:1.6; }
+    @media (max-width:760px) { table,thead,tbody,tr,th,td { display:block; } th { border-bottom:0; } td { border-bottom:1px solid var(--line); } }
+  </style>
+</head>
+<body>
+<main>
+  <h1>구현 전후 비교</h1>
+  <p class="lead">이번 변경은 “기능을 더 많이 돌리는 것”보다 “실패했을 때 어디를 봐야 하는지 남기는 것”에 초점이 있습니다.</p>
+  <table>
+    <thead>
+      <tr>
+        <th>비교 기준</th>
+        <th>이전 상태</th>
+        <th>이후 상태</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>멈춤 대응</td>
+        <td><span class="before">불명확</span><br>자식 Codex가 조용히 오래 걸리면 사용자는 멈춘 건지 기다려야 하는지 알기 어려웠습니다.</td>
+        <td><span class="after">명확</span><br><b>timeout</b>(시간 제한)을 두고, 넘으면 unit을 <b>needs_work</b>(다시 봐야 하는 상태)로 바꿉니다.</td>
+      </tr>
+      <tr>
+        <td>실패 증거</td>
+        <td><span class="before">부족</span><br>실패 당시 prompt, stdout, stderr가 plan 폴더에 안정적으로 남지 않았습니다.</td>
+        <td><span class="after">보존</span><br><b>diagnostic_path</b>(실패 증거 위치)에 <code>prompt.md</code>, <code>stdout.log</code>, <code>stderr.log</code>, <code>metadata.json</code>을 남깁니다.</td>
+      </tr>
+      <tr>
+        <td>스킬 라우팅</td>
+        <td><span class="before">흐려짐</span><br>source plan의 specialist skill이 generated queue에서 기본값으로 바뀔 수 있었습니다.</td>
+        <td><span class="after">보존</span><br><b>Skill Routing Manifest</b>(작업별 필수 스킬 표)를 queue와 generated plan에 유지합니다.</td>
+      </tr>
+      <tr>
+        <td>수정 경로</td>
+        <td><span class="before">위험</span><br>repo 밖 절대 경로가 자동 수정 가능 경로처럼 섞일 수 있었습니다.</td>
+        <td><span class="after">분리</span><br><b>allowed_paths</b>(repo 안 자동 수정 경로)와 <b>external_allowed_paths</b>(repo 밖 확인 필요 경로)를 나눕니다.</td>
+      </tr>
+      <tr>
+        <td>프롬프트 노이즈</td>
+        <td><span class="before">많음</span><br>dirty file 전체가 구현 프롬프트에 들어가 unrelated 파일명까지 보일 수 있었습니다.</td>
+        <td><span class="after">축소</span><br>allowed path 안쪽만 자세히 보여주고 나머지는 “몇 개 숨김”으로 표시합니다.</td>
+      </tr>
+    </tbody>
+  </table>
+  <p class="note">한 줄로 말하면, 이제 구현커밋은 실패를 숨기지 않고 “멈춘 위치와 증거 파일”을 남깁니다.</p>
+</main>
+</body>
+</html>
