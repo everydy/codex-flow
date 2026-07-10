@@ -3,17 +3,27 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+import hashlib
 import json
 import os
 import re
 import subprocess
 import tempfile
+import tomllib
 
 from .git_ops import ProcessResult, command_failure, run_process
 
 
 CODEX_FLOW_MODEL_ENV = "CODEX_FLOW_MODEL"
-MACHINE_READABLE_AGENT_ENV = {"CODEX_CLOSEOUT_HOOK_DISABLED": "1"}
+CHILD_ISOLATION_ENV = "CODEX_FLOW_CHILD_ISOLATION"
+CHILD_HOME_ENV = "CODEX_FLOW_CHILD_HOME"
+CHILD_RUNTIME_ROOT_ENV = "CODEX_CHILD_RUNTIME_ROOT"
+MACHINE_READABLE_AGENT_ENV = {
+    "CODEX_BOOTSTRAP_HOOK_DISABLED": "1",
+    "CODEX_REQUEST_REFINER_HOOK_DISABLED": "1",
+    "CODEX_CLOSEOUT_HOOK_DISABLED": "1",
+}
+SAFE_CHILD_CONFIG_KEYS = ("model", "model_reasoning_effort", "service_tier", "model_provider")
 
 
 @dataclass(frozen=True)
@@ -37,6 +47,123 @@ class CodexExecFailure(RuntimeError):
         super().__init__(f"codex exec failed with status {status}; diagnostics: {diagnostic_dir}")
         self.status = status
         self.diagnostic_dir = diagnostic_dir
+
+
+class ChildRuntimeConfigError(RuntimeError):
+    pass
+
+
+def child_runtime_environment(
+    repo: str | Path,
+    *,
+    extra_args: list[str] | None = None,
+) -> tuple[dict[str, str], dict[str, str]]:
+    repo_path = Path(repo).expanduser().resolve()
+    parent_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().resolve()
+    env = {**os.environ, **MACHINE_READABLE_AGENT_ENV}
+    if os.environ.get(CHILD_ISOLATION_ENV, "1").strip().lower() in {"0", "false", "no", "off"}:
+        env["CODEX_HOME"] = str(parent_home)
+        return env, {"mode": "disabled", "source": CHILD_ISOLATION_ENV, "home": str(parent_home)}
+
+    explicit_home = os.environ.get(CHILD_HOME_ENV, "").strip()
+    if has_explicit_profile_arg(extra_args or []) and not explicit_home:
+        raise ChildRuntimeConfigError(
+            "child isolation cannot safely copy an explicit Codex profile; set "
+            f"{CHILD_HOME_ENV} to a prepared child home or set {CHILD_ISOLATION_ENV}=0"
+        )
+
+    if explicit_home:
+        child_home = Path(explicit_home).expanduser().resolve()
+        source = CHILD_HOME_ENV
+        managed_config = False
+    else:
+        runtime_root = Path(
+            os.environ.get(CHILD_RUNTIME_ROOT_ENV, str(parent_home / "child-runtimes"))
+        ).expanduser().resolve()
+        namespace = hashlib.sha256(str(repo_path).encode("utf-8")).hexdigest()[:16]
+        child_home = runtime_root / "codex-flow" / namespace
+        source = CHILD_RUNTIME_ROOT_ENV if os.environ.get(CHILD_RUNTIME_ROOT_ENV) else "default"
+        managed_config = True
+
+    if child_home == parent_home:
+        raise ChildRuntimeConfigError("isolated Codex child home must differ from the parent CODEX_HOME")
+    if is_relative_to(child_home, repo_path):
+        raise ChildRuntimeConfigError(
+            f"isolated Codex child home must stay outside the target repository: {child_home}"
+        )
+    if managed_config:
+        ensure_private_directory(child_home.parent.parent)
+        ensure_private_directory(child_home.parent)
+    ensure_private_directory(child_home)
+    link_child_auth(parent_home, child_home)
+    if managed_config:
+        write_sanitized_child_config(parent_home, child_home)
+    env["CODEX_HOME"] = str(child_home)
+    return env, {"mode": "isolated", "source": source, "home": str(child_home)}
+
+
+def has_explicit_profile_arg(args: list[str]) -> bool:
+    return any(arg in {"--profile", "-p"} or arg.startswith("--profile=") or arg.startswith("-p=") for arg in args)
+
+
+def is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.relative_to(parent)
+        return True
+    except ValueError:
+        return False
+
+
+def ensure_private_directory(path: Path) -> None:
+    path.mkdir(parents=True, exist_ok=True, mode=0o700)
+    os.chmod(path, 0o700)
+
+
+def link_child_auth(parent_home: Path, child_home: Path) -> None:
+    parent_auth = parent_home / "auth.json"
+    child_auth = child_home / "auth.json"
+    if child_auth.exists() or child_auth.is_symlink() or not parent_auth.exists():
+        return
+    child_auth.symlink_to(parent_auth)
+
+
+def write_sanitized_child_config(parent_home: Path, child_home: Path) -> None:
+    source_path = parent_home / "config.toml"
+    source: dict[str, object] = {}
+    if source_path.exists():
+        try:
+            with source_path.open("rb") as handle:
+                parsed = tomllib.load(handle)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            raise ChildRuntimeConfigError(f"cannot read parent Codex config: {exc}") from exc
+        source = parsed
+    provider = str(source.get("model_provider", "")).strip()
+    if provider and provider != "openai":
+        raise ChildRuntimeConfigError(
+            "child isolation cannot safely sanitize a custom model provider; "
+            f"set {CHILD_HOME_ENV} to a prepared child home or set {CHILD_ISOLATION_ENV}=0"
+        )
+    lines: list[str] = []
+    for key in SAFE_CHILD_CONFIG_KEYS:
+        value = source.get(key)
+        if isinstance(value, str) and value.strip():
+            lines.append(f"{key} = {json.dumps(value, ensure_ascii=False)}")
+    if lines:
+        lines.append("")
+    lines.extend(["[skills.bundled]", "enabled = false", ""])
+    target = child_home / "config.toml"
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="config.",
+        suffix=".toml.tmp",
+        dir=child_home,
+        delete=False,
+    ) as handle:
+        handle.write("\n".join(lines))
+        temp_path = Path(handle.name)
+    os.chmod(temp_path, 0o600)
+    temp_path.replace(target)
 
 
 def codex_cli_default_args(*, include_model: bool = True) -> list[str]:
@@ -97,6 +224,7 @@ def run_codex_exec(
 ) -> CodexExecResult:
     repo_path = Path(repo).expanduser().resolve()
     model_selection = model_selection_metadata(extra_args)
+    child_env, child_runtime = child_runtime_environment(repo_path, extra_args=extra_args)
     with tempfile.TemporaryDirectory(prefix="codex-flow-agent-") as temp_dir:
         diag_dir = Path(diagnostic_dir).expanduser().resolve() if diagnostic_dir else None
         output_path = (diag_dir if diag_dir else Path(temp_dir)) / "last-message.txt"
@@ -138,6 +266,7 @@ def run_codex_exec(
                     "started_at": utc_now(),
                     "timeout_seconds": timeout_seconds,
                     "model_selection": model_selection,
+                    "child_runtime": child_runtime,
                 },
             )
         started = datetime.now(timezone.utc)
@@ -147,7 +276,7 @@ def run_codex_exec(
                 args,
                 cwd=repo_path,
                 input_text=prompt,
-                env={**os.environ, **MACHINE_READABLE_AGENT_ENV},
+                env=child_env,
                 timeout_seconds=timeout_seconds,
             )
         except subprocess.TimeoutExpired as exc:
@@ -164,6 +293,7 @@ def run_codex_exec(
                         "timeout_seconds": timeout_seconds,
                         "elapsed_seconds": elapsed_seconds(started),
                         "model_selection": model_selection,
+                        "child_runtime": child_runtime,
                     },
                 )
                 raise CodexExecTimeout(timeout_seconds or elapsed_seconds(started), diag_dir) from exc
@@ -185,6 +315,7 @@ def run_codex_exec(
                     "timeout_seconds": timeout_seconds,
                     "elapsed_seconds": elapsed_seconds(started),
                     "model_selection": model_selection,
+                    "child_runtime": child_runtime,
                 },
             )
         else:

@@ -36,6 +36,8 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 ## Child Codex Runtime Selection
 
 - 구현커밋 child process는 별도 모델을 지정하지 않으면 설치된 Codex CLI의 profile, user config, trusted-project config를 그대로 따른다.
+- 기본 child는 `${CODEX_CHILD_RUNTIME_ROOT:-$CODEX_HOME/child-runtimes}/codex-flow/<repo-hash>`의 권한 제한된 `CODEX_HOME`을 사용한다. 안전한 user model/reasoning/tier 설정과 인증만 이어받고, parent 전역 hooks, personal skills, plugins, MCP 설정은 다시 주입하지 않는다. trusted-project config와 `AGENTS.md`는 작업 repo에서 계속 읽는다.
+- 명시 profile/custom provider가 필요한 경우 `CODEX_FLOW_CHILD_HOME`으로 준비된 child home을 지정한다. 긴급 복구 시에만 `CODEX_FLOW_CHILD_ISOLATION=0`으로 격리를 끌 수 있다. child home은 target repo 안에 둘 수 없다.
 - 작업별 모델이 필요하면 `CODEX_FLOW_MODEL` 또는 `--codex-arg=--model`/`-m`으로 명시한다. 명시 인자는 환경변수보다 우선하며 값은 치환하지 않는다.
 - 구현커밋은 reasoning effort, service tier, fast mode를 기본으로 강제하지 않는다. Codex 설정 또는 명시적인 `--codex-arg`가 선택한다.
 - 모델/config/auth/CLI 호환 오류는 다른 모델로 조용히 fallback하지 않고 해당 unit을 `needs_work`로 멈춘다. review repair budget도 소비하지 않는다.
