@@ -11,13 +11,13 @@ metadata:
 
 `구현커밋` is the canonical user-facing skill for plan-first implementation, review, repair, and commit-unit orchestration.
 
-구현커밋는 큰 작업을 `ticket -> plan/branch -> run-next -> Codex exec -> review decision -> commit -> run-all -> AI preflight repair -> PR/merge -> morning brief`로 나누는 자동 개발 공장 스킬이다.
+구현커밋는 큰 작업을 `ticket -> plan/branch -> run-next -> Codex exec -> review decision -> commit -> run-all -> AI preflight repair -> local merge -> branch close -> morning brief`로 나누는 자동 개발 공장 스킬이다.
 
 Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞게 도입한다. 즉 `plan-first-implementation`으로 계획을 잠그고, `mission-completion-harness`의 hard stop gate를 지키면서, Codex App 안에서 내가 CLI를 대신 호출하는 방식으로 운용한다.
 
 현재 구조의 핵심은 `Skill Routing Manifest`다. 구현커밋는 스킬을 다시 구현하지 않고, `plan.md` 안에 commit unit별 필수/선택 스킬을 명시한 뒤 `run-next`, `run-all`, `review`, `PR초안`이 그 manifest를 읽어 실행 프롬프트와 검토 산출물에 반영한다.
 
-중요한 기본값: hard stop은 사용자에게 되묻는 장치가 아니라 AI preflight가 먼저 해결해야 하는 작업 신호다. 구현커밋을 쓸 때는 가능한 경우 `--auto-resolve` 경로로 dirty state, unfinished unit, merge readiness를 먼저 정리하고 계속 진행한다. 단 PR lock은 review gate라서 새 작업을 inbox로 보낸다.
+중요한 기본값: hard stop은 사용자에게 되묻는 장치가 아니라 AI preflight가 먼저 해결해야 하는 작업 신호다. 구현커밋을 쓸 때는 가능한 경우 `--auto-resolve` 경로로 dirty state, unfinished unit, merge readiness를 먼저 정리하고 계속 진행한다. 플랜의 모든 unit이 완료되면 기본값은 작업 브랜치를 target branch, 기본 `main`, 에 local merge한 뒤 `git branch -d`로 닫는 것이다. 단 PR lock은 review gate라서 새 작업을 inbox로 보낸다.
 
 ## Canonical Naming
 
@@ -33,6 +33,14 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 - `codex-skills-user/tools/codex_flow` 내장 구현은 제거된 stale copy다. 다시 생기면 현재 runtime으로 쓰지 말고 중복 구현으로 취급한다.
 - 이름 마이그레이션 중에도 `codex_flow`, `.codex-flow`, `scripts/codex_flow.py`는 바꾸지 않는다. 이 이름들은 runtime compatibility surface다.
 
+## Model Compatibility Gate
+
+- 구현커밋 child process는 전역 Codex 기본 모델을 암묵적으로 상속하지 않고 항상 검증된 모델을 명시한다.
+- 기본 모델과 fallback은 `gpt-5.5`다. 기본 허용 목록은 `gpt-5.5`, `gpt-5.4`, `gpt-5.4-mini`다.
+- `CODEX_FLOW_MODEL` 또는 `--codex-arg=--model`이 허용 목록 밖 모델을 요청하면 실행 전에 `gpt-5.5`로 치환한다. 지원되지 않는 모델을 먼저 실행해 본 뒤 실패시키지 않는다.
+- 새 모델은 현재 설치된 Codex CLI에서 실제 `codex exec`가 통과한 뒤에만 `CODEX_FLOW_SUPPORTED_MODELS` 쉼표 목록으로 명시 승인한다.
+- 모델 선택 결과는 attempt의 `args.json`에 남겨 재현 가능하게 한다. `requires a newer version of Codex` 오류가 발생하면 해당 모델을 허용 목록에서 제거하고 검증된 fallback으로 같은 unit을 재시도한다.
+
 ## When To Use
 
 - 사용자가 `$구현커밋`, `구현커밋`, `implementation-commit`, `implementation_commit`를 언급한다.
@@ -47,11 +55,11 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 1. 저장소 루트에서 `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py init`으로 `.codex-flow/`를 만든다.
 2. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py route <plan-first.md>`로 승인된 plan-first Markdown 문서를 실행 source로 채택하고 plan/branch queue를 만든다. 짧은 자연어 요청으로 새 plan을 만들지 않는다.
 3. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan <plan.md>`로 commit unit 하나를 구현하고 같은 Codex session에서 `review-all-in-one` post-unit gate를 통과한 뒤 자동 커밋한다. 프롬프트만 만들 때는 `--preview`, 큐 변경도 없이 볼 때는 `--dry-run`을 붙인다.
-4. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan <plan.md>`로 plan이 complete 또는 needs_work가 될 때까지 반복 처리하며 각 성공 unit을 `review-all-in-one` post-unit gate 후 자동 커밋한다. `--auto-resolve`에서는 transient needs_work를 기본 1회 repair하고, preview prompt만 만들 때는 `--preview`를 붙인다.
+4. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan <plan.md>`로 plan이 complete 또는 needs_work가 될 때까지 반복 처리하며 각 성공 unit을 `review-all-in-one` post-unit gate 후 자동 커밋한다. 모든 unit이 완료되면 별도 `--merge` 없이 target branch, 기본 `main`, 로 local merge하고 성공한 작업 브랜치를 `git branch -d`로 닫는다. `--auto-resolve`에서는 transient needs_work를 기본 1회 repair하고, preview prompt만 만들 때는 `--preview`, 완료 후 브랜치를 일부러 남길 때만 `--no-merge`를 붙인다.
 5. 긴 Codex child process는 `--codex-timeout-seconds`로 제한한다. 기본값은 900초다. timeout 또는 nonzero child failure가 나면 해당 unit은 `needs_work`가 되고, `diagnostic_path`에 prompt/args/stdout/stderr/last-message/metadata 파일 위치가 남는다.
 6. 아침에는 `morning-brief`와 `review`로 검토 자료를 만든다.
 7. PR 초안은 `open-pr --auto-resolve --dry-run`으로 남은 unit을 먼저 끝내고 자동 커밋한 뒤 만든다. 실제 원격 PR은 `create-pr --auto-resolve`로 분리해 실행한다.
-8. merge는 `merge --auto-resolve`로 미완료 unit을 끝내고 자동 커밋한 뒤 readiness를 확인하고 진행한다. 현재 작업 흐름상 원격 통합이 자연스러운 완료 조건이면 `--remote`까지 사용할 수 있다.
+8. 별도 merge 명령은 중단된 finalize를 재개하거나 remote 통합이 필요한 경우에만 쓴다. 평상시 `$구현커밋 모두실행`과 `run-all --auto-resolve`는 완료 후 local merge와 branch close까지 진행한다. 현재 작업 흐름상 원격 통합이 자연스러운 완료 조건이면 `--remote`까지 사용할 수 있다.
 
 ## Skill Routing Manifest
 
@@ -87,7 +95,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | `$구현커밋 상태` | 상태 확인 | 현재 repo의 구현커밋 상태를 초기화하고 `status`, `pr-check`를 확인한다. |
 | `$구현커밋 라우트 <문서경로>` | 라우트 | plan-first Markdown 문서를 source로 채택하고 실행 queue를 만든다. |
 | `$구현커밋 다음실행` | 다음실행 | 현재 plan의 다음 incomplete commit unit 하나를 `run-next --auto-resolve`로 실행하고 자동 커밋한다. |
-| `$구현커밋 모두실행` | 모두실행 | 현재 plan의 incomplete commit unit들을 `run-all --auto-resolve`로 끝까지 실행하고 unit별 자동 커밋한다. |
+| `$구현커밋 모두실행` | 모두실행 | 현재 plan의 incomplete commit unit들을 `run-all --auto-resolve`로 끝까지 실행하고 unit별 자동 커밋한 뒤, 완료되면 target branch로 local merge하고 작업 브랜치를 닫는다. |
 | `$구현커밋 브리핑` | 브리핑 | `morning-brief`로 작업 재개 브리프를 만든다. |
 | `$구현커밋 리뷰` | 리뷰 | 현재 plan의 review checklist를 만든다. |
 | `$구현커밋 PR초안` | PR 초안 | 미완료 unit을 자동 실행한 뒤 PR dry-run 산출물을 만든다. |
@@ -105,6 +113,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 - active PR lock이 있으면 remote PR 생성은 중단한다. 새 source plan route는 lock 해제 전까지 보류한다.
 - production deploy, 결제, 외부 게시, 계정 작업은 hard stop이다.
 - `run-next`와 `run-all`은 기본값으로 Codex CLI를 실제 실행하고 성공한 unit 변경을 자동 커밋한다. 프롬프트만 만들려면 `--preview` 또는 `--dry-run`을 명시한다.
+- 완료된 `run-all`은 기본값으로 local merge와 branch close까지 수행한다. 브랜치를 남겨야 할 때만 `--no-merge`를 명시한다.
 - 사용자가 `run-all` 또는 `$구현커밋 모두실행`을 호출한 뒤에는 후속 안내와 검토 task도 기본적으로 `run-all --auto-resolve` 기준으로 말한다. `run-next`는 명시적인 single-unit execution 또는 `run-all`이 남긴 failed repair unit을 처리하는 manual fallback으로만 제안한다.
 - `--execute`, `--execute-units`, `--commit`은 호환용 명시 플래그다. 커밋을 의도적으로 막을 때만 `--no-commit`을 쓴다.
 - 실행 전 worktree가 dirty이면 `--auto-resolve`로 non-`.codex-flow/` 변경을 로컬 stash에 보존하고 계속한다. revert/reset으로 사용자 변경을 삭제하지 않는다.
@@ -121,6 +130,7 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 | 작업 폴더가 더러우면 실행 안 함 | `run-next/run-all --auto-resolve`가 dirty path를 git stash로 보존한 뒤 계속한다. |
 | PR lock이 있으면 새 source plan route는 보류 | 구현커밋은 source Markdown 경로만 inbox에 남긴다. lock 해제 후 `pr-check`/`drain`은 유효한 source plan만 라우팅하고, 짧은 요청은 그대로 남긴다. |
 | 모든 unit이 `done` 아니면 PR 생성 안 함 | `open-pr`/`create-pr --auto-resolve`가 남은 unit을 실행, 자동 커밋하고 PR 산출물 또는 원격 PR 생성을 재시도한다. |
+| 완료된 브랜치가 남음 | 기본 `run-all --auto-resolve`가 local merge와 `git branch -d` branch close를 수행한다. 이미 완료된 plan이면 `merge --auto-resolve`로 같은 close path를 재시도한다. |
 | merge가 중간에서 멈춤 | 구현커밋 finalize 단계에서는 `merge --auto-resolve`를 사용한다. 이 경로는 미완료 unit을 먼저 해결하고 local merge를 실행하며, 필요하면 `--remote`로 원격 통합까지 진행한다. |
 | review가 transient `needs_work`를 반환 | `--auto-resolve`가 같은 unit을 기본 1회 repair context로 재실행한다. |
 
@@ -139,6 +149,7 @@ source plan에서 `### Commit N:` 또는 `### Phase N:` 단위를 찾지 못하�
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --preview
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --no-merge
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --preview
 /Users/moonsoo/projects/codex-flow/scripts/codex_flow.py dashboard
