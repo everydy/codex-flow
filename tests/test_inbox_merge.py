@@ -40,6 +40,7 @@ def test_merge_runner_local_merge_success(tmp_path):
 
     assert result.action == "merged_local"
     assert (tmp_path / "feature.txt").read_text(encoding="utf-8") == "feature\n"
+    assert subprocess.run(["git", "branch", "--list", "codex/demo"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == ""
 
 
 def init_git_repo(tmp_path):

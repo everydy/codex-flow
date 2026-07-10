@@ -94,7 +94,7 @@ def build_parser() -> argparse.ArgumentParser:
     run_next.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times. Defaults to 1 with --auto-resolve, otherwise 0.")
     run_next.add_argument("--accept-source-drift", action="store_true", help="Continue even if the original source plan changed after route.")
 
-    run_all = subparsers.add_parser("run-all", help="Execute remaining commit units by default; use --preview or --dry-run to inspect prompts only.")
+    run_all = subparsers.add_parser("run-all", help="Execute remaining commit units and locally merge completed plans by default; use --preview, --dry-run, or --no-merge to avoid merge.")
     run_all.add_argument("--plan", type=Path, required=True)
     run_all.add_argument("--max-units", type=int, default=None)
     run_all.add_argument("--dry-run", action="store_true", help="Render the next prompt without writing it or changing queue state.")
@@ -110,7 +110,8 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--auto-resolve", action="store_true", help="Auto-preserve dirty worktree state and continue when safe.")
     run_all.add_argument("--repair-attempts", type=int, default=None, help="Retry a needs_work unit this many times. Defaults to 1 with --auto-resolve, otherwise 0.")
     run_all.add_argument("--accept-source-drift", action="store_true", help="Continue even if the original source plan changed after route.")
-    run_all.add_argument("--merge", action="store_true", help="Merge after all units are done.")
+    run_all.add_argument("--merge", action="store_true", help="Compatibility flag; completed run-all merges locally by default.")
+    run_all.add_argument("--no-merge", action="store_true", help="Leave the completed work branch open instead of locally merging and closing it.")
     run_all.add_argument("--target", default="main")
     run_all.add_argument("--remote", action="store_true", help="Use remote PR/merge mode for finalize steps.")
     run_all.add_argument("--open-pr", action="store_true", help="Create a PR dry-run or remote PR after all units are done.")
@@ -320,6 +321,7 @@ def main(argv: list[str] | None = None) -> int:
             merge=args.merge,
             remote=args.remote,
             target=args.target,
+            no_merge=args.no_merge,
         )
         results = run_result.steps
         print(f"units_processed: {len(results)}")

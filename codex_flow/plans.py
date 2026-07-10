@@ -312,7 +312,7 @@ def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
     (plan.directory / "requests.md").write_text("# Follow-up Requests\n\n- None yet.\n", encoding="utf-8")
     (plan.directory / "log.md").write_text(f"# Log\n\n- {state.timestamp()} plan created\n", encoding="utf-8")
     (plan.directory / "decisions.md").write_text(
-        "# Decisions\n\n- Default: remote PR and merge run only through finalize commands after readiness.\n",
+        "# Decisions\n\n- Default: completed run-all locally merges into the target branch and closes the work branch; remote PR and remote merge stay explicit finalize choices.\n",
         encoding="utf-8",
     )
     (plan.directory / "artifacts.md").write_text("# Artifacts\n\n- None yet.\n", encoding="utf-8")
@@ -323,7 +323,7 @@ def write_plan_files(plan: Plan, ticket: Ticket, queue_data: dict) -> None:
                 "",
                 f"- Ticket: {ticket.id}",
                 f"- Plan: {plan.plan_path}",
-                "- Resume all units: run `codex_flow.py run-all --plan <plan.md> --auto-resolve`.",
+                "- Resume all units and close the branch when complete: run `codex_flow.py run-all --plan <plan.md> --auto-resolve`.",
                 "- Single unit repair/manual step: run `codex_flow.py run-next --plan <plan.md> --auto-resolve`.",
                 "",
             ]
@@ -366,7 +366,7 @@ def write_source_plan_files(
                 "",
                 f"- Source plan: {source_plan.relative_path(source.path, source.repo)}",
                 f"- Plan: {plan.plan_path}",
-                "- Resume all units: run `codex_flow.py run-all --plan <plan.md> --auto-resolve`.",
+                "- Resume all units and close the branch when complete: run `codex_flow.py run-all --plan <plan.md> --auto-resolve`.",
                 "- Single unit repair/manual step: run `codex_flow.py run-next --plan <plan.md> --auto-resolve`.",
                 "",
             ]
@@ -575,7 +575,7 @@ def render_macro_plan_md(source: source_plan.SourcePlan, extracted: list[plan_fi
             "",
             "- Review all completed units.",
             "- Run the narrowest relevant verification.",
-            "- Only finalize PR/merge after all units are done.",
+            "- After all units are done, default to local merge into the target branch and close the completed work branch. Use PR/remote finalize only when that path is explicitly requested.",
             "",
         ]
     )

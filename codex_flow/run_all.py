@@ -34,6 +34,7 @@ class RunAllRunner:
         merge: bool = False,
         remote: bool = False,
         target: str = "main",
+        no_merge: bool = False,
     ) -> RunAllResult:
         steps = runner.run_all(
             plan_path,
@@ -65,7 +66,7 @@ class RunAllRunner:
                 next_unit = readiness.next_unit.number if readiness.next_unit else "unknown"
                 return RunAllResult("prompts_generated", steps, f"run_all: prompts_generated remaining={next_unit}")
             return RunAllResult("not_ready", steps, readiness.reason)
-        if merge:
+        if merge or (execute and not no_merge and not open_pr and not remote):
             merge_result = MergeRunner().merge_remote(plan_path, target=target, execute=True) if remote else MergeRunner().merge_local(plan_path, target=target, execute=True)
             return RunAllResult(merge_result.action, steps, merge_result.message)
         if remote:
@@ -80,4 +81,4 @@ class RunAllRunner:
             pr_path = pr.write_pr_dry_run(plan_path)
             return RunAllResult("pr_dry_run", steps, f"pr_dry_run: {pr_path}")
         branch = plan_readiness.branch_name_from_plan(plan_content, f"codex/{plan_dir.name}")
-        return RunAllResult("local_branch", steps, f"local_branch: {branch}; remote PR was not opened")
+        return RunAllResult("local_branch", steps, f"local_branch: {branch}; merge was not requested")

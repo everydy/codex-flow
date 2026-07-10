@@ -457,8 +457,12 @@ def test_run_all_cli_executes_and_commits_by_default(tmp_path, capsys):
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert status == 0
     assert "units_processed: 3" in output
+    assert "merge: local merged" in output
+    assert "branch_closed:" in output
     assert all(unit["status"] == "done" for unit in queue["units"])
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 4
+    assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == "main"
+    assert subprocess.run(["git", "branch", "--list", "codex/*"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == ""
 
 
 def test_run_next_needs_work_returns_nonzero(tmp_path, capsys):

@@ -94,7 +94,7 @@ def test_create_plan_from_ticket_writes_plan_queue_and_handoff(tmp_path):
     assert "| Commit 2: 좁은 구현 패치 | `plan-first-implementation`, `mission-completion-harness` |" in plan_text
     assert "| Final Gate | `review-all-in-one`, `qa-gate` |" in plan_text
     assert "unless the user explicitly approves" not in plan_text
-    assert "finalize commands" in decisions_text
+    assert "locally merges into the target branch and closes the work branch" in decisions_text
     assert "run-all --plan <plan.md> --auto-resolve" in handoff_text
     assert "Single unit repair/manual step" in handoff_text
     assert "run-next --plan <plan.md> --auto-resolve" in handoff_text

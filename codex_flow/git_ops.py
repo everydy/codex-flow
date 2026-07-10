@@ -226,6 +226,10 @@ def merge_branch(repo: str | Path, source_branch: str, target_branch: str) -> Pr
     return run_process(["git", "merge", source_branch], cwd=repo_path)
 
 
+def delete_local_branch(repo: str | Path, branch_name: str) -> ProcessResult:
+    return run_process(["git", "branch", "-d", branch_name], cwd=require_git_repo(repo))
+
+
 def unmerged_paths(repo: str | Path) -> list[str]:
     result = run_process(["git", "diff", "--name-only", "--diff-filter=U"], cwd=require_git_repo(repo))
     if result.status != 0:

@@ -74,7 +74,7 @@ def write_pr_dry_run(plan_path: str | Path) -> Path:
             "## Merge Gate",
             "",
             "- Remote PR creation is handled by `open-pr --remote` or `create-pr` after readiness.",
-            "- Merge is handled by `merge` or `run-all --merge` finalize commands.",
+            "- Local merge and branch close happen by default after completed `run-all`; remote PR/merge uses explicit finalize commands.",
             "",
         ]
     )
