@@ -3,10 +3,20 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
 import pytest
 
 from codex_flow import cli, git_ops, plans, runner
+from codex_flow.codex_cli import CHILD_MANIFEST_ENV
+
+
+@pytest.fixture(autouse=True)
+def isolate_attestation_preflight(tmp_path, monkeypatch):
+    attestation = SimpleNamespace(nonce="worktree-test-nonce", to_dict=lambda: {"nonce": "worktree-test-nonce"})
+    monkeypatch.setenv(CHILD_MANIFEST_ENV, str(tmp_path / "test-child-manifest.json"))
+    monkeypatch.setattr(runner, "generate_child_attestation", lambda **_kwargs: attestation)
+    monkeypatch.setattr(runner, "verify_child_attestation", lambda value, **_kwargs: value)
 
 
 def init_git_repo(repo: Path) -> None:

@@ -1,0 +1,375 @@
+from __future__ import annotations
+
+from dataclasses import replace
+from datetime import datetime, timedelta, timezone
+from concurrent.futures import ThreadPoolExecutor
+import hashlib
+import json
+from pathlib import Path
+import subprocess
+
+import pytest
+
+from codex_flow import plans, runner, tickets
+from codex_flow.codex_cli import (
+    CHILD_MANIFEST_ENV,
+    ChildAttestationError,
+    attestation_digest,
+    consume_attestation_nonce,
+    generate_child_attestation,
+    load_child_closure_manifest,
+    path_tree_hash,
+    verify_child_attestation,
+)
+
+
+NOW = datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc)
+REQUIRED_SKILLS = ("plan-first-implementation", "review-all-in-one")
+
+
+def write_child_runtime(
+    tmp_path: Path,
+    monkeypatch,
+    *,
+    skill_ids=REQUIRED_SKILLS,
+    discovered_ids=None,
+    full_agent=False,
+):
+    if discovered_ids is None:
+        discovered_ids = skill_ids
+    child_home = tmp_path.parent / f"{tmp_path.name}-child-home"
+    child_home.mkdir()
+    (child_home / "config.toml").write_text("[skills.bundled]\nenabled = false\n", encoding="utf-8")
+    skill_entries = []
+    for skill_id in skill_ids:
+        skill_dir = child_home / "skills" / skill_id
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"# {skill_id}\n", encoding="utf-8")
+        skill_entries.append(
+            {"id": skill_id, "path": f"skills/{skill_id}", "sha256": path_tree_hash(skill_dir)}
+        )
+    plugin_dir = child_home / "plugins" / "codex-flow-runtime"
+    plugin_dir.mkdir(parents=True)
+    (plugin_dir / "plugin.json").write_text('{"name":"codex-flow-runtime"}\n', encoding="utf-8")
+    manifest_path = child_home / "child-manifest.json"
+    manifest_path.write_text(
+        json.dumps(
+            {
+                "version": 1,
+                "skills": skill_entries,
+                "plugins": [
+                    {
+                        "id": "codex-flow-runtime",
+                        "path": "plugins/codex-flow-runtime",
+                        "sha256": path_tree_hash(plugin_dir),
+                    }
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    fake_codex = tmp_path.parent / f"{tmp_path.name}-fake-codex.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import re
+import sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("codex-cli 9.9.9")
+    raise SystemExit(0)
+prompt = sys.stdin.read()
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "Attestation nonce:" in prompt:
+    nonce = re.search(r'nonce: ([0-9a-f]+)', prompt).group(1)
+    loaded_ids = [item for item in os.environ["DISCOVERED_IDS"].split(",") if item]
+    output.write_text(json.dumps({"nonce": nonce, "loaded_ids": loaded_ids}) + "\\n", encoding="utf-8")
+    print('{"session_id":"discovery-session"}')
+elif os.environ.get("FULL_AGENT") == "1":
+    if "resume" in args:
+        output.write_text(
+            'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+            'COMMIT_UNIT_READY title="Attested" summary="implemented"\\n',
+            encoding="utf-8",
+        )
+    else:
+        pathlib.Path("work.txt").write_text("implemented\\n", encoding="utf-8")
+        output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"implementation-session"}')
+else:
+    raise SystemExit("unexpected non-discovery invocation")
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.setenv("CODEX_FLOW_CHILD_HOME", str(child_home))
+    monkeypatch.setenv(CHILD_MANIFEST_ENV, str(manifest_path))
+    monkeypatch.setenv("DISCOVERED_IDS", ",".join(discovered_ids))
+    monkeypatch.setenv("FULL_AGENT", "1" if full_agent else "0")
+    return child_home, manifest_path, fake_codex
+
+
+def resign(attestation, **changes):
+    changed = replace(attestation, **changes)
+    return replace(changed, binding_sha256=attestation_digest(changed))
+
+
+def test_fresh_child_discovery_attestation_verifies_exact_closure(tmp_path, monkeypatch):
+    child_home, manifest_path, fake_codex = write_child_runtime(tmp_path, monkeypatch)
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+    ledger = tmp_path / "used-nonces.json"
+
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+        ttl_seconds=300,
+    )
+    verified = verify_child_attestation(
+        attestation,
+        repo=tmp_path,
+        plan_path=plan_path,
+        manifest_path=manifest_path,
+        required_skills=REQUIRED_SKILLS,
+        command=str(fake_codex),
+        extra_args=[],
+        nonce_ledger=ledger,
+        now=NOW + timedelta(seconds=1),
+    )
+
+    assert verified.loaded_skills == REQUIRED_SKILLS
+    assert verified.child_home == str(child_home.resolve())
+    assert verified.plan_sha256 == hashlib.sha256(plan_path.read_bytes()).hexdigest()
+    assert verified.codex_cli_version == "codex-cli 9.9.9"
+    assert verified.discovery_command
+    assert verified.runtime_tree_sha256
+    assert verified.plugin_tree_sha256
+    assert json.loads(ledger.read_text(encoding="utf-8")) == [verified.nonce]
+
+
+def test_exact_manifest_rejects_undeclared_runtime_entry(tmp_path, monkeypatch):
+    child_home, manifest_path, _ = write_child_runtime(tmp_path, monkeypatch)
+    (child_home / "skills" / "undeclared.py").write_text("# hidden runtime input\n", encoding="utf-8")
+
+    with pytest.raises(ChildAttestationError, match="skills closure mismatch"):
+        load_child_closure_manifest(child_home, manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("child_home", "/tmp/wrong-child", "child path"),
+        ("plan_sha256", "0" * 64, "plan hash"),
+        ("runtime_tree_sha256", "1" * 64, "runtime tree hash"),
+        ("plugin_tree_sha256", "2" * 64, "plugin tree hash"),
+        ("codex_cli_version", "codex-cli 0.0.0", "Codex CLI version"),
+        ("discovery_command", ("forged",), "discovery command"),
+    ],
+)
+def test_attestation_rejects_mismatched_bound_inputs(tmp_path, monkeypatch, field, value, message):
+    init_git_repo(tmp_path)
+    _, manifest_path, fake_codex = write_child_runtime(tmp_path, monkeypatch)
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+    )
+    before = git_oracle(tmp_path)
+
+    with pytest.raises(ChildAttestationError, match=message):
+        verify_child_attestation(
+            resign(attestation, **{field: value}),
+            repo=tmp_path,
+            plan_path=plan_path,
+            manifest_path=manifest_path,
+            required_skills=REQUIRED_SKILLS,
+            command=str(fake_codex),
+            extra_args=[],
+            nonce_ledger=tmp_path / "used-nonces.json",
+            now=NOW,
+        )
+    assert git_oracle(tmp_path) == before
+
+
+def test_attestation_rejects_missing_required_skill_staleness_and_replay(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    _, manifest_path, fake_codex = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        discovered_ids=("plan-first-implementation",),
+    )
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+        ttl_seconds=30,
+    )
+    common = {
+        "repo": tmp_path,
+        "plan_path": plan_path,
+        "manifest_path": manifest_path,
+        "required_skills": REQUIRED_SKILLS,
+        "command": str(fake_codex),
+        "extra_args": [],
+        "nonce_ledger": tmp_path / ".codex-flow" / "attestations" / "used-nonces.json",
+    }
+    before = git_oracle(tmp_path)
+
+    with pytest.raises(ChildAttestationError, match="missing required skills"):
+        verify_child_attestation(attestation, now=NOW, **common)
+    assert git_oracle(tmp_path) == before
+
+    complete = resign(attestation, loaded_skills=REQUIRED_SKILLS)
+    with pytest.raises(ChildAttestationError, match="stale"):
+        verify_child_attestation(complete, now=NOW + timedelta(seconds=31), **common)
+    assert git_oracle(tmp_path) == before
+
+    verify_child_attestation(complete, now=NOW + timedelta(seconds=1), **common)
+    with pytest.raises(ChildAttestationError, match="replayed nonce"):
+        verify_child_attestation(complete, now=NOW + timedelta(seconds=1), **common)
+    assert git_oracle(tmp_path) == before
+
+
+def test_nonce_claim_rejects_concurrent_replay(tmp_path):
+    ledger = tmp_path / "used-nonces.json"
+
+    def claim():
+        try:
+            consume_attestation_nonce(ledger, "same-nonce")
+            return "accepted"
+        except ChildAttestationError:
+            return "rejected"
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        outcomes = list(executor.map(lambda _: claim(), range(2)))
+
+    assert sorted(outcomes) == ["accepted", "rejected"]
+
+
+def init_git_repo(repo: Path):
+    subprocess.run(["git", "init"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "switch", "-c", "main"], cwd=repo, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "codex-flow@example.com"], cwd=repo, check=True)
+    subprocess.run(["git", "config", "user.name", "Codex Flow"], cwd=repo, check=True)
+    (repo / "README.md").write_text("# Test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=repo, check=True, capture_output=True)
+
+
+def git_oracle(repo: Path):
+    head = subprocess.run(["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True).stdout
+    index = subprocess.run(["git", "write-tree"], cwd=repo, check=True, capture_output=True, text=True).stdout
+    worktree = hashlib.sha256()
+    for path in sorted(repo.rglob("*")):
+        relative = path.relative_to(repo)
+        if relative.parts[0] in {".git", ".codex-flow"} or not path.is_file():
+            continue
+        worktree.update(relative.as_posix().encode("utf-8") + b"\0" + path.read_bytes())
+    return head, index, worktree.hexdigest()
+
+
+def test_runner_missing_attestation_inputs_never_launches_implementer_or_edits_repo(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    ticket = tickets.submit_ticket("fail closed", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    marker = tmp_path.parent / f"launched-{tmp_path.name}"
+    fake_codex = tmp_path.parent / f"must-not-launch-{tmp_path.name}.py"
+    fake_codex.write_text(
+        f"#!/usr/bin/env python3\nfrom pathlib import Path\nPath({str(marker)!r}).write_text('launched')\n",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    monkeypatch.delenv("CODEX_FLOW_CHILD_HOME", raising=False)
+    monkeypatch.delenv(CHILD_MANIFEST_ENV, raising=False)
+    before = git_oracle(tmp_path)
+
+    result = runner.run_next(
+        plan.plan_path,
+        execute=True,
+        commit=False,
+        codex_command=str(fake_codex),
+    )
+
+    assert result["action"] == "needs_work"
+    assert "prepared child home" in result["reason"]
+    assert not marker.exists()
+    assert git_oracle(tmp_path) == before
+
+
+def test_runner_valid_exact_attestation_allows_fixture_execution(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    all_skills = (
+        "요청개선",
+        "plan-first-implementation",
+        "mission-completion-harness",
+        "review-all-in-one",
+    )
+    _, _, fake_codex = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        skill_ids=all_skills,
+        full_agent=True,
+    )
+    ticket = tickets.submit_ticket("attested execution", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+
+    result = runner.run_next(
+        plan.plan_path,
+        execute=True,
+        commit=False,
+        codex_command=str(fake_codex),
+    )
+
+    assert result["action"] == "done"
+    assert (tmp_path / "work.txt").read_text(encoding="utf-8") == "implemented\n"
+    attestation_path = plan.directory / result["unit"]["child_attestation"]
+    evidence = json.loads(attestation_path.read_text(encoding="utf-8"))
+    assert evidence["loaded_skills"] == list(all_skills)
+
+
+def test_runner_missing_discovered_skill_never_launches_implementer_or_edits_repo(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    all_skills = (
+        "요청개선",
+        "plan-first-implementation",
+        "mission-completion-harness",
+        "review-all-in-one",
+    )
+    _, _, fake_codex = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        skill_ids=all_skills,
+        discovered_ids=("plan-first-implementation", "mission-completion-harness", "review-all-in-one"),
+        full_agent=True,
+    )
+    ticket = tickets.submit_ticket("missing discovery skill", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    before = git_oracle(tmp_path)
+
+    result = runner.run_next(
+        plan.plan_path,
+        execute=True,
+        commit=False,
+        codex_command=str(fake_codex),
+    )
+
+    assert result["action"] == "needs_work"
+    assert "missing required skills before edit" in result["reason"]
+    assert not (tmp_path / "work.txt").exists()
+    assert git_oracle(tmp_path) == before

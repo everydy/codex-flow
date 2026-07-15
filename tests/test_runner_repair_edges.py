@@ -3,9 +3,27 @@ from __future__ import annotations
 import json
 from pathlib import Path
 import subprocess
+from types import SimpleNamespace
 
-from codex_flow import cli
+import pytest
+
+from codex_flow import cli, runner
+from codex_flow.codex_cli import CHILD_MANIFEST_ENV
 from tests.test_runner_brief import init_git_repo, make_plan, write_fake_codex_dirty_needs_work
+
+
+@pytest.fixture(autouse=True)
+def isolate_attestation_preflight(tmp_path, monkeypatch):
+    counter = iter(range(1000))
+
+    def attestation(**_kwargs):
+        nonce = f"repair-edge-nonce-{next(counter)}"
+        return SimpleNamespace(nonce=nonce, to_dict=lambda: {"nonce": nonce})
+
+    monkeypatch.setenv(CHILD_MANIFEST_ENV, str(tmp_path.parent / "test-child-manifest.json"))
+    monkeypatch.setenv("CODEX_FLOW_CHILD_ISOLATION", "0")
+    monkeypatch.setattr(runner, "generate_child_attestation", attestation)
+    monkeypatch.setattr(runner, "verify_child_attestation", lambda value, **_kwargs: value)
 
 
 def write_fake_codex_delete_partial_ready(tmp_path: Path) -> Path:

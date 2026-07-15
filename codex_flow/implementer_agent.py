@@ -137,8 +137,9 @@ def build_implementation_prompt(input_data: ImplementerAgentInput) -> str:
             "",
             "You are Agent 2: Implementer for the Codex Flow workflow orchestrator.",
             "Implement only the selected commit unit. Do not create a git commit.",
-            "Before editing, load and apply the required skills named in the Skill Routing Manifest when available.",
-            "If a required skill is unavailable, continue with the closest safe fallback and mention the fallback in the review summary.",
+            "Before editing, load and apply every required skill named in the Skill Routing Manifest.",
+            "Required skills are mandatory and were attested before this session; if any cannot be loaded, stop without editing and return needs_work.",
+            "Optional skills may be skipped only with an explicit reason in the review summary.",
             "",
             "Selected commit unit:",
             fence(f"### Commit {input_data.unit.number}: {input_data.unit.title}\n\n{input_data.unit.content}"),
@@ -206,7 +207,8 @@ def build_review_prompt(input_data: ImplementerAgentInput) -> str:
             "Commit condition: `REVIEW_GATE status=\"pass\" blockers=0 important=0`.",
             "Minor findings may pass, but include the minor count so Codex Flow can record the score.",
             "",
-            "Review requirement: confirm that required skills from the Skill Routing Manifest were applied or explicitly skipped with a fallback reason.",
+            "Review requirement: confirm that every required skill from the Skill Routing Manifest was applied. Required skills cannot be skipped.",
+            "Optional skills may be skipped only with an explicit reason.",
         ]
     )
 

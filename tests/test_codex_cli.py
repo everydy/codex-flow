@@ -5,6 +5,8 @@ from pathlib import Path
 import pytest
 
 from codex_flow.codex_cli import (
+    CHILD_MANIFEST_ENV,
+    CHILD_HOME_ENV,
     ChildRuntimeConfigError,
     CodexExecFailure,
     CodexExecTimeout,
@@ -18,6 +20,8 @@ from codex_flow.codex_cli import (
 
 @pytest.fixture(autouse=True)
 def isolated_child_runtime_root(tmp_path, monkeypatch):
+    monkeypatch.delenv(CHILD_HOME_ENV, raising=False)
+    monkeypatch.delenv(CHILD_MANIFEST_ENV, raising=False)
     monkeypatch.setenv("CODEX_CHILD_RUNTIME_ROOT", str(tmp_path.parent / f"{tmp_path.name}-child-runtimes"))
 
 

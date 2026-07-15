@@ -1,10 +1,19 @@
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
-from .codex_cli import CodexExecFailure, CodexExecTimeout
+from .codex_cli import (
+    CHILD_MANIFEST_ENV,
+    ChildAttestationError,
+    ChildRuntimeConfigError,
+    CodexExecFailure,
+    CodexExecTimeout,
+    generate_child_attestation,
+    verify_child_attestation,
+)
 from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, scoped_status_summary, stash_paths, status
 from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
 
@@ -68,7 +77,8 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             "",
             skill_routing,
             "",
-            "Before implementation, read and apply the required skills named above when they are available in the Codex skill list. If a required skill is unavailable, use the closest safe fallback and document that fallback in the final summary.",
+            "Before implementation, load and apply every required skill named above. Required skills are mandatory and were attested before launch; if any cannot be loaded, stop without editing and return needs_work.",
+            "Optional skills may be skipped only with an explicit reason in the final summary.",
             "",
             "## Unit Boundary Gates",
             "",
@@ -252,6 +262,59 @@ def execute_unit(
     repo = execution_context.execution_repo
     source_repo = execution_context.source_repo
     branch = queue_data.get("branch") or f"codex/{queue_data.get('plan_slug', 'plan')}"
+    selected_unit = commit_unit or plan_readiness.CommitUnit(number=unit.get("number") or int(str(unit["id"]).split("-")[-1]), title=unit["title"], content="")
+    skill_entry = plan_readiness.skill_routing_for_commit(
+        (plan_dir / "plan.md").read_text(encoding="utf-8"),
+        selected_unit.number,
+    )
+    required_skills = tuple(skill_entry.required_skills if skill_entry else unit.get("required_skills", []))
+    attested_plan = plan_dir / "source-plan.md"
+    if not attested_plan.exists():
+        attested_plan = plan_dir / "plan.md"
+    try:
+        attestation = generate_child_attestation(
+            repo=repo,
+            plan_path=attested_plan,
+            command=codex_command,
+            extra_args=codex_args,
+            timeout_seconds=codex_timeout_seconds,
+        )
+        manifest_path = Path(os.environ[CHILD_MANIFEST_ENV]).expanduser().resolve()
+        verify_child_attestation(
+            attestation,
+            repo=repo,
+            plan_path=attested_plan,
+            manifest_path=manifest_path,
+            required_skills=required_skills,
+            command=codex_command,
+            extra_args=codex_args,
+            nonce_ledger=plan_dir / "attestations" / "used-nonces.json",
+            timeout_seconds=codex_timeout_seconds,
+        )
+    except (ChildAttestationError, ChildRuntimeConfigError, OSError) as exc:
+        unit["status"] = "needs_work"
+        unit["updated_at"] = state.timestamp()
+        unit["last_needs_work_reason"] = str(exc)
+        unit["changed_paths"] = []
+        plans.save_queue(plan_dir, queue_data)
+        append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work before edit: {exc}")
+        state.refresh_dashboard(source_repo)
+        return {
+            "unit": unit,
+            "prompt_path": prompt_path,
+            "action": "needs_work",
+            "reason": str(exc),
+            "changed_paths": [],
+            "auto_resolved_dirty": [],
+            "repair_attempts": 0,
+            "repair_reason": str(exc),
+            "review_gate": None,
+            "child_attestation": None,
+        }
+    attestation_path = plan_dir / "attestations" / unit["id"] / f"{attestation.nonce}.json"
+    attestation_path.parent.mkdir(parents=True, exist_ok=True)
+    attestation_path.write_text(json.dumps(attestation.to_dict(), ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    unit["child_attestation"] = str(attestation_path.relative_to(plan_dir))
     resume_needs_work = unit.get("status") == "needs_work"
     resume_reason = str(unit.get("last_needs_work_reason") or unit.get("repair_reason") or "") if resume_needs_work else ""
     resume_changed_paths = (
@@ -288,7 +351,6 @@ def execute_unit(
     plans.save_queue(plan_dir, queue_data)
     append_log(plan_dir, f"Started commit unit {unit.get('number') or unit['id']}: {unit['title']} on {branch}.")
 
-    selected_unit = commit_unit or plan_readiness.CommitUnit(number=unit.get("number") or int(str(unit["id"]).split("-")[-1]), title=unit["title"], content="")
     agent = CodexImplementerAgent(command=codex_command, extra_args=codex_args)
     agent_result = None
     last_repair_reason = resume_reason

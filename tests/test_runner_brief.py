@@ -3,8 +3,26 @@ from __future__ import annotations
 import json
 
 import subprocess
+from types import SimpleNamespace
+
+import pytest
 
 from codex_flow import briefs, cli, plans, pr, runner, tickets
+from codex_flow.codex_cli import CHILD_MANIFEST_ENV
+
+
+@pytest.fixture(autouse=True)
+def isolate_attestation_preflight(tmp_path, monkeypatch):
+    counter = iter(range(1000))
+
+    def attestation(**_kwargs):
+        nonce = f"test-nonce-{next(counter)}"
+        return SimpleNamespace(nonce=nonce, to_dict=lambda: {"nonce": nonce})
+
+    monkeypatch.setenv(CHILD_MANIFEST_ENV, str(tmp_path.parent / "test-child-manifest.json"))
+    monkeypatch.setenv("CODEX_FLOW_CHILD_ISOLATION", "0")
+    monkeypatch.setattr(runner, "generate_child_attestation", attestation)
+    monkeypatch.setattr(runner, "verify_child_attestation", lambda value, **_kwargs: value)
 
 
 def make_plan(tmp_path):

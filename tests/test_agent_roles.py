@@ -115,6 +115,9 @@ def test_implementer_prompt_includes_selected_skill_routing_manifest_entry():
     assert "Skill Routing Manifest entry" in prompt
     assert "Required skills: `mission-completion-harness`" in prompt
     assert "Optional skills: `디자인올인원`" in prompt
+    assert "required skill is unavailable" not in prompt
+    assert "Required skills are mandatory" in prompt
+    assert "Optional skills may be skipped" in prompt
 
 
 def test_commit_unit_review_prompt_requires_review_all_in_one_gate():
@@ -134,3 +137,4 @@ def test_commit_unit_review_prompt_requires_review_all_in_one_gate():
     assert 'REVIEW_GATE status="pass|needs_work"' in prompt
     assert "blockers=0 important=0" in prompt
     assert "COMMIT_UNIT_NEEDS_WORK" in prompt
+    assert "fallback" not in prompt

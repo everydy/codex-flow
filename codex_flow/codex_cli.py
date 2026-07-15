@@ -1,12 +1,13 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 import hashlib
 import json
 import os
 import re
+import secrets
 import subprocess
 import tempfile
 import tomllib
@@ -17,6 +18,7 @@ from .git_ops import ProcessResult, command_failure, run_process
 CODEX_FLOW_MODEL_ENV = "CODEX_FLOW_MODEL"
 CHILD_ISOLATION_ENV = "CODEX_FLOW_CHILD_ISOLATION"
 CHILD_HOME_ENV = "CODEX_FLOW_CHILD_HOME"
+CHILD_MANIFEST_ENV = "CODEX_FLOW_CHILD_MANIFEST"
 CHILD_RUNTIME_ROOT_ENV = "CODEX_CHILD_RUNTIME_ROOT"
 MACHINE_READABLE_AGENT_ENV = {
     "CODEX_BOOTSTRAP_HOOK_DISABLED": "1",
@@ -51,6 +53,402 @@ class CodexExecFailure(RuntimeError):
 
 class ChildRuntimeConfigError(RuntimeError):
     pass
+
+
+class ChildAttestationError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class ChildRuntimeAttestation:
+    nonce: str
+    child_home: str
+    manifest_path: str
+    manifest_sha256: str
+    plan_path: str
+    plan_sha256: str
+    runtime_tree_sha256: str
+    plugin_tree_sha256: str
+    codex_cli_version: str
+    discovery_command: tuple[str, ...]
+    loaded_skills: tuple[str, ...]
+    created_at: str
+    ttl_seconds: int
+    binding_sha256: str = ""
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "nonce": self.nonce,
+            "child_home": self.child_home,
+            "manifest_path": self.manifest_path,
+            "manifest_sha256": self.manifest_sha256,
+            "plan_path": self.plan_path,
+            "plan_sha256": self.plan_sha256,
+            "runtime_tree_sha256": self.runtime_tree_sha256,
+            "plugin_tree_sha256": self.plugin_tree_sha256,
+            "codex_cli_version": self.codex_cli_version,
+            "discovery_command": list(self.discovery_command),
+            "loaded_skills": list(self.loaded_skills),
+            "created_at": self.created_at,
+            "ttl_seconds": self.ttl_seconds,
+            "binding_sha256": self.binding_sha256,
+        }
+
+
+@dataclass(frozen=True)
+class ChildClosureManifest:
+    path: Path
+    sha256: str
+    skill_ids: tuple[str, ...]
+    runtime_tree_sha256: str
+    plugin_tree_sha256: str
+
+
+def path_tree_hash(path: str | Path) -> str:
+    root = Path(path).expanduser().resolve()
+    if not root.exists():
+        raise ChildAttestationError(f"manifest tree path does not exist: {root}")
+    digest = hashlib.sha256()
+    paths = [root] if root.is_file() else [root, *sorted(root.rglob("*"), key=lambda item: item.as_posix())]
+    for item in paths:
+        relative = "." if item == root else item.relative_to(root).as_posix()
+        if item.is_symlink():
+            kind = "symlink"
+            payload = os.readlink(item).encode("utf-8")
+        elif item.is_dir():
+            kind = "directory"
+            payload = b""
+        elif item.is_file():
+            kind = "file"
+            payload = item.read_bytes()
+        else:
+            raise ChildAttestationError(f"unsupported manifest tree entry: {item}")
+        digest.update(kind.encode("utf-8") + b"\0" + relative.encode("utf-8") + b"\0")
+        digest.update(hashlib.sha256(payload).digest())
+    return digest.hexdigest()
+
+
+def load_child_closure_manifest(child_home: str | Path, manifest_path: str | Path) -> ChildClosureManifest:
+    home = Path(child_home).expanduser().resolve()
+    path = Path(manifest_path).expanduser().resolve()
+    if not path.is_file():
+        raise ChildAttestationError(f"exact child manifest is missing: {path}")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError) as exc:
+        raise ChildAttestationError(f"cannot read exact child manifest: {exc}") from exc
+    if not isinstance(data, dict) or data.get("version") != 1:
+        raise ChildAttestationError("exact child manifest must use version 1")
+    skills = validate_manifest_entries(home, data.get("skills"), "skills")
+    plugins = validate_manifest_entries(home, data.get("plugins"), "plugins")
+    assert_exact_manifest_directory(home, skills, "skills")
+    assert_exact_manifest_directory(home, plugins, "plugins")
+    config_path = home / "config.toml"
+    if not config_path.is_file():
+        raise ChildAttestationError(f"prepared child runtime config is missing: {config_path}")
+    runtime_payload = {
+        "config_sha256": hashlib.sha256(config_path.read_bytes()).hexdigest(),
+        "skills": skills,
+    }
+    return ChildClosureManifest(
+        path=path,
+        sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
+        skill_ids=tuple(item[0] for item in skills),
+        runtime_tree_sha256=hashlib.sha256(canonical_json(runtime_payload)).hexdigest(),
+        plugin_tree_sha256=hashlib.sha256(canonical_json({"plugins": plugins})).hexdigest(),
+    )
+
+
+def validate_manifest_entries(home: Path, value: object, label: str) -> tuple[tuple[str, str, str], ...]:
+    if not isinstance(value, list):
+        raise ChildAttestationError(f"exact child manifest {label} must be a list")
+    entries: list[tuple[str, str, str]] = []
+    seen: set[str] = set()
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ChildAttestationError(f"exact child manifest {label} entry must be an object")
+        item_id = str(raw.get("id") or "").strip()
+        relative = str(raw.get("path") or "").strip()
+        expected_hash = str(raw.get("sha256") or "").strip().lower()
+        if not item_id or item_id in seen:
+            raise ChildAttestationError(f"exact child manifest has an empty or duplicate {label} id: {item_id!r}")
+        if not re.fullmatch(r"[0-9a-f]{64}", expected_hash):
+            raise ChildAttestationError(f"exact child manifest has an invalid digest for {item_id}")
+        item_path = (home / relative).resolve()
+        if Path(relative).is_absolute() or not is_relative_to(item_path, home):
+            raise ChildAttestationError(f"exact child manifest path escapes child home: {relative}")
+        actual_hash = path_tree_hash(item_path)
+        if actual_hash != expected_hash:
+            raise ChildAttestationError(f"exact child manifest digest mismatch for {item_id}")
+        seen.add(item_id)
+        entries.append((item_id, relative, actual_hash))
+    return tuple(entries)
+
+
+def assert_exact_manifest_directory(
+    home: Path,
+    entries: tuple[tuple[str, str, str], ...],
+    label: str,
+) -> None:
+    root = home / label
+    declared: set[str] = set()
+    for item_id, relative, _ in entries:
+        parts = Path(relative).parts
+        if len(parts) != 2 or parts[0] != label:
+            raise ChildAttestationError(
+                f"exact child manifest path for {item_id} must be a direct child of {label}/"
+            )
+        declared.add(parts[1])
+    actual = set()
+    if root.exists():
+        actual = {path.name for path in root.iterdir()}
+    if actual != declared:
+        raise ChildAttestationError(
+            f"exact child {label} closure mismatch: manifest={sorted(declared)} actual={sorted(actual)}"
+        )
+
+
+def canonical_json(value: object) -> bytes:
+    return json.dumps(value, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode("utf-8")
+
+
+def attestation_digest(attestation: ChildRuntimeAttestation) -> str:
+    payload = attestation.to_dict()
+    payload.pop("binding_sha256", None)
+    return hashlib.sha256(canonical_json(payload)).hexdigest()
+
+
+def child_discovery_command(
+    repo: str | Path,
+    command: str,
+    extra_args: list[str] | None,
+    output_path: str,
+) -> tuple[str, ...]:
+    return (
+        command,
+        "exec",
+        "--json",
+        "--cd",
+        str(Path(repo).expanduser().resolve()),
+        "--sandbox",
+        "read-only",
+        "--output-last-message",
+        output_path,
+        *with_codex_cli_defaults(extra_args),
+        "-",
+    )
+
+
+def normalized_discovery_command(repo: str | Path, command: str, extra_args: list[str] | None) -> tuple[str, ...]:
+    return child_discovery_command(repo, command, extra_args, "<output-last-message>")
+
+
+def codex_cli_version(
+    command: str,
+    env: dict[str, str],
+    cwd: str | Path,
+    timeout_seconds: int | None = None,
+) -> str:
+    try:
+        result = run_process(
+            [command, "--version"],
+            cwd=cwd,
+            env=env,
+            timeout_seconds=timeout_seconds,
+        )
+    except subprocess.TimeoutExpired as exc:
+        raise ChildAttestationError("Codex CLI version discovery timed out") from exc
+    if result.status != 0 or not result.stdout.strip():
+        raise ChildAttestationError(command_failure("cannot read Codex CLI version", result))
+    return result.stdout.strip().splitlines()[-1]
+
+
+def generate_child_attestation(
+    *,
+    repo: str | Path,
+    plan_path: str | Path,
+    command: str = "codex",
+    extra_args: list[str] | None = None,
+    now: datetime | None = None,
+    ttl_seconds: int = 300,
+    timeout_seconds: int | None = None,
+) -> ChildRuntimeAttestation:
+    explicit_home = os.environ.get(CHILD_HOME_ENV, "").strip()
+    manifest_value = os.environ.get(CHILD_MANIFEST_ENV, "").strip()
+    if not explicit_home:
+        raise ChildAttestationError(f"prepared child home is required in {CHILD_HOME_ENV}")
+    if not manifest_value:
+        raise ChildAttestationError(f"exact child manifest is required in {CHILD_MANIFEST_ENV}")
+    if ttl_seconds <= 0:
+        raise ChildAttestationError("child attestation TTL must be positive")
+    repo_path = Path(repo).expanduser().resolve()
+    approved_plan = Path(plan_path).expanduser().resolve()
+    child_home = Path(explicit_home).expanduser().resolve()
+    manifest = load_child_closure_manifest(child_home, manifest_value)
+    child_env, metadata = child_runtime_environment(repo_path, extra_args=extra_args)
+    if metadata.get("mode") != "isolated" or Path(metadata["home"]).resolve() != child_home:
+        raise ChildAttestationError("prepared child home does not match the isolated child runtime")
+    version = codex_cli_version(command, child_env, repo_path, timeout_seconds)
+    nonce = secrets.token_hex(32)
+    prompt = "\n".join(
+        [
+            "Discover the skills loaded in this fresh isolated Codex child runtime.",
+            f"Attestation nonce: {nonce}",
+            "Return only one JSON object with exactly these keys:",
+            '{"nonce":"<the nonce above>","loaded_ids":["<every loaded skill id>"]}',
+            "Do not infer skills from this prompt. Report only the skill ids available in your runtime context.",
+        ]
+    )
+    with tempfile.TemporaryDirectory(prefix="codex-flow-child-discovery-") as temp_dir:
+        output_path = Path(temp_dir) / "last-message.json"
+        args = list(child_discovery_command(repo_path, command, extra_args, str(output_path)))
+        try:
+            result = run_process(
+                args,
+                cwd=repo_path,
+                input_text=prompt,
+                env=child_env,
+                timeout_seconds=timeout_seconds,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise ChildAttestationError("fresh child skill discovery timed out") from exc
+        if result.status != 0:
+            raise ChildAttestationError(command_failure("fresh child skill discovery failed", result))
+        final_message = output_path.read_text(encoding="utf-8") if output_path.exists() else result.stdout
+    discovered = parse_child_discovery(final_message, nonce)
+    created = now or datetime.now(timezone.utc)
+    unsigned = ChildRuntimeAttestation(
+        nonce=nonce,
+        child_home=str(child_home),
+        manifest_path=str(manifest.path),
+        manifest_sha256=manifest.sha256,
+        plan_path=str(approved_plan),
+        plan_sha256=hashlib.sha256(approved_plan.read_bytes()).hexdigest(),
+        runtime_tree_sha256=manifest.runtime_tree_sha256,
+        plugin_tree_sha256=manifest.plugin_tree_sha256,
+        codex_cli_version=version,
+        discovery_command=normalized_discovery_command(repo_path, command, extra_args),
+        loaded_skills=discovered,
+        created_at=created.astimezone(timezone.utc).isoformat(),
+        ttl_seconds=ttl_seconds,
+    )
+    return replace(unsigned, binding_sha256=attestation_digest(unsigned))
+
+
+def parse_child_discovery(text: str, expected_nonce: str) -> tuple[str, ...]:
+    try:
+        value = json.loads(text.strip())
+    except ValueError as exc:
+        raise ChildAttestationError("fresh child discovery did not return valid JSON") from exc
+    if not isinstance(value, dict) or set(value) != {"nonce", "loaded_ids"}:
+        raise ChildAttestationError("fresh child discovery returned an invalid schema")
+    if value.get("nonce") != expected_nonce:
+        raise ChildAttestationError("fresh child discovery nonce mismatch")
+    loaded = value.get("loaded_ids")
+    if not isinstance(loaded, list) or any(not isinstance(item, str) or not item.strip() for item in loaded):
+        raise ChildAttestationError("fresh child discovery loaded_ids must be non-empty strings")
+    normalized = tuple(item.strip() for item in loaded)
+    if len(set(normalized)) != len(normalized):
+        raise ChildAttestationError("fresh child discovery returned duplicate loaded ids")
+    return normalized
+
+
+def verify_child_attestation(
+    attestation: ChildRuntimeAttestation,
+    *,
+    repo: str | Path,
+    plan_path: str | Path,
+    manifest_path: str | Path,
+    required_skills: tuple[str, ...] | list[str],
+    command: str = "codex",
+    extra_args: list[str] | None = None,
+    nonce_ledger: str | Path,
+    now: datetime | None = None,
+    timeout_seconds: int | None = None,
+) -> ChildRuntimeAttestation:
+    if attestation.binding_sha256 != attestation_digest(attestation):
+        raise ChildAttestationError("child attestation binding digest mismatch")
+    explicit_home = os.environ.get(CHILD_HOME_ENV, "").strip()
+    if not explicit_home:
+        raise ChildAttestationError(f"prepared child home is required in {CHILD_HOME_ENV}")
+    child_home = Path(explicit_home).expanduser().resolve()
+    manifest = load_child_closure_manifest(child_home, manifest_path)
+    checks = (
+        (attestation.child_home == str(child_home), "child path mismatch"),
+        (attestation.manifest_path == str(manifest.path), "manifest path mismatch"),
+        (attestation.manifest_sha256 == manifest.sha256, "manifest hash mismatch"),
+        (attestation.plan_path == str(Path(plan_path).expanduser().resolve()), "plan path mismatch"),
+        (attestation.plan_sha256 == hashlib.sha256(Path(plan_path).read_bytes()).hexdigest(), "plan hash mismatch"),
+        (attestation.runtime_tree_sha256 == manifest.runtime_tree_sha256, "runtime tree hash mismatch"),
+        (attestation.plugin_tree_sha256 == manifest.plugin_tree_sha256, "plugin tree hash mismatch"),
+        (
+            attestation.discovery_command == normalized_discovery_command(repo, command, extra_args),
+            "discovery command mismatch",
+        ),
+    )
+    for valid, message in checks:
+        if not valid:
+            raise ChildAttestationError(message)
+    child_env, _ = child_runtime_environment(repo, extra_args=extra_args)
+    if attestation.codex_cli_version != codex_cli_version(command, child_env, repo, timeout_seconds):
+        raise ChildAttestationError("Codex CLI version mismatch")
+    missing = set(required_skills) - set(attestation.loaded_skills)
+    if missing:
+        raise ChildAttestationError(f"missing required skills before edit: {', '.join(sorted(missing))}")
+    if set(attestation.loaded_skills) != set(manifest.skill_ids):
+        raise ChildAttestationError(
+            "discovered skill closure mismatch: "
+            f"manifest={sorted(manifest.skill_ids)} loaded={sorted(attestation.loaded_skills)}"
+        )
+    current = now or datetime.now(timezone.utc)
+    try:
+        created = datetime.fromisoformat(attestation.created_at)
+    except ValueError as exc:
+        raise ChildAttestationError("child attestation timestamp is invalid") from exc
+    if created.tzinfo is None:
+        raise ChildAttestationError("child attestation timestamp must be timezone-aware")
+    age = (current.astimezone(timezone.utc) - created.astimezone(timezone.utc)).total_seconds()
+    if age < 0 or age > attestation.ttl_seconds:
+        raise ChildAttestationError("child attestation is stale")
+    consume_attestation_nonce(nonce_ledger, attestation.nonce)
+    return attestation
+
+
+def consume_attestation_nonce(path: str | Path, nonce: str) -> None:
+    ledger = Path(path).expanduser().resolve()
+    claim_directory = ledger.parent / f".{ledger.name}.claims"
+    claim_directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    claim_path = claim_directory / hashlib.sha256(nonce.encode("utf-8")).hexdigest()
+    try:
+        descriptor = os.open(claim_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError as exc:
+        raise ChildAttestationError("replayed nonce in child attestation") from exc
+    with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+        handle.write(nonce + "\n")
+
+    used: list[str] = []
+    if ledger.exists():
+        try:
+            value = json.loads(ledger.read_text(encoding="utf-8"))
+        except ValueError as exc:
+            raise ChildAttestationError(f"cannot read child attestation nonce ledger: {exc}") from exc
+        if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+            raise ChildAttestationError("child attestation nonce ledger is invalid")
+        used = value
+    if nonce in used:
+        raise ChildAttestationError("replayed nonce in child attestation")
+    with tempfile.NamedTemporaryFile(
+        mode="w",
+        encoding="utf-8",
+        prefix="used-nonces.",
+        suffix=".json.tmp",
+        dir=ledger.parent,
+        delete=False,
+    ) as handle:
+        json.dump([*used, nonce], handle, ensure_ascii=False, indent=2)
+        handle.write("\n")
+        temporary = Path(handle.name)
+    temporary.replace(ledger)
 
 
 def child_runtime_environment(
