@@ -34,6 +34,9 @@ def write_child_runtime(
     skill_ids=REQUIRED_SKILLS,
     discovered_ids=None,
     full_agent=False,
+    plugin_relative="plugins/codex-flow-runtime",
+    plugin_skill_ids=(),
+    external_skill_ids=(),
 ):
     if discovered_ids is None:
         discovered_ids = skill_ids
@@ -48,22 +51,27 @@ def write_child_runtime(
         skill_entries.append(
             {"id": skill_id, "path": f"skills/{skill_id}", "sha256": path_tree_hash(skill_dir)}
         )
-    plugin_dir = child_home / "plugins" / "codex-flow-runtime"
-    plugin_dir.mkdir(parents=True)
-    (plugin_dir / "plugin.json").write_text('{"name":"codex-flow-runtime"}\n', encoding="utf-8")
+    plugin_entries = []
+    if plugin_relative is not None:
+        plugin_dir = child_home / plugin_relative
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.json").write_text('{"name":"codex-flow-runtime"}\n', encoding="utf-8")
+        plugin_entries.append(
+            {
+                "id": "codex-flow-runtime",
+                "path": plugin_relative,
+                "sha256": path_tree_hash(plugin_dir),
+                "skill_ids": list(plugin_skill_ids),
+            }
+        )
     manifest_path = child_home / "child-manifest.json"
     manifest_path.write_text(
         json.dumps(
             {
                 "version": 1,
                 "skills": skill_entries,
-                "plugins": [
-                    {
-                        "id": "codex-flow-runtime",
-                        "path": "plugins/codex-flow-runtime",
-                        "sha256": path_tree_hash(plugin_dir),
-                    }
-                ],
+                "plugins": plugin_entries,
+                "external_skill_ids": list(external_skill_ids),
             },
             indent=2,
         )
@@ -163,6 +171,151 @@ def test_exact_manifest_rejects_undeclared_runtime_entry(tmp_path, monkeypatch):
         load_child_closure_manifest(child_home, manifest_path)
 
 
+def test_empty_plugin_manifest_ignores_codex_owned_cache_and_staging(tmp_path, monkeypatch):
+    child_home, manifest_path, _ = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        plugin_relative=None,
+    )
+    cache = child_home / "plugins" / "cache"
+    cache.mkdir(parents=True)
+    (cache / "remote-catalog.json").write_text("{}\n", encoding="utf-8")
+    cached_payload = cache / "remote-marketplace" / "cached-plugin" / "9.9.9"
+    cached_payload.mkdir(parents=True)
+    (cached_payload / "plugin.json").write_text('{"name":"cached"}\n', encoding="utf-8")
+    (child_home / "plugins" / ".remote-plugin-install-staging").mkdir()
+
+    manifest = load_child_closure_manifest(child_home, manifest_path)
+
+    assert manifest.plugin_tree_sha256
+
+
+def test_cache_plugin_payload_is_hash_bound_and_rejects_undeclared_version(tmp_path, monkeypatch):
+    plugin_relative = "plugins/cache/marketplace/example/1.0.0"
+    child_home, manifest_path, _ = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        plugin_relative=plugin_relative,
+    )
+
+    load_child_closure_manifest(child_home, manifest_path)
+
+    extra = child_home / "plugins" / "cache" / "marketplace" / "example" / "2.0.0"
+    extra.mkdir(parents=True)
+    (extra / "plugin.json").write_text('{"name":"extra"}\n', encoding="utf-8")
+    with pytest.raises(ChildAttestationError, match="plugins closure mismatch"):
+        load_child_closure_manifest(child_home, manifest_path)
+
+
+@pytest.mark.parametrize(
+    ("path", "sha256", "message"),
+    [
+        ("plugins/codex-flow-runtime", "0" * 64, "digest mismatch"),
+        ("../outside-plugin", None, "path escapes child home"),
+    ],
+)
+def test_plugin_payload_rejects_wrong_hash_and_path_escape(
+    tmp_path, monkeypatch, path, sha256, message
+):
+    child_home, manifest_path, _ = write_child_runtime(tmp_path, monkeypatch)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    if sha256 is None:
+        outside = child_home.parent / "outside-plugin"
+        outside.mkdir()
+        (outside / "plugin.json").write_text("{}\n", encoding="utf-8")
+        sha256 = path_tree_hash(outside)
+    manifest["plugins"][0]["path"] = path
+    manifest["plugins"][0]["sha256"] = sha256
+    manifest_path.write_text(json.dumps(manifest) + "\n", encoding="utf-8")
+
+    with pytest.raises(ChildAttestationError, match=message):
+        load_child_closure_manifest(child_home, manifest_path)
+
+
+def test_plugin_and_external_skill_ids_form_exact_discovered_closure(tmp_path, monkeypatch):
+    external_ids = ("superpowers:using-superpowers", "superpowers:test-driven-development")
+    plugin_ids = ("plugin:example-skill",)
+    discovered = (*REQUIRED_SKILLS, *plugin_ids, *external_ids)
+    child_home, manifest_path, fake_codex = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        discovered_ids=discovered,
+        plugin_skill_ids=plugin_ids,
+        external_skill_ids=external_ids,
+    )
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+    )
+    verified = verify_child_attestation(
+        attestation,
+        repo=tmp_path,
+        plan_path=plan_path,
+        manifest_path=manifest_path,
+        required_skills=REQUIRED_SKILLS,
+        command=str(fake_codex),
+        extra_args=[],
+        nonce_ledger=tmp_path / "used-nonces.json",
+        now=NOW,
+    )
+
+    assert verified.loaded_skills == discovered
+    assert verified.external_skill_ids == external_ids
+    assert verified.to_dict()["external_skill_ids"] == list(external_ids)
+
+
+@pytest.mark.parametrize(
+    "discovered_ids",
+    [
+        (*REQUIRED_SKILLS, "superpowers:using-superpowers"),
+        (
+            *REQUIRED_SKILLS,
+            "superpowers:using-superpowers",
+            "superpowers:test-driven-development",
+            "superpowers:unexpected",
+        ),
+    ],
+)
+def test_external_skill_allowlist_rejects_missing_or_extra_discovery(
+    tmp_path, monkeypatch, discovered_ids
+):
+    external_ids = ("superpowers:using-superpowers", "superpowers:test-driven-development")
+    _, manifest_path, fake_codex = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        discovered_ids=discovered_ids,
+        external_skill_ids=external_ids,
+    )
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+    )
+
+    with pytest.raises(ChildAttestationError, match="discovered skill closure mismatch"):
+        verify_child_attestation(
+            attestation,
+            repo=tmp_path,
+            plan_path=plan_path,
+            manifest_path=manifest_path,
+            required_skills=REQUIRED_SKILLS,
+            command=str(fake_codex),
+            extra_args=[],
+            nonce_ledger=tmp_path / "used-nonces.json",
+            now=NOW,
+        )
+
+
 @pytest.mark.parametrize(
     ("field", "value", "message"),
     [
@@ -170,6 +323,7 @@ def test_exact_manifest_rejects_undeclared_runtime_entry(tmp_path, monkeypatch):
         ("plan_sha256", "0" * 64, "plan hash"),
         ("runtime_tree_sha256", "1" * 64, "runtime tree hash"),
         ("plugin_tree_sha256", "2" * 64, "plugin tree hash"),
+        ("external_skill_ids", ("superpowers:forged",), "external skill ids"),
         ("codex_cli_version", "codex-cli 0.0.0", "Codex CLI version"),
         ("discovery_command", ("forged",), "discovery command"),
     ],

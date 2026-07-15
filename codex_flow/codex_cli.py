@@ -72,6 +72,7 @@ class ChildRuntimeAttestation:
     codex_cli_version: str
     discovery_command: tuple[str, ...]
     loaded_skills: tuple[str, ...]
+    external_skill_ids: tuple[str, ...]
     created_at: str
     ttl_seconds: int
     binding_sha256: str = ""
@@ -89,6 +90,7 @@ class ChildRuntimeAttestation:
             "codex_cli_version": self.codex_cli_version,
             "discovery_command": list(self.discovery_command),
             "loaded_skills": list(self.loaded_skills),
+            "external_skill_ids": list(self.external_skill_ids),
             "created_at": self.created_at,
             "ttl_seconds": self.ttl_seconds,
             "binding_sha256": self.binding_sha256,
@@ -100,6 +102,8 @@ class ChildClosureManifest:
     path: Path
     sha256: str
     skill_ids: tuple[str, ...]
+    plugin_skill_ids: tuple[str, ...]
+    external_skill_ids: tuple[str, ...]
     runtime_tree_sha256: str
     plugin_tree_sha256: str
 
@@ -141,8 +145,15 @@ def load_child_closure_manifest(child_home: str | Path, manifest_path: str | Pat
         raise ChildAttestationError("exact child manifest must use version 1")
     skills = validate_manifest_entries(home, data.get("skills"), "skills")
     plugins = validate_manifest_entries(home, data.get("plugins"), "plugins")
+    plugin_skill_ids = validate_plugin_skill_ids(data.get("plugins"))
+    external_skill_ids = validate_skill_ids(data.get("external_skill_ids", []), "external_skill_ids")
+    assert_distinct_skill_owners(
+        tuple(item[0] for item in skills),
+        plugin_skill_ids,
+        external_skill_ids,
+    )
     assert_exact_manifest_directory(home, skills, "skills")
-    assert_exact_manifest_directory(home, plugins, "plugins")
+    assert_exact_plugin_payloads(home, plugins)
     config_path = home / "config.toml"
     if not config_path.is_file():
         raise ChildAttestationError(f"prepared child runtime config is missing: {config_path}")
@@ -154,8 +165,17 @@ def load_child_closure_manifest(child_home: str | Path, manifest_path: str | Pat
         path=path,
         sha256=hashlib.sha256(path.read_bytes()).hexdigest(),
         skill_ids=tuple(item[0] for item in skills),
+        plugin_skill_ids=plugin_skill_ids,
+        external_skill_ids=external_skill_ids,
         runtime_tree_sha256=hashlib.sha256(canonical_json(runtime_payload)).hexdigest(),
-        plugin_tree_sha256=hashlib.sha256(canonical_json({"plugins": plugins})).hexdigest(),
+        plugin_tree_sha256=hashlib.sha256(
+            canonical_json(
+                {
+                    "plugins": plugins,
+                    "plugin_skill_ids": plugin_skill_ids,
+                }
+            )
+        ).hexdigest(),
     )
 
 
@@ -185,6 +205,56 @@ def validate_manifest_entries(home: Path, value: object, label: str) -> tuple[tu
     return tuple(entries)
 
 
+def validate_plugin_skill_ids(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ChildAttestationError("exact child manifest plugins must be a list")
+    skill_ids: list[str] = []
+    for raw in value:
+        if not isinstance(raw, dict):
+            raise ChildAttestationError("exact child manifest plugins entry must be an object")
+        plugin_id = str(raw.get("id") or "").strip()
+        skill_ids.extend(validate_skill_ids(raw.get("skill_ids", []), f"plugin {plugin_id} skill_ids"))
+    if len(set(skill_ids)) != len(skill_ids):
+        raise ChildAttestationError("exact child manifest has duplicate plugin skill ids")
+    return tuple(skill_ids)
+
+
+def validate_skill_ids(value: object, label: str) -> tuple[str, ...]:
+    if not isinstance(value, list):
+        raise ChildAttestationError(f"exact child manifest {label} must be a list")
+    normalized: list[str] = []
+    for raw in value:
+        if not isinstance(raw, str) or not raw.strip():
+            raise ChildAttestationError(
+                f"exact child manifest {label} must contain non-empty strings"
+            )
+        normalized.append(raw.strip())
+    if len(set(normalized)) != len(normalized):
+        raise ChildAttestationError(f"exact child manifest {label} has duplicate ids")
+    return tuple(normalized)
+
+
+def assert_distinct_skill_owners(
+    child_skill_ids: tuple[str, ...],
+    plugin_skill_ids: tuple[str, ...],
+    external_skill_ids: tuple[str, ...],
+) -> None:
+    ownership = {
+        "child": set(child_skill_ids),
+        "plugin": set(plugin_skill_ids),
+        "external": set(external_skill_ids),
+    }
+    overlaps = (
+        ownership["child"] & ownership["plugin"]
+        | ownership["child"] & ownership["external"]
+        | ownership["plugin"] & ownership["external"]
+    )
+    if overlaps:
+        raise ChildAttestationError(
+            f"exact child manifest has ambiguous skill ownership: {sorted(overlaps)}"
+        )
+
+
 def assert_exact_manifest_directory(
     home: Path,
     entries: tuple[tuple[str, str, str], ...],
@@ -205,6 +275,52 @@ def assert_exact_manifest_directory(
     if actual != declared:
         raise ChildAttestationError(
             f"exact child {label} closure mismatch: manifest={sorted(declared)} actual={sorted(actual)}"
+        )
+
+
+def assert_exact_plugin_payloads(
+    home: Path,
+    entries: tuple[tuple[str, str, str], ...],
+) -> None:
+    root = home / "plugins"
+    declared_direct: set[str] = set()
+    declared_cached: set[str] = set()
+    for item_id, relative, _ in entries:
+        parts = Path(relative).parts
+        if len(parts) == 2 and parts[0] == "plugins" and parts[1] not in {
+            "cache",
+            ".remote-plugin-install-staging",
+        }:
+            declared_direct.add(relative)
+            continue
+        if len(parts) == 5 and parts[:2] == ("plugins", "cache"):
+            declared_cached.add(relative)
+            continue
+        raise ChildAttestationError(
+            "exact child manifest path for "
+            f"{item_id} must identify a plugin payload root below plugins/"
+        )
+
+    actual_direct: set[str] = set()
+    if root.exists():
+        actual_direct.update(
+            path.relative_to(home).as_posix()
+            for path in root.iterdir()
+            if path.name not in {"cache", ".remote-plugin-install-staging"}
+        )
+    actual_cached: set[str] = set()
+    selected_plugin_roots = {home / Path(relative).parent for relative in declared_cached}
+    for plugin_root in selected_plugin_roots:
+        actual_cached.update(
+            path.relative_to(home).as_posix()
+            for path in plugin_root.iterdir()
+            if path.is_dir()
+        )
+    declared = declared_direct | declared_cached
+    actual = actual_direct | actual_cached
+    if actual != declared:
+        raise ChildAttestationError(
+            f"exact child plugins closure mismatch: manifest={sorted(declared)} actual={sorted(actual)}"
         )
 
 
@@ -329,6 +445,7 @@ def generate_child_attestation(
         codex_cli_version=version,
         discovery_command=normalized_discovery_command(repo_path, command, extra_args),
         loaded_skills=discovered,
+        external_skill_ids=manifest.external_skill_ids,
         created_at=created.astimezone(timezone.utc).isoformat(),
         ttl_seconds=ttl_seconds,
     )
@@ -382,6 +499,10 @@ def verify_child_attestation(
         (attestation.runtime_tree_sha256 == manifest.runtime_tree_sha256, "runtime tree hash mismatch"),
         (attestation.plugin_tree_sha256 == manifest.plugin_tree_sha256, "plugin tree hash mismatch"),
         (
+            attestation.external_skill_ids == manifest.external_skill_ids,
+            "external skill ids mismatch",
+        ),
+        (
             attestation.discovery_command == normalized_discovery_command(repo, command, extra_args),
             "discovery command mismatch",
         ),
@@ -395,10 +516,15 @@ def verify_child_attestation(
     missing = set(required_skills) - set(attestation.loaded_skills)
     if missing:
         raise ChildAttestationError(f"missing required skills before edit: {', '.join(sorted(missing))}")
-    if set(attestation.loaded_skills) != set(manifest.skill_ids):
+    expected_loaded_skills = (
+        *manifest.skill_ids,
+        *manifest.plugin_skill_ids,
+        *manifest.external_skill_ids,
+    )
+    if set(attestation.loaded_skills) != set(expected_loaded_skills):
         raise ChildAttestationError(
             "discovered skill closure mismatch: "
-            f"manifest={sorted(manifest.skill_ids)} loaded={sorted(attestation.loaded_skills)}"
+            f"manifest={sorted(expected_loaded_skills)} loaded={sorted(attestation.loaded_skills)}"
         )
     current = now or datetime.now(timezone.utc)
     try:
