@@ -41,7 +41,11 @@ if "resume" not in args:
         work.unlink()
     output.write_text("implementation phase\\n", encoding="utf-8")
 else:
-    output.write_text('COMMIT_UNIT_READY title="Deleted stale partial" summary="removed stale partial"\\n', encoding="utf-8")
+    output.write_text(
+        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'COMMIT_UNIT_READY title="Deleted stale partial" summary="removed stale partial"\\n',
+        encoding="utf-8",
+    )
 print('{"session_id":"fake-session"}')
 """,
         encoding="utf-8",

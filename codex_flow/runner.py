@@ -16,6 +16,7 @@ from .codex_cli import (
 )
 from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, scoped_status_summary, stash_paths, status
 from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
+from .reviewer_agent import out_of_scope_paths, require_post_unit_review, required_review_skills
 
 
 def next_ready_unit(queue_data: dict) -> dict | None:
@@ -267,7 +268,9 @@ def execute_unit(
         (plan_dir / "plan.md").read_text(encoding="utf-8"),
         selected_unit.number,
     )
-    required_skills = tuple(skill_entry.required_skills if skill_entry else unit.get("required_skills", []))
+    required_skills = required_review_skills(
+        tuple(skill_entry.required_skills if skill_entry else unit.get("required_skills", []))
+    )
     attested_plan = plan_dir / "source-plan.md"
     if not attested_plan.exists():
         attested_plan = plan_dir / "plan.md"
@@ -344,6 +347,7 @@ def execute_unit(
             append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by stash: {', '.join(dirty)}")
     if not no_branch:
         prepare_branch(repo, branch)
+    before_head = head_summary(repo)
     before = status(repo)
     unit["status"] = "in_progress"
     unit["prompt_path"] = str(prompt_path.relative_to(plan_dir))
@@ -406,7 +410,17 @@ def execute_unit(
                 "repair_reason": str(exc),
                 "review_gate": None,
             }
-        write_review_attempt(plan_dir, unit["id"], attempt, agent_result.review)
+        agent_result = replace_agent_review(
+            agent_result,
+            require_post_unit_review(agent_result.review, agent_result.review_message),
+        )
+        write_review_attempt(
+            plan_dir,
+            unit["id"],
+            attempt,
+            agent_result.review,
+            child_attestation=str(attestation_path.relative_to(plan_dir)),
+        )
         if agent_result.review.gate:
             unit["review_gate"] = agent_result.review.gate.to_dict()
             append_log(plan_dir, f"Review gate for commit unit {selected_unit.number} attempt {attempt}: {review_gate_summary(agent_result.review)}")
@@ -430,6 +444,7 @@ def execute_unit(
                 "prompt_path": prompt_path,
                 "action": "needs_work",
                 "reason": last_repair_reason,
+                "commit": "",
                 "changed_paths": partial_changed,
                 "auto_resolved_dirty": auto_resolved_dirty,
                 "repair_attempts": used_repair_attempts,
@@ -455,6 +470,7 @@ def execute_unit(
             "prompt_path": prompt_path,
             "action": "needs_work",
             "reason": last_repair_reason,
+            "commit": "",
             "changed_paths": partial_changed,
             "auto_resolved_dirty": auto_resolved_dirty,
             "repair_attempts": used_repair_attempts,
@@ -466,6 +482,57 @@ def execute_unit(
 
     after = status(repo)
     changed = repair_changed_paths(preserved_repair_dirty, before, after)
+    after_head = head_summary(repo)
+    if after_head != before_head:
+        reason = f"implementer moved HEAD before orchestrated unit commit: {before_head or 'None'} -> {after_head or 'None'}"
+        unit["status"] = "needs_work"
+        unit["updated_at"] = state.timestamp()
+        unit["repair_attempts"] = used_repair_attempts
+        unit["last_needs_work_reason"] = reason
+        unit["changed_paths"] = changed
+        if agent_result.review.gate:
+            unit["review_gate"] = agent_result.review.gate.to_dict()
+        plans.save_queue(plan_dir, queue_data)
+        append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work before commit: {reason}")
+        state.refresh_dashboard(source_repo)
+        return {
+            "unit": unit,
+            "prompt_path": prompt_path,
+            "action": "needs_work",
+            "reason": reason,
+            "commit": "",
+            "changed_paths": changed,
+            "auto_resolved_dirty": auto_resolved_dirty,
+            "repair_attempts": used_repair_attempts,
+            "repair_reason": reason,
+            "review_gate": review_gate_payload(agent_result.review),
+        }
+    outside_scope = out_of_scope_paths(changed, [str(path) for path in unit.get("allowed_paths", [])])
+    if outside_scope:
+        reason = f"unit changed paths outside allowed scope: {', '.join(outside_scope)}"
+        unit["status"] = "needs_work"
+        unit["updated_at"] = state.timestamp()
+        unit["repair_attempts"] = used_repair_attempts
+        unit["last_needs_work_reason"] = reason
+        unit["changed_paths"] = changed
+        if agent_result.review.gate:
+            unit["review_gate"] = agent_result.review.gate.to_dict()
+        plans.save_queue(plan_dir, queue_data)
+        append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work before commit: {reason}")
+        state.refresh_dashboard(source_repo)
+        return {
+            "unit": unit,
+            "prompt_path": prompt_path,
+            "action": "needs_work",
+            "reason": reason,
+            "commit": "",
+            "changed_paths": changed,
+            "out_of_scope_paths": outside_scope,
+            "auto_resolved_dirty": auto_resolved_dirty,
+            "repair_attempts": used_repair_attempts,
+            "repair_reason": reason,
+            "review_gate": review_gate_payload(agent_result.review),
+        }
     commit_hash = ""
     action = "done"
     if commit and changed:
@@ -530,7 +597,23 @@ def review_gate_summary(review: CommitUnitReview) -> str:
     return f"review_gate={gate.status} score={gate.score} blockers={gate.blockers} important={gate.important} minor={gate.minor}"
 
 
-def write_review_attempt(plan_dir: Path, unit_id: str, attempt: int, review: CommitUnitReview) -> Path:
+def replace_agent_review(agent_result, review: CommitUnitReview):
+    return type(agent_result)(
+        session_id=agent_result.session_id,
+        implementation_message=agent_result.implementation_message,
+        review_message=agent_result.review_message,
+        review=review,
+    )
+
+
+def write_review_attempt(
+    plan_dir: Path,
+    unit_id: str,
+    attempt: int,
+    review: CommitUnitReview,
+    *,
+    child_attestation: str,
+) -> Path:
     attempts_dir = plan_dir / "attempts" / unit_id
     attempts_dir.mkdir(parents=True, exist_ok=True)
     path = attempts_dir / f"attempt-{attempt}-review.json"
@@ -542,6 +625,8 @@ def write_review_attempt(plan_dir: Path, unit_id: str, attempt: int, review: Com
         "summary": review.summary,
         "reason": review.reason,
         "review_gate": review_gate_payload(review),
+        "review_skill": POST_UNIT_REVIEW_SKILL,
+        "child_attestation": child_attestation,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path

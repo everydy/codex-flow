@@ -328,6 +328,9 @@ def test_runner_valid_exact_attestation_allows_fixture_execution(tmp_path, monke
     )
     ticket = tickets.submit_ticket("attested execution", repo=tmp_path)
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0]["allowed_paths"].append("work.txt")
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     result = runner.run_next(
         plan.plan_path,

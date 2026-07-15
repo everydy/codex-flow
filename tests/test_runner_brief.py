@@ -27,7 +27,12 @@ def isolate_attestation_preflight(tmp_path, monkeypatch):
 
 def make_plan(tmp_path):
     ticket = tickets.submit_ticket("아침 리뷰 테스트", repo=tmp_path)
-    return plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    for unit in queue["units"]:
+        unit["allowed_paths"] = list(dict.fromkeys([*unit.get("allowed_paths", []), "work.txt"]))
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return plan
 
 
 def init_git_repo(tmp_path):
@@ -52,7 +57,11 @@ output = pathlib.Path(args[args.index("--output-last-message") + 1])
 work = pathlib.Path("work.txt")
 previous = work.read_text(encoding="utf-8") if work.exists() else ""
 work.write_text(previous + "implemented\\n", encoding="utf-8")
-output.write_text('COMMIT_UNIT_READY title="Fake implementation" summary="changed work.txt"\\n', encoding="utf-8")
+output.write_text(
+    'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+    'COMMIT_UNIT_READY title="Fake implementation" summary="changed work.txt"\\n',
+    encoding="utf-8",
+)
 print('{"session_id":"fake-session"}')
 """,
         encoding="utf-8",
@@ -71,6 +80,110 @@ import sys
 args = sys.argv[1:]
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
 output.write_text('COMMIT_UNIT_NEEDS_WORK reason="fake failure"\\n', encoding="utf-8")
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
+def write_fake_codex_without_review_gate(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_without_review_gate_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "resume" not in args:
+    pathlib.Path("work.txt").write_text("implemented\\n", encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+else:
+    output.write_text('COMMIT_UNIT_READY title="Ungated" summary="missing review evidence"\\n', encoding="utf-8")
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
+def write_fake_codex_with_incomplete_review_gate(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_with_incomplete_review_gate_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "resume" not in args:
+    pathlib.Path("work.txt").write_text("implemented\\n", encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+else:
+    output.write_text(
+        'REVIEW_GATE status="pass" reason="counts omitted"\\n'
+        'COMMIT_UNIT_READY title="Incomplete gate" summary="missing counts"\\n',
+        encoding="utf-8",
+    )
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
+def write_fake_codex_outside_scope(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_outside_scope_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "resume" not in args:
+    pathlib.Path("work.txt").write_text("allowed\\n", encoding="utf-8")
+    pathlib.Path("outside.txt").write_text("not allowed\\n", encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+else:
+    output.write_text(
+        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'COMMIT_UNIT_READY title="Out of scope" summary="changed two paths"\\n',
+        encoding="utf-8",
+    )
+print('{"session_id":"fake-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
+def write_fake_codex_that_commits(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_that_commits_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import subprocess
+import sys
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "resume" not in args:
+    pathlib.Path("work.txt").write_text("child commit\\n", encoding="utf-8")
+    subprocess.run(["git", "add", "work.txt"], check=True)
+    subprocess.run(["git", "commit", "-m", "unexpected child commit"], check=True, capture_output=True)
+    output.write_text("implementation phase\\n", encoding="utf-8")
+else:
+    output.write_text(
+        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'COMMIT_UNIT_READY title="Child committed" summary="unexpected commit"\\n',
+        encoding="utf-8",
+    )
 print('{"session_id":"fake-session"}')
 """,
         encoding="utf-8",
@@ -104,7 +217,11 @@ else:
     if count == 1:
         output.write_text('COMMIT_UNIT_NEEDS_WORK reason="first review failed"\\n', encoding="utf-8")
     else:
-        output.write_text('COMMIT_UNIT_READY title="Fake repair" summary="repair succeeded"\\n', encoding="utf-8")
+        output.write_text(
+            'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+            'COMMIT_UNIT_READY title="Fake repair" summary="repair succeeded"\\n',
+            encoding="utf-8",
+        )
     print('{"session_id":"fake-session"}')
 """,
         encoding="utf-8",
@@ -241,7 +358,11 @@ if "resume" not in args:
     output.write_text("implementation phase\\n", encoding="utf-8")
 else:
     if work.exists() and "partial-initial" in work.read_text(encoding="utf-8") and "final-repair" in work.read_text(encoding="utf-8"):
-        output.write_text('COMMIT_UNIT_READY title="Fake resumed repair" summary="resumed repair succeeded"\\n', encoding="utf-8")
+        output.write_text(
+            'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+            'COMMIT_UNIT_READY title="Fake resumed repair" summary="resumed repair succeeded"\\n',
+            encoding="utf-8",
+        )
     else:
         output.write_text('COMMIT_UNIT_NEEDS_WORK reason="resume context missing"\\n', encoding="utf-8")
 print('{"session_id":"fake-session"}')
@@ -375,6 +496,90 @@ def test_run_next_execute_with_fake_codex_commits_unit(tmp_path):
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["units"][0]["status"] == "done"
     assert queue["units"][0]["changed_paths"] == ["work.txt"]
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 2
+
+
+def test_run_next_refuses_commit_without_review_all_in_one_evidence(tmp_path):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_without_review_gate(tmp_path)
+    plan = make_plan(tmp_path)
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert result["action"] == "needs_work"
+    assert "review-all-in-one evidence" in result["reason"]
+    assert result["commit"] == ""
+    assert queue["units"][0]["status"] == "needs_work"
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
+
+
+def test_run_next_refuses_commit_with_incomplete_review_gate(tmp_path):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_with_incomplete_review_gate(tmp_path)
+    plan = make_plan(tmp_path)
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    assert result["action"] == "needs_work"
+    assert "incomplete review-all-in-one evidence" in result["reason"]
+    assert result["commit"] == ""
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
+
+
+def test_run_next_refuses_unit_commit_with_paths_outside_allowed_scope(tmp_path):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_outside_scope(tmp_path)
+    plan = make_plan(tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0]["allowed_paths"] = ["work.txt"]
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    persisted = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert result["action"] == "needs_work"
+    assert result["out_of_scope_paths"] == ["outside.txt"]
+    assert result["commit"] == ""
+    assert persisted["units"][0]["status"] == "needs_work"
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
+
+
+def test_run_next_attests_review_skill_and_binds_review_attempt(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex(tmp_path)
+    plan = make_plan(tmp_path)
+    captured: list[tuple[str, ...]] = []
+
+    def verify(value, **kwargs):
+        captured.append(tuple(kwargs["required_skills"]))
+        return value
+
+    monkeypatch.setattr(runner, "verify_child_attestation", verify)
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=False, codex_command=str(fake_codex))
+
+    evidence = json.loads(
+        (plan.directory / "attempts" / "unit-001" / "attempt-0-review.json").read_text(encoding="utf-8")
+    )
+    assert result["action"] == "done"
+    assert "review-all-in-one" in captured[0]
+    assert evidence["review_skill"] == "review-all-in-one"
+    assert evidence["child_attestation"] == result["unit"]["child_attestation"]
+
+
+def test_run_next_refuses_done_state_when_child_moves_head(tmp_path):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_that_commits(tmp_path)
+    plan = make_plan(tmp_path)
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert result["action"] == "needs_work"
+    assert "moved HEAD" in result["reason"]
+    assert result["commit"] == ""
+    assert queue["units"][0]["status"] == "needs_work"
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 2
 
 
