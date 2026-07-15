@@ -6,7 +6,7 @@ import json
 import re
 
 from . import plan_first_extract, plan_readiness, source_plan, state
-from .git_ops import is_git_repo, prepare_branch
+from .git_ops import ExecutionWorktreeContext, cleanup_execution_worktree, is_git_repo, prepare_branch, prepare_execution_worktree
 from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
 from .tickets import Ticket, create_internal_ticket, load_ticket, update_ticket_status
 
@@ -145,6 +145,11 @@ def create_plan_from_ticket(
         "plan_slug": slug,
         "branch": branch,
         "created_at": state.timestamp(),
+        "source_repo": str(flow.repo),
+        "execution_repo": str(flow.repo),
+        "worktree_path": str(flow.repo),
+        "source_plan_sha256": source_plan.sha256_text(ticket.path.read_text(encoding="utf-8")),
+        "cleanup_state": "not_applicable",
         "units": units,
         "final_gate": dict(DEFAULT_FINAL_GATE),
     }
@@ -183,13 +188,29 @@ def create_plan_from_source(
     branch_name: str | None = None,
     plan_title: str | None = None,
     prepare_git_branch: bool = False,
+    worktree_root: str | Path | None = None,
 ) -> Plan:
     flow = state.ensure_initialized(repo)
     title = plan_title or source.title
     slug = unique_slug(title, flow.plans)
     branch = branch_name or f"codex/{slug}"
+    execution_context = ExecutionWorktreeContext(
+        source_repo=flow.repo,
+        execution_repo=flow.repo,
+        worktree_path=flow.repo,
+        plan_id=slug,
+        branch=branch,
+        source_plan_sha256=source.sha256,
+        cleanup_state="not_applicable",
+    )
     if prepare_git_branch and is_git_repo(flow.repo):
-        prepare_branch(flow.repo, branch)
+        execution_context = prepare_execution_worktree(
+            flow.repo,
+            slug,
+            branch,
+            worktree_root,
+            source_plan_sha256=source.sha256,
+        )
     plan_dir = flow.plans / slug
     plan_dir.mkdir(parents=True, exist_ok=False)
     (plan_dir / "prompts").mkdir(parents=True, exist_ok=True)
@@ -206,9 +227,19 @@ def create_plan_from_source(
     source_plan.snapshot_source_plan(source, plan_dir, extraction_confidence=confidence)
     plan_first_extract.write_ticket_files(plan_dir / "tickets", extracted)
 
-    queue_data = queue_from_source_tickets(source, extracted, slug, title, branch, top_level_ticket, confidence)
+    queue_data = queue_from_source_tickets(
+        source,
+        extracted,
+        slug,
+        title,
+        branch,
+        top_level_ticket,
+        confidence,
+        execution_context=execution_context,
+    )
     plan = Plan(slug, plan_dir, plan_dir / "plan.md", plan_dir / "queue.json", plan_dir / "queue.md")
     write_source_plan_files(plan, source, extracted, queue_data, top_level_ticket)
+    persist_execution_context(plan_dir, execution_context)
     ensure_plan_skill_routing_manifest(plan.plan_path, queue_data)
     plan_readiness.sync_queue_cache_from_plan(plan.plan_path)
     update_ticket_status(top_level_ticket.path, "planned")
@@ -224,6 +255,7 @@ def queue_from_source_tickets(
     branch: str,
     top_level_ticket: Ticket,
     extraction_confidence: str,
+    execution_context: ExecutionWorktreeContext | None = None,
 ) -> dict:
     source_ref_path = source_plan.relative_path(source.path, source.repo)
     source_manifest = source_manifest_by_number(source.content)
@@ -272,6 +304,15 @@ def queue_from_source_tickets(
             }
         )
         units.append(unit)
+    context = execution_context or ExecutionWorktreeContext(
+        source_repo=source.repo,
+        execution_repo=source.repo,
+        worktree_path=source.repo,
+        plan_id=slug,
+        branch=branch,
+        source_plan_sha256=source.sha256,
+        cleanup_state="not_applicable",
+    )
     return {
         "ticket_id": top_level_ticket.id,
         "ticket_title": top_level_ticket.title,
@@ -280,6 +321,7 @@ def queue_from_source_tickets(
         "branch": branch,
         "created_at": state.timestamp(),
         "route_mode": "plan_first_source",
+        **execution_context_metadata(context),
         "source_plan": {
             "path": source_ref_path,
             "title": source.title,
@@ -776,6 +818,61 @@ def save_queue(plan_dir: Path, queue_data: dict) -> None:
     queue_data["updated_at"] = state.timestamp()
     (plan_dir / "queue.json").write_text(json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     (plan_dir / "queue.md").write_text(render_queue_md(queue_data), encoding="utf-8")
+
+
+def execution_context_metadata(context: ExecutionWorktreeContext) -> dict:
+    metadata = {
+        "source_repo": str(context.source_repo),
+        "execution_repo": str(context.execution_repo),
+        "worktree_path": str(context.worktree_path),
+        "branch": context.branch,
+        "plan_id": context.plan_id,
+        "source_plan_sha256": context.source_plan_sha256,
+        "cleanup_state": context.cleanup_state,
+    }
+    return {**metadata, "execution_context": dict(metadata)}
+
+
+def persist_execution_context(plan_dir: str | Path, context: ExecutionWorktreeContext) -> dict:
+    directory = Path(plan_dir).expanduser().resolve()
+    queue_path = directory / "queue.json"
+    queue_data = json.loads(queue_path.read_text(encoding="utf-8")) if queue_path.exists() else {}
+    queue_data.update(execution_context_metadata(context))
+    save_queue(directory, queue_data)
+    return queue_data
+
+
+def execution_context_for_plan(plan_path: str | Path, queue_data: dict | None = None) -> ExecutionWorktreeContext:
+    path = Path(plan_path).expanduser().resolve()
+    plan_dir = path.parent if path.name == "plan.md" else path
+    data = queue_data
+    if data is None:
+        queue_path = plan_dir / "queue.json"
+        data = json.loads(queue_path.read_text(encoding="utf-8")) if queue_path.exists() else {}
+    fallback_repo = plan_dir.parents[2]
+    source_repo = Path(data.get("source_repo") or fallback_repo).expanduser().resolve()
+    execution_repo = Path(data.get("execution_repo") or fallback_repo).expanduser().resolve()
+    return ExecutionWorktreeContext(
+        source_repo=source_repo,
+        execution_repo=execution_repo,
+        worktree_path=Path(data.get("worktree_path") or execution_repo).expanduser().resolve(),
+        plan_id=str(data.get("plan_id") or data.get("plan_slug") or plan_dir.name),
+        branch=str(data.get("branch") or f"codex/{plan_dir.name}"),
+        source_plan_sha256=str(data.get("source_plan_sha256") or (data.get("source_plan") or {}).get("sha256") or ""),
+        cleanup_state=str(data.get("cleanup_state") or "not_applicable"),
+    )
+
+
+def execution_repo_for_plan(plan_path: str | Path, queue_data: dict | None = None) -> Path:
+    return execution_context_for_plan(plan_path, queue_data).execution_repo
+
+
+def cleanup_plan_worktree(plan_path: str | Path, target_branch: str) -> ExecutionWorktreeContext:
+    plan_dir, queue_data = load_queue(plan_path)
+    context = execution_context_for_plan(plan_dir, queue_data)
+    cleaned = cleanup_execution_worktree(context, target_branch=target_branch)
+    persist_execution_context(plan_dir, cleaned)
+    return cleaned
 
 
 def append_plan_request(plan_path: str | Path, request: str, reason: str = "Routed to existing plan.") -> Path:

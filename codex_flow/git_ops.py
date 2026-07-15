@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 import fnmatch
 import json
@@ -30,6 +30,17 @@ class GitStatusEntry:
 class GitStatusSnapshot:
     raw: str
     entries: list[GitStatusEntry]
+
+
+@dataclass(frozen=True)
+class ExecutionWorktreeContext:
+    source_repo: Path
+    execution_repo: Path
+    worktree_path: Path
+    plan_id: str
+    branch: str
+    source_plan_sha256: str = ""
+    cleanup_state: str = "active"
 
 
 def run_process(
@@ -139,6 +150,111 @@ def prepare_branch(repo: str | Path, branch_name: str) -> None:
         result = run_process(["git", "switch", "-c", trimmed], cwd=repo_path)
     if result.status != 0:
         raise SystemExit(command_failure(f"failed to prepare branch {trimmed}", result))
+
+
+def prepare_execution_worktree(
+    source_repo: str | Path,
+    plan_id: str,
+    branch: str,
+    worktree_root: str | Path | None = None,
+    *,
+    source_plan_sha256: str = "",
+) -> ExecutionWorktreeContext:
+    source_path = require_git_repo(source_repo)
+    normalized_plan_id = plan_id.strip()
+    normalized_branch = branch.strip()
+    if not normalized_plan_id:
+        raise SystemExit("plan id is required")
+    if not normalized_branch:
+        raise SystemExit("branch name is required")
+    root = (
+        Path(worktree_root).expanduser().resolve()
+        if worktree_root
+        else source_path.parent / f".{source_path.name}-codex-flow-worktrees"
+    )
+    target = (root / normalized_plan_id).resolve()
+    if target == source_path or source_path in target.parents:
+        raise SystemExit(f"execution worktree must be outside the source repository: {target}")
+
+    if target.exists():
+        if not is_git_repo(target):
+            raise SystemExit(f"worktree path exists but is not a git worktree: {target}")
+        if current_branch(target) != normalized_branch:
+            raise SystemExit(
+                f"worktree path uses branch {current_branch(target)}, expected {normalized_branch}: {target}"
+            )
+        if git_common_dir(target) != git_common_dir(source_path):
+            raise SystemExit(f"worktree path belongs to a different git repository: {target}")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        existing = run_process(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{normalized_branch}"],
+            cwd=source_path,
+        )
+        args = ["git", "worktree", "add", str(target), normalized_branch]
+        if existing.status != 0:
+            args = ["git", "worktree", "add", "-b", normalized_branch, str(target), "HEAD"]
+        result = run_process(args, cwd=source_path)
+        if result.status != 0:
+            raise SystemExit(command_failure(f"failed to create worktree {target}", result))
+
+    return ExecutionWorktreeContext(
+        source_repo=source_path,
+        execution_repo=target,
+        worktree_path=target,
+        plan_id=normalized_plan_id,
+        branch=normalized_branch,
+        source_plan_sha256=source_plan_sha256,
+    )
+
+
+def git_common_dir(repo: str | Path) -> Path:
+    repo_path = require_git_repo(repo)
+    result = run_process(["git", "rev-parse", "--git-common-dir"], cwd=repo_path)
+    if result.status != 0:
+        raise SystemExit(command_failure("git common-dir failed", result))
+    common = Path(result.stdout.strip())
+    return (repo_path / common).resolve() if not common.is_absolute() else common.resolve()
+
+
+def cleanup_execution_worktree(
+    context: ExecutionWorktreeContext,
+    *,
+    target_branch: str,
+) -> ExecutionWorktreeContext:
+    if context.cleanup_state == "removed":
+        return context
+    source_repo = require_git_repo(context.source_repo)
+    execution_repo = require_git_repo(context.execution_repo)
+    if execution_repo == source_repo:
+        raise SystemExit("refusing to remove the source repository as an execution worktree")
+    dirty = dirty_paths(status(execution_repo), ignore_flow=False)
+    if dirty:
+        raise SystemExit(f"refusing to remove dirty execution worktree: {', '.join(dirty)}")
+    target = target_branch.strip()
+    if not target:
+        raise SystemExit("cleanup target branch is required")
+    if context.branch == target:
+        raise SystemExit("refusing to remove an execution worktree for the cleanup target branch")
+    branch_head = run_process(["git", "rev-parse", f"refs/heads/{context.branch}"], cwd=source_repo)
+    if branch_head.status != 0:
+        raise SystemExit(command_failure(f"failed to resolve branch {context.branch}", branch_head))
+    merged = run_process(
+        ["git", "merge-base", "--is-ancestor", context.branch, target],
+        cwd=source_repo,
+    )
+    if merged.status != 0:
+        raise SystemExit(f"refusing to remove execution worktree: branch {context.branch} is not merged into {target}")
+    removed = run_process(["git", "worktree", "remove", str(execution_repo)], cwd=source_repo)
+    if removed.status != 0:
+        raise SystemExit(command_failure(f"failed to remove worktree {execution_repo}", removed))
+    deleted = run_process(
+        ["git", "update-ref", "-d", f"refs/heads/{context.branch}", branch_head.stdout.strip()],
+        cwd=source_repo,
+    )
+    if deleted.status != 0:
+        raise SystemExit(command_failure(f"failed to delete merged branch {context.branch}", deleted))
+    return replace(context, cleanup_state="removed")
 
 
 def dirty_paths(snapshot: GitStatusSnapshot, ignore_flow: bool = True) -> list[str]:

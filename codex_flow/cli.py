@@ -66,6 +66,7 @@ def build_parser() -> argparse.ArgumentParser:
         command.add_argument("--auto-resolve", action="store_true", help="Let 구현커밋 resolve route blockers without waiting for the user.")
         command.add_argument("--branch", help="Branch name to use when creating a new plan.")
         command.add_argument("--title", dest="plan_title", help="Plan title to use when creating a new plan.")
+        command.add_argument("--worktree-root", type=Path, help="Root directory for generated task worktrees.")
 
     route = subparsers.add_parser("route", help="Adopt a plan-first Markdown source and create an execution queue.")
     add_route_source_args(route)
@@ -115,6 +116,10 @@ def build_parser() -> argparse.ArgumentParser:
     run_all.add_argument("--target", default="main")
     run_all.add_argument("--remote", action="store_true", help="Use remote PR/merge mode for finalize steps.")
     run_all.add_argument("--open-pr", action="store_true", help="Create a PR dry-run or remote PR after all units are done.")
+
+    cleanup_worktree = subparsers.add_parser("cleanup-worktree", help="Remove a clean task worktree after its branch is merged.")
+    cleanup_worktree.add_argument("--plan", type=Path, required=True)
+    cleanup_worktree.add_argument("--target", default="main")
 
     mark = subparsers.add_parser("mark", help="Update a queue unit status.")
     mark.add_argument("--plan", type=Path, required=True)
@@ -212,10 +217,20 @@ def main(argv: list[str] | None = None) -> int:
             branch_name=args.branch,
             plan_title=args.plan_title,
             prepare_git_branch=True,
+            worktree_root=args.worktree_root,
         )
         print(f"source_plan_adopted: {plan.directory / 'source-plan.md'}")
         print(f"plan_created: {plan.plan_path}")
         print(f"queue_created: {plan.queue_md}")
+        return 0
+
+    if args.command == "cleanup-worktree":
+        try:
+            context = plans.cleanup_plan_worktree(args.plan, args.target)
+        except SystemExit as exc:
+            print(str(exc))
+            return 1
+        print(f"worktree_cleaned: {context.worktree_path}")
         return 0
 
     if args.command == "status":
