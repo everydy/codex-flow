@@ -393,6 +393,43 @@ def test_plugin_and_external_skill_ids_form_exact_discovered_closure(tmp_path, m
     assert verified.to_dict()["external_skill_ids"] == list(external_ids)
 
 
+def test_short_required_skill_names_resolve_to_one_namespaced_plugin_skill(tmp_path, monkeypatch):
+    plugin_ids = (
+        "chronica-workflow:plan-first-implementation",
+        "chronica-workflow:review-all-in-one",
+    )
+    _, manifest_path, fake_codex = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        skill_ids=(),
+        discovered_ids=plugin_ids,
+        plugin_skill_ids=plugin_ids,
+    )
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+    )
+
+    verified = verify_child_attestation(
+        attestation,
+        repo=tmp_path,
+        plan_path=plan_path,
+        manifest_path=manifest_path,
+        required_skills=REQUIRED_SKILLS,
+        command=str(fake_codex),
+        extra_args=[],
+        nonce_ledger=tmp_path / "used-nonces.json",
+        now=NOW,
+    )
+
+    assert verified.loaded_skills == plugin_ids
+
+
 @pytest.mark.parametrize(
     "discovered_ids",
     [

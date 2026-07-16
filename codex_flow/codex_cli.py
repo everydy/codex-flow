@@ -647,7 +647,20 @@ def verify_child_attestation(
     child_env, _ = child_runtime_environment(repo, extra_args=extra_args)
     if attestation.codex_cli_version != codex_cli_version(command, child_env, repo, timeout_seconds):
         raise ChildAttestationError("Codex CLI version mismatch")
-    missing = set(required_skills) - set(attestation.loaded_skills)
+    loaded_skills = set(attestation.loaded_skills)
+    missing = {
+        required
+        for required in required_skills
+        if required not in loaded_skills
+        and len(
+            [
+                skill_id
+                for skill_id in manifest.plugin_skill_ids
+                if skill_id.rsplit(":", 1)[-1] == required and skill_id in loaded_skills
+            ]
+        )
+        != 1
+    }
     if missing:
         raise ChildAttestationError(f"missing required skills before edit: {', '.join(sorted(missing))}")
     expected_loaded_skills = (
