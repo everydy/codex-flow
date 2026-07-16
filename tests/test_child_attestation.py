@@ -52,10 +52,18 @@ def write_child_runtime(
             {"id": skill_id, "path": f"skills/{skill_id}", "sha256": path_tree_hash(skill_dir)}
         )
     plugin_entries = []
+    discovered_paths = {}
+    for skill_id in skill_ids:
+        discovered_paths[skill_id] = str(child_home / "skills" / skill_id / "SKILL.md")
     if plugin_relative is not None:
         plugin_dir = child_home / plugin_relative
         plugin_dir.mkdir(parents=True)
         (plugin_dir / "plugin.json").write_text('{"name":"codex-flow-runtime"}\n', encoding="utf-8")
+        for skill_id in plugin_skill_ids:
+            plugin_skill = plugin_dir / "skills" / skill_id.rsplit(":", 1)[-1]
+            plugin_skill.mkdir(parents=True)
+            (plugin_skill / "SKILL.md").write_text(f"# {skill_id}\n", encoding="utf-8")
+            discovered_paths[skill_id] = str(plugin_skill / "SKILL.md")
         plugin_entries.append(
             {
                 "id": "codex-flow-runtime",
@@ -64,6 +72,14 @@ def write_child_runtime(
                 "skill_ids": list(plugin_skill_ids),
             }
         )
+    external_root = tmp_path.parent / f"{tmp_path.name}-external-skills"
+    for index, skill_id in enumerate(external_skill_ids):
+        external_skill = external_root / str(index)
+        external_skill.mkdir(parents=True)
+        (external_skill / "SKILL.md").write_text(f"# {skill_id}\n", encoding="utf-8")
+        discovered_paths[skill_id] = str(external_skill / "SKILL.md")
+    for skill_id in discovered_ids:
+        discovered_paths.setdefault(skill_id, str(external_root / "unexpected" / "SKILL.md"))
     manifest_path = child_home / "child-manifest.json"
     manifest_path.write_text(
         json.dumps(
@@ -91,14 +107,30 @@ args = sys.argv[1:]
 if args == ["--version"]:
     print("codex-cli 9.9.9")
     raise SystemExit(0)
+if args == ["app-server", "--listen", "stdio://"]:
+    discovered_paths = json.loads(os.environ["DISCOVERED_PATHS"])
+    for line in sys.stdin:
+        request = json.loads(line)
+        if request["method"] == "initialize":
+            response = {"id": request["id"], "result": {"codexHome": os.environ["CODEX_HOME"]}}
+        elif request["method"] == "skills/list":
+            cwd = request["params"]["cwds"][0]
+            skills = [
+                {"name": skill_id, "path": discovered_paths[skill_id], "enabled": True}
+                for skill_id in os.environ["DISCOVERED_IDS"].split(",")
+                if skill_id
+            ]
+            response = {
+                "id": request["id"],
+                "result": {"data": [{"cwd": cwd, "errors": [], "skills": skills}]},
+            }
+        else:
+            response = {"id": request["id"], "error": {"message": "unexpected method"}}
+        print(json.dumps(response), flush=True)
+    raise SystemExit(0)
 prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "Attestation nonce:" in prompt:
-    nonce = re.search(r'nonce: ([0-9a-f]+)', prompt).group(1)
-    loaded_ids = [item for item in os.environ["DISCOVERED_IDS"].split(",") if item]
-    output.write_text(json.dumps({"nonce": nonce, "loaded_ids": loaded_ids}) + "\\n", encoding="utf-8")
-    print('{"session_id":"discovery-session"}')
-elif os.environ.get("FULL_AGENT") == "1":
+if os.environ.get("FULL_AGENT") == "1":
     if "resume" in args:
         output.write_text(
             'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
@@ -118,6 +150,7 @@ else:
     monkeypatch.setenv("CODEX_FLOW_CHILD_HOME", str(child_home))
     monkeypatch.setenv(CHILD_MANIFEST_ENV, str(manifest_path))
     monkeypatch.setenv("DISCOVERED_IDS", ",".join(discovered_ids))
+    monkeypatch.setenv("DISCOVERED_PATHS", json.dumps(discovered_paths))
     monkeypatch.setenv("FULL_AGENT", "1" if full_agent else "0")
     return child_home, manifest_path, fake_codex
 
@@ -125,6 +158,96 @@ else:
 def resign(attestation, **changes):
     changed = replace(attestation, **changes)
     return replace(changed, binding_sha256=attestation_digest(changed))
+
+
+def write_app_server_only_codex(tmp_path: Path, child_home: Path) -> Path:
+    fake_codex = tmp_path / "fake-app-server-codex.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import json
+import os
+import pathlib
+import sys
+
+args = sys.argv[1:]
+if args == ["--version"]:
+    print("codex-cli 9.9.9")
+    raise SystemExit(0)
+if args != ["app-server", "--listen", "stdio://"]:
+    raise SystemExit(42)
+for line in sys.stdin:
+    request = json.loads(line)
+    if request["method"] == "initialize":
+        response = {"id": request["id"], "result": {"codexHome": os.environ["CODEX_HOME"]}}
+    elif request["method"] == "skills/list":
+        cwd = request["params"]["cwds"][0]
+        root = pathlib.Path(os.environ["CODEX_HOME"])
+        skills = [
+            {
+                "name": skill_id,
+                "path": str(root / "skills" / skill_id / "SKILL.md"),
+                "enabled": True,
+            }
+            for skill_id in os.environ["DISCOVERED_IDS"].split(",")
+            if skill_id
+        ]
+        response = {
+            "id": request["id"],
+            "result": {"data": [{"cwd": cwd, "errors": [], "skills": skills}]},
+        }
+    else:
+        response = {"id": request["id"], "error": {"message": "unexpected method"}}
+    print(json.dumps(response), flush=True)
+raise SystemExit(int(os.environ.get("APP_SERVER_EXIT", "0")))
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(0o755)
+    return fake_codex
+
+
+def test_fresh_child_attestation_uses_app_server_inventory_not_model_self_report(
+    tmp_path, monkeypatch
+):
+    child_home, _, _ = write_child_runtime(tmp_path, monkeypatch)
+    fake_codex = write_app_server_only_codex(tmp_path, child_home)
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+    )
+
+    assert attestation.loaded_skills == REQUIRED_SKILLS
+    assert attestation.discovery_command == (
+        str(fake_codex),
+        "app-server",
+        "--listen",
+        "stdio://",
+    )
+
+
+def test_fresh_child_attestation_rejects_app_server_failure_after_inventory(
+    tmp_path, monkeypatch
+):
+    child_home, _, _ = write_child_runtime(tmp_path, monkeypatch)
+    fake_codex = write_app_server_only_codex(tmp_path, child_home)
+    monkeypatch.setenv("APP_SERVER_EXIT", "7")
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+
+    with pytest.raises(ChildAttestationError, match="app-server exited 7"):
+        generate_child_attestation(
+            repo=tmp_path,
+            plan_path=plan_path,
+            command=str(fake_codex),
+            extra_args=[],
+            now=NOW,
+        )
 
 
 def test_fresh_child_discovery_attestation_verifies_exact_closure(tmp_path, monkeypatch):

@@ -6,10 +6,13 @@ from pathlib import Path
 import hashlib
 import json
 import os
+import queue
 import re
 import secrets
 import subprocess
 import tempfile
+import threading
+import time
 import tomllib
 
 from .git_ops import ProcessResult, command_failure, run_process
@@ -106,6 +109,8 @@ class ChildClosureManifest:
     external_skill_ids: tuple[str, ...]
     runtime_tree_sha256: str
     plugin_tree_sha256: str
+    skill_roots: tuple[tuple[str, str], ...]
+    plugin_roots: tuple[str, ...]
 
 
 def path_tree_hash(path: str | Path) -> str:
@@ -176,6 +181,8 @@ def load_child_closure_manifest(child_home: str | Path, manifest_path: str | Pat
                 }
             )
         ).hexdigest(),
+        skill_roots=tuple((item[0], str((home / item[1]).resolve())) for item in skills),
+        plugin_roots=tuple(str((home / item[1]).resolve()) for item in plugins),
     )
 
 
@@ -334,29 +341,192 @@ def attestation_digest(attestation: ChildRuntimeAttestation) -> str:
     return hashlib.sha256(canonical_json(payload)).hexdigest()
 
 
-def child_discovery_command(
-    repo: str | Path,
-    command: str,
-    extra_args: list[str] | None,
-    output_path: str,
-) -> tuple[str, ...]:
-    return (
-        command,
-        "exec",
-        "--json",
-        "--cd",
-        str(Path(repo).expanduser().resolve()),
-        "--sandbox",
-        "read-only",
-        "--output-last-message",
-        output_path,
-        *with_codex_cli_defaults(extra_args),
-        "-",
-    )
+def child_discovery_command(command: str) -> tuple[str, ...]:
+    return (command, "app-server", "--listen", "stdio://")
 
 
 def normalized_discovery_command(repo: str | Path, command: str, extra_args: list[str] | None) -> tuple[str, ...]:
-    return child_discovery_command(repo, command, extra_args, "<output-last-message>")
+    return child_discovery_command(command)
+
+
+def _inventory_skill_ids(
+    response: object,
+    *,
+    repo: Path,
+    manifest: ChildClosureManifest,
+) -> tuple[str, ...]:
+    if not isinstance(response, dict) or not isinstance(response.get("result"), dict):
+        raise ChildAttestationError("app-server skills/list response has no result")
+    data = response["result"].get("data")
+    if not isinstance(data, list):
+        raise ChildAttestationError("app-server skills/list result has no data list")
+    matches = [
+        entry
+        for entry in data
+        if isinstance(entry, dict)
+        and isinstance(entry.get("cwd"), str)
+        and Path(entry["cwd"]).expanduser().resolve() == repo
+    ]
+    if len(matches) != 1:
+        raise ChildAttestationError(
+            f"app-server skills/list returned {len(matches)} entries for execution cwd"
+        )
+    entry = matches[0]
+    errors = entry.get("errors")
+    skills = entry.get("skills")
+    if not isinstance(errors, list) or errors:
+        raise ChildAttestationError("app-server skills/list reported discovery errors")
+    if not isinstance(skills, list):
+        raise ChildAttestationError("app-server skills/list cwd entry has no skills list")
+    skill_roots = {skill_id: Path(path) for skill_id, path in manifest.skill_roots}
+    plugin_roots = tuple(Path(path) for path in manifest.plugin_roots)
+    loaded: list[str] = []
+    for skill in skills:
+        if not isinstance(skill, dict) or skill.get("enabled") is not True:
+            continue
+        name = skill.get("name")
+        path = skill.get("path")
+        if not isinstance(name, str) or not name.strip() or not isinstance(path, str):
+            raise ChildAttestationError("app-server returned an invalid enabled skill record")
+        skill_id = name.strip()
+        resolved = Path(path).expanduser().resolve()
+        if skill_id in skill_roots and not is_relative_to(resolved, skill_roots[skill_id]):
+            raise ChildAttestationError(f"child skill path ownership mismatch: {skill_id}")
+        if skill_id in manifest.plugin_skill_ids and not any(
+            is_relative_to(resolved, root) for root in plugin_roots
+        ):
+            raise ChildAttestationError(f"plugin skill path ownership mismatch: {skill_id}")
+        loaded.append(skill_id)
+    if len(set(loaded)) != len(loaded):
+        raise ChildAttestationError("app-server returned duplicate enabled skill ids")
+    return tuple(loaded)
+
+
+def discover_child_skills(
+    *,
+    repo: Path,
+    child_home: Path,
+    manifest: ChildClosureManifest,
+    command: str,
+    env: dict[str, str],
+    timeout_seconds: int | None,
+) -> tuple[str, ...]:
+    args = list(child_discovery_command(command))
+    try:
+        process = subprocess.Popen(
+            args,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            bufsize=1,
+            env=env,
+            cwd=repo,
+        )
+    except OSError as exc:
+        raise ChildAttestationError(f"app-server skill discovery could not start: {exc}") from exc
+    if process.stdin is None or process.stdout is None or process.stderr is None:
+        process.kill()
+        process.wait()
+        raise ChildAttestationError("app-server did not expose stdio pipes")
+    responses: queue.Queue[str | None] = queue.Queue()
+    stderr_lines: list[str] = []
+
+    def read_stdout() -> None:
+        for line in process.stdout:
+            responses.put(line)
+        responses.put(None)
+
+    def read_stderr() -> None:
+        stderr_lines.extend(process.stderr.readlines())
+
+    stdout_thread = threading.Thread(target=read_stdout, daemon=True)
+    stderr_thread = threading.Thread(target=read_stderr, daemon=True)
+    stdout_thread.start()
+    stderr_thread.start()
+    deadline = time.monotonic() + float(timeout_seconds or 30)
+    protocol_complete = False
+
+    def send(request: dict[str, object]) -> None:
+        process.stdin.write(json.dumps(request, separators=(",", ":")) + "\n")
+        process.stdin.flush()
+
+    def receive(request_id: int, method: str) -> dict[str, object]:
+        while True:
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise ChildAttestationError(f"app-server {method} timed out")
+            try:
+                line = responses.get(timeout=remaining)
+            except queue.Empty as exc:
+                raise ChildAttestationError(f"app-server {method} timed out") from exc
+            if line is None:
+                detail = "".join(stderr_lines).strip()
+                suffix = f": {detail}" if detail else ""
+                raise ChildAttestationError(
+                    f"app-server exited before the {method} response{suffix}"
+                )
+            try:
+                message = json.loads(line)
+            except ValueError as exc:
+                raise ChildAttestationError(
+                    f"app-server returned malformed JSON during {method}"
+                ) from exc
+            if not isinstance(message, dict) or message.get("id") != request_id:
+                continue
+            if "error" in message:
+                raise ChildAttestationError(f"app-server {method} protocol error: {message['error']}")
+            return message
+
+    try:
+        send(
+            {
+                "id": 1,
+                "method": "initialize",
+                "params": {"clientInfo": {"name": "codex-flow", "version": "1"}},
+            }
+        )
+        initialized = receive(1, "initialize")
+        result = initialized.get("result")
+        codex_home = result.get("codexHome") if isinstance(result, dict) else None
+        if not isinstance(codex_home, str) or Path(codex_home).expanduser().resolve() != child_home:
+            raise ChildAttestationError(
+                "app-server initialize response did not match prepared CODEX_HOME"
+            )
+        send(
+            {
+                "id": 2,
+                "method": "skills/list",
+                "params": {"cwds": [str(repo)], "forceReload": True},
+            }
+        )
+        inventory = _inventory_skill_ids(
+            receive(2, "skills/list"), repo=repo, manifest=manifest
+        )
+        protocol_complete = True
+        return inventory
+    finally:
+        try:
+            process.stdin.close()
+        except OSError:
+            pass
+        try:
+            process.wait(timeout=1.0)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait()
+        stdout_thread.join(timeout=0.1)
+        stderr_thread.join(timeout=0.1)
+        if protocol_complete and process.returncode != 0:
+            detail = "".join(stderr_lines).strip()
+            suffix = f": {detail}" if detail else ""
+            raise ChildAttestationError(
+                f"app-server exited {process.returncode} after skills/list{suffix}"
+            )
 
 
 def codex_cli_version(
@@ -406,32 +576,14 @@ def generate_child_attestation(
         raise ChildAttestationError("prepared child home does not match the isolated child runtime")
     version = codex_cli_version(command, child_env, repo_path, timeout_seconds)
     nonce = secrets.token_hex(32)
-    prompt = "\n".join(
-        [
-            "Discover the skills loaded in this fresh isolated Codex child runtime.",
-            f"Attestation nonce: {nonce}",
-            "Return only one JSON object with exactly these keys:",
-            '{"nonce":"<the nonce above>","loaded_ids":["<every loaded skill id>"]}',
-            "Do not infer skills from this prompt. Report only the skill ids available in your runtime context.",
-        ]
+    discovered = discover_child_skills(
+        repo=repo_path,
+        child_home=child_home,
+        manifest=manifest,
+        command=command,
+        env=child_env,
+        timeout_seconds=timeout_seconds,
     )
-    with tempfile.TemporaryDirectory(prefix="codex-flow-child-discovery-") as temp_dir:
-        output_path = Path(temp_dir) / "last-message.json"
-        args = list(child_discovery_command(repo_path, command, extra_args, str(output_path)))
-        try:
-            result = run_process(
-                args,
-                cwd=repo_path,
-                input_text=prompt,
-                env=child_env,
-                timeout_seconds=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            raise ChildAttestationError("fresh child skill discovery timed out") from exc
-        if result.status != 0:
-            raise ChildAttestationError(command_failure("fresh child skill discovery failed", result))
-        final_message = output_path.read_text(encoding="utf-8") if output_path.exists() else result.stdout
-    discovered = parse_child_discovery(final_message, nonce)
     created = now or datetime.now(timezone.utc)
     unsigned = ChildRuntimeAttestation(
         nonce=nonce,
@@ -450,24 +602,6 @@ def generate_child_attestation(
         ttl_seconds=ttl_seconds,
     )
     return replace(unsigned, binding_sha256=attestation_digest(unsigned))
-
-
-def parse_child_discovery(text: str, expected_nonce: str) -> tuple[str, ...]:
-    try:
-        value = json.loads(text.strip())
-    except ValueError as exc:
-        raise ChildAttestationError("fresh child discovery did not return valid JSON") from exc
-    if not isinstance(value, dict) or set(value) != {"nonce", "loaded_ids"}:
-        raise ChildAttestationError("fresh child discovery returned an invalid schema")
-    if value.get("nonce") != expected_nonce:
-        raise ChildAttestationError("fresh child discovery nonce mismatch")
-    loaded = value.get("loaded_ids")
-    if not isinstance(loaded, list) or any(not isinstance(item, str) or not item.strip() for item in loaded):
-        raise ChildAttestationError("fresh child discovery loaded_ids must be non-empty strings")
-    normalized = tuple(item.strip() for item in loaded)
-    if len(set(normalized)) != len(normalized):
-        raise ChildAttestationError("fresh child discovery returned duplicate loaded ids")
-    return normalized
 
 
 def verify_child_attestation(
