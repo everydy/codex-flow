@@ -596,9 +596,19 @@ def generate_child_attestation(
     now: datetime | None = None,
     ttl_seconds: int = 300,
     timeout_seconds: int | None = None,
+    child_home: str | Path | None = None,
+    manifest_path: str | Path | None = None,
 ) -> ChildRuntimeAttestation:
-    explicit_home = os.environ.get(CHILD_HOME_ENV, "").strip()
-    manifest_value = os.environ.get(CHILD_MANIFEST_ENV, "").strip()
+    explicit_home = (
+        str(child_home)
+        if child_home is not None
+        else os.environ.get(CHILD_HOME_ENV, "").strip()
+    )
+    manifest_value = (
+        str(manifest_path)
+        if manifest_path is not None
+        else os.environ.get(CHILD_MANIFEST_ENV, "").strip()
+    )
     if not explicit_home:
         raise ChildAttestationError(f"prepared child home is required in {CHILD_HOME_ENV}")
     if not manifest_value:
@@ -607,16 +617,18 @@ def generate_child_attestation(
         raise ChildAttestationError("child attestation TTL must be positive")
     repo_path = Path(repo).expanduser().resolve()
     approved_plan = Path(plan_path).expanduser().resolve()
-    child_home = Path(explicit_home).expanduser().resolve()
-    manifest = load_child_closure_manifest(child_home, manifest_value)
-    child_env, metadata = child_runtime_environment(repo_path, extra_args=extra_args)
-    if metadata.get("mode") != "isolated" or Path(metadata["home"]).resolve() != child_home:
+    resolved_child_home = Path(explicit_home).expanduser().resolve()
+    manifest = load_child_closure_manifest(resolved_child_home, manifest_value)
+    child_env, metadata = child_runtime_environment(
+        repo_path, extra_args=extra_args, child_home=resolved_child_home
+    )
+    if metadata.get("mode") != "isolated" or Path(metadata["home"]).resolve() != resolved_child_home:
         raise ChildAttestationError("prepared child home does not match the isolated child runtime")
     version = codex_cli_version(command, child_env, repo_path, timeout_seconds)
     nonce = secrets.token_hex(32)
     discovered = discover_child_skills(
         repo=repo_path,
-        child_home=child_home,
+        child_home=resolved_child_home,
         manifest=manifest,
         command=command,
         env=child_env,
@@ -625,7 +637,7 @@ def generate_child_attestation(
     created = now or datetime.now(timezone.utc)
     unsigned = ChildRuntimeAttestation(
         nonce=nonce,
-        child_home=str(child_home),
+        child_home=str(resolved_child_home),
         manifest_path=str(manifest.path),
         manifest_sha256=manifest.sha256,
         plan_path=str(approved_plan),
@@ -654,16 +666,21 @@ def verify_child_attestation(
     nonce_ledger: str | Path,
     now: datetime | None = None,
     timeout_seconds: int | None = None,
+    child_home: str | Path | None = None,
 ) -> ChildRuntimeAttestation:
     if attestation.binding_sha256 != attestation_digest(attestation):
         raise ChildAttestationError("child attestation binding digest mismatch")
-    explicit_home = os.environ.get(CHILD_HOME_ENV, "").strip()
+    explicit_home = (
+        str(child_home)
+        if child_home is not None
+        else os.environ.get(CHILD_HOME_ENV, "").strip()
+    )
     if not explicit_home:
         raise ChildAttestationError(f"prepared child home is required in {CHILD_HOME_ENV}")
-    child_home = Path(explicit_home).expanduser().resolve()
-    manifest = load_child_closure_manifest(child_home, manifest_path)
+    resolved_child_home = Path(explicit_home).expanduser().resolve()
+    manifest = load_child_closure_manifest(resolved_child_home, manifest_path)
     checks = (
-        (attestation.child_home == str(child_home), "child path mismatch"),
+        (attestation.child_home == str(resolved_child_home), "child path mismatch"),
         (attestation.manifest_path == str(manifest.path), "manifest path mismatch"),
         (attestation.manifest_sha256 == manifest.sha256, "manifest hash mismatch"),
         (attestation.plan_path == str(Path(plan_path).expanduser().resolve()), "plan path mismatch"),
@@ -682,7 +699,9 @@ def verify_child_attestation(
     for valid, message in checks:
         if not valid:
             raise ChildAttestationError(message)
-    child_env, _ = child_runtime_environment(repo, extra_args=extra_args)
+    child_env, _ = child_runtime_environment(
+        repo, extra_args=extra_args, child_home=resolved_child_home
+    )
     if attestation.codex_cli_version != codex_cli_version(command, child_env, repo, timeout_seconds):
         raise ChildAttestationError("Codex CLI version mismatch")
     loaded_skills = set(attestation.loaded_skills)
@@ -693,7 +712,7 @@ def verify_child_attestation(
         and len(
             [
                 skill_id
-                for skill_id in manifest.plugin_skill_ids
+                for skill_id in (*manifest.plugin_skill_ids, *manifest.external_skill_ids)
                 if skill_id.rsplit(":", 1)[-1] == required and skill_id in loaded_skills
             ]
         )
@@ -766,6 +785,7 @@ def child_runtime_environment(
     repo: str | Path,
     *,
     extra_args: list[str] | None = None,
+    child_home: str | Path | None = None,
 ) -> tuple[dict[str, str], dict[str, str]]:
     repo_path = Path(repo).expanduser().resolve()
     parent_home = Path(os.environ.get("CODEX_HOME", "~/.codex")).expanduser().resolve()
@@ -774,7 +794,12 @@ def child_runtime_environment(
         env["CODEX_HOME"] = str(parent_home)
         return env, {"mode": "disabled", "source": CHILD_ISOLATION_ENV, "home": str(parent_home)}
 
-    explicit_home = os.environ.get(CHILD_HOME_ENV, "").strip()
+    parameter_home = child_home is not None
+    explicit_home = (
+        str(child_home)
+        if parameter_home
+        else os.environ.get(CHILD_HOME_ENV, "").strip()
+    )
     if has_explicit_profile_arg(extra_args or []) and not explicit_home:
         raise ChildRuntimeConfigError(
             "child isolation cannot safely copy an explicit Codex profile; set "
@@ -783,7 +808,7 @@ def child_runtime_environment(
 
     if explicit_home:
         child_home = Path(explicit_home).expanduser().resolve()
-        source = CHILD_HOME_ENV
+        source = "parameter" if parameter_home else CHILD_HOME_ENV
         managed_config = False
     else:
         runtime_root = Path(
@@ -946,10 +971,13 @@ def run_codex_exec(
     timeout_seconds: int | None = None,
     diagnostic_dir: str | Path | None = None,
     phase: str = "codex-exec",
+    child_home: str | Path | None = None,
 ) -> CodexExecResult:
     repo_path = Path(repo).expanduser().resolve()
     model_selection = model_selection_metadata(extra_args)
-    child_env, child_runtime = child_runtime_environment(repo_path, extra_args=extra_args)
+    child_env, child_runtime = child_runtime_environment(
+        repo_path, extra_args=extra_args, child_home=child_home
+    )
     with tempfile.TemporaryDirectory(prefix="codex-flow-agent-") as temp_dir:
         diag_dir = Path(diagnostic_dir).expanduser().resolve() if diagnostic_dir else None
         output_path = (diag_dir if diag_dir else Path(temp_dir)) / "last-message.txt"
