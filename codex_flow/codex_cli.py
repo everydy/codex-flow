@@ -113,6 +113,12 @@ class ChildClosureManifest:
     plugin_roots: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class ChildSkillInventoryRecord:
+    skill_id: str
+    path: Path
+
+
 def path_tree_hash(path: str | Path) -> str:
     root = Path(path).expanduser().resolve()
     if not root.exists():
@@ -349,12 +355,11 @@ def normalized_discovery_command(repo: str | Path, command: str, extra_args: lis
     return child_discovery_command(command)
 
 
-def _inventory_skill_ids(
+def inventory_skill_records(
     response: object,
     *,
     repo: Path,
-    manifest: ChildClosureManifest,
-) -> tuple[str, ...]:
+) -> tuple[ChildSkillInventoryRecord, ...]:
     if not isinstance(response, dict) or not isinstance(response.get("result"), dict):
         raise ChildAttestationError("app-server skills/list response has no result")
     data = response["result"].get("data")
@@ -378,9 +383,7 @@ def _inventory_skill_ids(
         raise ChildAttestationError("app-server skills/list reported discovery errors")
     if not isinstance(skills, list):
         raise ChildAttestationError("app-server skills/list cwd entry has no skills list")
-    skill_roots = {skill_id: Path(path) for skill_id, path in manifest.skill_roots}
-    plugin_roots = tuple(Path(path) for path in manifest.plugin_roots)
-    loaded: list[str] = []
+    records: list[ChildSkillInventoryRecord] = []
     for skill in skills:
         if not isinstance(skill, dict) or skill.get("enabled") is not True:
             continue
@@ -388,18 +391,37 @@ def _inventory_skill_ids(
         path = skill.get("path")
         if not isinstance(name, str) or not name.strip() or not isinstance(path, str):
             raise ChildAttestationError("app-server returned an invalid enabled skill record")
-        skill_id = name.strip()
-        resolved = Path(path).expanduser().resolve()
-        if skill_id in skill_roots and not is_relative_to(resolved, skill_roots[skill_id]):
-            raise ChildAttestationError(f"child skill path ownership mismatch: {skill_id}")
-        if skill_id in manifest.plugin_skill_ids and not any(
-            is_relative_to(resolved, root) for root in plugin_roots
-        ):
-            raise ChildAttestationError(f"plugin skill path ownership mismatch: {skill_id}")
-        loaded.append(skill_id)
-    if len(set(loaded)) != len(loaded):
+        records.append(
+            ChildSkillInventoryRecord(
+                skill_id=name.strip(),
+                path=Path(path).expanduser().resolve(),
+            )
+        )
+    if len({record.skill_id for record in records}) != len(records):
         raise ChildAttestationError("app-server returned duplicate enabled skill ids")
-    return tuple(loaded)
+    return tuple(records)
+
+
+def validate_inventory_ownership(
+    records: tuple[ChildSkillInventoryRecord, ...],
+    manifest: ChildClosureManifest,
+) -> tuple[str, ...]:
+    skill_roots = {skill_id: Path(path) for skill_id, path in manifest.skill_roots}
+    plugin_roots = tuple(Path(path) for path in manifest.plugin_roots)
+    for record in records:
+        if record.skill_id in skill_roots and not is_relative_to(
+            record.path, skill_roots[record.skill_id]
+        ):
+            raise ChildAttestationError(
+                f"child skill path ownership mismatch: {record.skill_id}"
+            )
+        if record.skill_id in manifest.plugin_skill_ids and not any(
+            is_relative_to(record.path, root) for root in plugin_roots
+        ):
+            raise ChildAttestationError(
+                f"plugin skill path ownership mismatch: {record.skill_id}"
+            )
+    return tuple(record.skill_id for record in records)
 
 
 def discover_child_skills(
@@ -411,6 +433,24 @@ def discover_child_skills(
     env: dict[str, str],
     timeout_seconds: int | None,
 ) -> tuple[str, ...]:
+    records = discover_child_skill_records(
+        repo=repo,
+        child_home=child_home,
+        command=command,
+        env=env,
+        timeout_seconds=timeout_seconds,
+    )
+    return validate_inventory_ownership(records, manifest)
+
+
+def discover_child_skill_records(
+    *,
+    repo: Path,
+    child_home: Path,
+    command: str,
+    env: dict[str, str],
+    timeout_seconds: int | None,
+) -> tuple[ChildSkillInventoryRecord, ...]:
     args = list(child_discovery_command(command))
     try:
         process = subprocess.Popen(
@@ -500,9 +540,7 @@ def discover_child_skills(
                 "params": {"cwds": [str(repo)], "forceReload": True},
             }
         )
-        inventory = _inventory_skill_ids(
-            receive(2, "skills/list"), repo=repo, manifest=manifest
-        )
+        inventory = inventory_skill_records(receive(2, "skills/list"), repo=repo)
         protocol_complete = True
         return inventory
     finally:
