@@ -30,6 +30,9 @@
 - 전체 테스트: `151 passed in 42.79s`.
 - diff integrity: `git diff c8f5082..HEAD --check` 통과.
 - Codex Flow review: plan ready, 3개 unit 모두 done, source drift clean.
+- 원본 작업 브랜치 통합: merge commit `ee39ef6`; 임시 task worktree/branch 정리 완료.
+- 통합 후 독립 raw no-env smoke: 새 disposable repo/runtime에서 `event=prepare`, review score 100, `action: done`.
+- 통합 후 전체 테스트 재실행: `151 passed in 38.62s`.
 
 ## 테스트 공백과 잔여 위험
 
