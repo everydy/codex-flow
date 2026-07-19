@@ -81,9 +81,15 @@ POST_UNIT_REVIEW_SKILL = "review-all-in-one"
 
 
 class CodexImplementerAgent:
-    def __init__(self, command: str = "codex", extra_args: list[str] | None = None) -> None:
+    def __init__(
+        self,
+        command: str = "codex",
+        extra_args: list[str] | None = None,
+        child_home: str | Path | None = None,
+    ) -> None:
         self.command = command
         self.extra_args = extra_args or []
+        self.child_home = child_home
 
     def implement(
         self,
@@ -100,6 +106,7 @@ class CodexImplementerAgent:
             timeout_seconds=timeout_seconds,
             diagnostic_dir=diagnostic_dir / "implementation" if diagnostic_dir else None,
             phase="implementation",
+            child_home=self.child_home,
         )
         session_id = parse_session_id(implementation.stdout) or ""
         if not session_id:
@@ -114,6 +121,7 @@ class CodexImplementerAgent:
             timeout_seconds=timeout_seconds,
             diagnostic_dir=diagnostic_dir / "review" if diagnostic_dir else None,
             phase="review",
+            child_home=self.child_home,
         )
         return ImplementerAgentResult(
             session_id=session_id,

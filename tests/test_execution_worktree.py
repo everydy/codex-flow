@@ -23,6 +23,17 @@ def isolate_attestation_preflight(tmp_path, monkeypatch):
     monkeypatch.setenv(CHILD_MANIFEST_ENV, str(tmp_path / "test-child-manifest.json"))
     monkeypatch.setattr(runner, "generate_child_attestation", attestation)
     monkeypatch.setattr(runner, "verify_child_attestation", lambda value, **_kwargs: value)
+    monkeypatch.setattr(
+        runner,
+        "ensure_prepared_child_runtime",
+        lambda **_kwargs: SimpleNamespace(
+            home=tmp_path / "test-child-home",
+            manifest=tmp_path / "test-child-manifest.json",
+            source="test",
+            cache_key="test-key",
+            reused=True,
+        ),
+    )
 
 
 def init_git_repo(repo: Path) -> None:

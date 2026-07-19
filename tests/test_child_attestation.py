@@ -14,6 +14,7 @@ from codex_flow import plans, runner, tickets
 from codex_flow.codex_cli import (
     CHILD_MANIFEST_ENV,
     ChildAttestationError,
+    ChildRuntimeConfigError,
     attestation_digest,
     consume_attestation_nonce,
     generate_child_attestation,
@@ -21,6 +22,9 @@ from codex_flow.codex_cli import (
     path_tree_hash,
     verify_child_attestation,
 )
+from codex_flow.implementer_agent import CodexImplementerAgent, ImplementerAgentInput
+from codex_flow.plan_readiness import CommitUnit
+from codex_flow.child_runtime import PreparedChildRuntime
 
 
 NOW = datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc)
@@ -284,6 +288,62 @@ def test_fresh_child_discovery_attestation_verifies_exact_closure(tmp_path, monk
     assert verified.runtime_tree_sha256
     assert verified.plugin_tree_sha256
     assert json.loads(ledger.read_text(encoding="utf-8")) == [verified.nonce]
+
+
+def test_attestation_accepts_explicit_prepared_runtime_without_environment(
+    tmp_path, monkeypatch
+):
+    child_home, manifest_path, fake_codex = write_child_runtime(tmp_path, monkeypatch)
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("# approved plan\n", encoding="utf-8")
+    monkeypatch.delenv("CODEX_FLOW_CHILD_HOME")
+    monkeypatch.delenv(CHILD_MANIFEST_ENV)
+
+    attestation = generate_child_attestation(
+        repo=tmp_path,
+        plan_path=plan_path,
+        child_home=child_home,
+        manifest_path=manifest_path,
+        command=str(fake_codex),
+        extra_args=[],
+        now=NOW,
+    )
+    verified = verify_child_attestation(
+        attestation,
+        repo=tmp_path,
+        plan_path=plan_path,
+        child_home=child_home,
+        manifest_path=manifest_path,
+        required_skills=REQUIRED_SKILLS,
+        command=str(fake_codex),
+        extra_args=[],
+        nonce_ledger=tmp_path / "used-nonces.json",
+        now=NOW,
+    )
+
+    assert verified.child_home == str(child_home.resolve())
+
+
+def test_implementer_and_resumed_review_use_the_same_prepared_home(tmp_path, monkeypatch):
+    child_home, _, fake_codex = write_child_runtime(
+        tmp_path, monkeypatch, full_agent=True
+    )
+    monkeypatch.delenv("CODEX_FLOW_CHILD_HOME")
+    result = CodexImplementerAgent(
+        command=str(fake_codex), child_home=child_home
+    ).implement(
+        ImplementerAgentInput(
+            repo=tmp_path,
+            plan_path=tmp_path / "plan.md",
+            plan_content="# plan\n",
+            unit=CommitUnit(number=1, title="test", content=""),
+            previous_commit=None,
+            git_status="",
+        )
+    )
+
+    assert result.session_id == "implementation-session"
+    assert result.review.status == "ready"
 
 
 def test_exact_manifest_rejects_undeclared_runtime_entry(tmp_path, monkeypatch):
@@ -598,7 +658,55 @@ def git_oracle(repo: Path):
     return head, index, worktree.hexdigest()
 
 
-def test_runner_missing_attestation_inputs_never_launches_implementer_or_edits_repo(tmp_path, monkeypatch):
+def test_runner_managed_runtime_without_environment_reaches_fixture_execution(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    all_skills = (
+        "요청개선",
+        "plan-first-implementation",
+        "mission-completion-harness",
+        "review-all-in-one",
+    )
+    child_home, manifest_path, fake_codex = write_child_runtime(
+        tmp_path,
+        monkeypatch,
+        skill_ids=all_skills,
+        full_agent=True,
+    )
+    ticket = tickets.submit_ticket("managed runtime", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0]["allowed_paths"].append("work.txt")
+    plan.queue_json.write_text(
+        json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
+    )
+    monkeypatch.delenv("CODEX_FLOW_CHILD_HOME", raising=False)
+    monkeypatch.delenv(CHILD_MANIFEST_ENV, raising=False)
+    monkeypatch.setattr(
+        runner,
+        "ensure_prepared_child_runtime",
+        lambda **_kwargs: PreparedChildRuntime(
+            home=child_home,
+            manifest=manifest_path,
+            source="managed",
+            cache_key="test-key",
+            reused=False,
+        ),
+    )
+
+    result = runner.run_next(
+        plan.plan_path,
+        execute=True,
+        commit=False,
+        codex_command=str(fake_codex),
+    )
+
+    assert result["action"] == "done"
+    assert (tmp_path / "work.txt").read_text(encoding="utf-8") == "implemented\n"
+
+
+def test_runner_preparation_failure_never_launches_implementer_or_edits_repo(
+    tmp_path, monkeypatch
+):
     init_git_repo(tmp_path)
     ticket = tickets.submit_ticket("fail closed", repo=tmp_path)
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
@@ -609,8 +717,13 @@ def test_runner_missing_attestation_inputs_never_launches_implementer_or_edits_r
         encoding="utf-8",
     )
     fake_codex.chmod(0o755)
-    monkeypatch.delenv("CODEX_FLOW_CHILD_HOME", raising=False)
-    monkeypatch.delenv(CHILD_MANIFEST_ENV, raising=False)
+    monkeypatch.setattr(
+        runner,
+        "ensure_prepared_child_runtime",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            ChildRuntimeConfigError("missing required skill source: review-all-in-one")
+        ),
+    )
     before = git_oracle(tmp_path)
 
     result = runner.run_next(
@@ -621,7 +734,8 @@ def test_runner_missing_attestation_inputs_never_launches_implementer_or_edits_r
     )
 
     assert result["action"] == "needs_work"
-    assert "prepared child home" in result["reason"]
+    assert result["changed_paths"] == []
+    assert "missing required skill source" in result["reason"]
     assert not marker.exists()
     assert git_oracle(tmp_path) == before
 

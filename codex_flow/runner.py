@@ -6,7 +6,6 @@ from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
 from .codex_cli import (
-    CHILD_MANIFEST_ENV,
     ChildAttestationError,
     ChildRuntimeConfigError,
     CodexExecFailure,
@@ -14,6 +13,7 @@ from .codex_cli import (
     generate_child_attestation,
     verify_child_attestation,
 )
+from .child_runtime import ensure_prepared_child_runtime
 from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, scoped_status_summary, stash_paths, status
 from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
 from .reviewer_agent import out_of_scope_paths, require_post_unit_review, required_review_skills
@@ -275,19 +275,34 @@ def execute_unit(
     if not attested_plan.exists():
         attested_plan = plan_dir / "plan.md"
     try:
-        attestation = generate_child_attestation(
+        runtime = ensure_prepared_child_runtime(
             repo=repo,
-            plan_path=attested_plan,
+            required_skills=required_skills,
             command=codex_command,
             extra_args=codex_args,
             timeout_seconds=codex_timeout_seconds,
         )
-        manifest_path = Path(os.environ[CHILD_MANIFEST_ENV]).expanduser().resolve()
+        append_log(
+            plan_dir,
+            "child_runtime "
+            f"event={'reuse' if runtime.reused else 'prepare'} "
+            f"source={runtime.source} cache_key={runtime.cache_key}",
+        )
+        attestation = generate_child_attestation(
+            repo=repo,
+            plan_path=attested_plan,
+            child_home=runtime.home,
+            manifest_path=runtime.manifest,
+            command=codex_command,
+            extra_args=codex_args,
+            timeout_seconds=codex_timeout_seconds,
+        )
         verify_child_attestation(
             attestation,
             repo=repo,
             plan_path=attested_plan,
-            manifest_path=manifest_path,
+            child_home=runtime.home,
+            manifest_path=runtime.manifest,
             required_skills=required_skills,
             command=codex_command,
             extra_args=codex_args,
@@ -301,6 +316,7 @@ def execute_unit(
         unit["changed_paths"] = []
         plans.save_queue(plan_dir, queue_data)
         append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work before edit: {exc}")
+        append_log(plan_dir, f"child_runtime event=deny reason={type(exc).__name__}")
         state.refresh_dashboard(source_repo)
         return {
             "unit": unit,
@@ -355,7 +371,11 @@ def execute_unit(
     plans.save_queue(plan_dir, queue_data)
     append_log(plan_dir, f"Started commit unit {unit.get('number') or unit['id']}: {unit['title']} on {branch}.")
 
-    agent = CodexImplementerAgent(command=codex_command, extra_args=codex_args)
+    agent = CodexImplementerAgent(
+        command=codex_command,
+        extra_args=codex_args,
+        child_home=runtime.home,
+    )
     agent_result = None
     last_repair_reason = resume_reason
     previous_repair_attempts = int(unit.get("repair_attempts") or 0) if resume_needs_work else 0

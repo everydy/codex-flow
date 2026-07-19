@@ -24,6 +24,17 @@ def isolate_attestation_preflight(tmp_path, monkeypatch):
     monkeypatch.setenv("CODEX_FLOW_CHILD_ISOLATION", "0")
     monkeypatch.setattr(runner, "generate_child_attestation", attestation)
     monkeypatch.setattr(runner, "verify_child_attestation", lambda value, **_kwargs: value)
+    monkeypatch.setattr(
+        runner,
+        "ensure_prepared_child_runtime",
+        lambda **_kwargs: SimpleNamespace(
+            home=tmp_path.parent / "test-child-home",
+            manifest=tmp_path.parent / "test-child-manifest.json",
+            source="test",
+            cache_key="test-key",
+            reused=True,
+        ),
+    )
 
 
 def write_fake_codex_delete_partial_ready(tmp_path: Path) -> Path:

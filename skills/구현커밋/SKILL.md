@@ -35,9 +35,13 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 
 ## Child Codex Runtime Selection
 
-- 구현커밋 child process는 별도 모델을 지정하지 않으면 설치된 Codex CLI의 profile, user config, trusted-project config를 그대로 따른다.
-- 기본 child는 `${CODEX_CHILD_RUNTIME_ROOT:-$CODEX_HOME/child-runtimes}/codex-flow/<repo-hash>`의 권한 제한된 `CODEX_HOME`을 사용한다. 안전한 user model/reasoning/tier 설정과 인증만 이어받고, parent 전역 hooks, personal skills, plugins, MCP 설정은 다시 주입하지 않는다. trusted-project config와 `AGENTS.md`는 작업 repo에서 계속 읽는다.
-- 명시 profile/custom provider가 필요한 경우 `CODEX_FLOW_CHILD_HOME`으로 준비된 child home을 지정한다. 긴급 복구 시에만 `CODEX_FLOW_CHILD_ISOLATION=0`으로 격리를 끌 수 있다. child home은 target repo 안에 둘 수 없다.
+- 구현커밋 child process는 별도 모델을 지정하지 않으면 parent config에서 안전하게 허용된 model/reasoning/tier 설정과 target repo의 trusted-project 설정을 따른다. 명시 profile과 custom provider는 managed copy 대상이 아니다.
+- 기본 경로에서는 호출자가 `CODEX_FLOW_CHILD_HOME`과 `CODEX_FLOW_CHILD_MANIFEST`를 모두 unset 상태로 둔다. runner가 shared pre-edit boundary에서 exact required skill closure를 준비하고, `${CODEX_CHILD_RUNTIME_ROOT:-$CODEX_HOME/child-runtimes}/codex-flow/<repo-hash>/<closure-hash>`의 content-addressed child `CODEX_HOME`을 attestation, implementation, resumed review에 동일하게 전달한다. `<repo-hash>` config-only 디렉터리 자체는 prepared closure가 아니다.
+- managed child는 안전한 user model/reasoning/tier 설정, target repo trust, parent `auth.json` symlink만 이어받는다. required standalone skill은 parent registry에서 private staging으로 복사하고, fresh app-server inventory로 standalone/plugin/external ownership을 exact manifest에 고정한다. parent 전역 hooks, unrelated personal skills, MCP 설정을 임의로 재주입하지 않는다. trusted-project config와 `AGENTS.md`는 작업 repo에서 계속 읽는다.
+- cache key는 repo identity, normalized required ids, copied source tree hashes, plugin payload hashes와 ids, external exact ids, sanitized config digest, Codex CLI version, command/args, manifest schema가 바뀌면 달라진다. 같은 key는 검증된 published closure를 reuse하며, staging과 cache 디렉터리는 `0700`, manifest/config/lock은 `0600`이다.
+- 명시 profile 또는 custom provider가 필요한 경우 repo 밖에 미리 준비한 `CODEX_FLOW_CHILD_HOME`과 `CODEX_FLOW_CHILD_MANIFEST`를 **둘 다** 지정한다. 이 explicit pair는 validation-only override이며 수정하지 않는다. 하나만 지정한 half pair, parent home 재사용, repo-local home, required closure mismatch는 implementer launch나 edit 전에 `needs_work`로 끝난다.
+- canonical `run-next`/`run-all` managed preparation은 child isolation을 필수로 하므로 `CODEX_FLOW_CHILD_ISOLATION=0`은 우회 수단이 아니다. profile/custom-provider 오류에서 isolation을 끄거나 다른 모델로 조용히 fallback하지 않는다.
+- plan `log.md`에는 credential/config payload 없이 `child_runtime event=prepare|reuse source=<managed|explicit> cache_key=<digest>`를 남긴다. 준비 또는 attestation 거부는 `child_runtime event=deny reason=<exception-class>`와 `changed_paths=[]`를 남기며, 성공 attestation JSON은 plan의 `attestations/<unit>/<nonce>.json`에 저장한다.
 - 작업별 모델이 필요하면 `CODEX_FLOW_MODEL` 또는 `--codex-arg=--model`/`-m`으로 명시한다. 명시 인자는 환경변수보다 우선하며 값은 치환하지 않는다.
 - 구현커밋은 reasoning effort, service tier, fast mode를 기본으로 강제하지 않는다. Codex 설정 또는 명시적인 `--codex-arg`가 선택한다.
 - 모델/config/auth/CLI 호환 오류는 다른 모델로 조용히 fallback하지 않고 해당 unit을 `needs_work`로 멈춘다. review repair budget도 소비하지 않는다.
@@ -172,5 +176,7 @@ source plan에서 `### Commit N:` 또는 `### Phase N:` 단위를 찾지 못하�
 - CLI entrypoint: `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py`
 - Package: `/Users/moonsoo/projects/codex-flow/codex_flow/`
 - Tests: `/Users/moonsoo/projects/codex-flow/tests/`
+- Managed child operational contract: `docs/plans/codex-flow-managed-child-runtime/operational-contract.md`
+- Raw no-env CLI proof: `docs/plans/codex-flow-managed-child-runtime/raw-cli-proof.md`
 - Canonical installed skill path: `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`
 - Repo mirror skill path: `/Users/moonsoo/projects/codex-flow/skills/구현커밋/SKILL.md`
