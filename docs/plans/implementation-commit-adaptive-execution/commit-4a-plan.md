@@ -6,6 +6,7 @@ Codex Flow의 writable implementation과 post-unit review를 별도 interface와
 
 ## Source Of Truth
 
+- [Fast closeout refined request](../../request-refiner-artifacts/2026-07-20-220616-commit-4a-fast-closeout-refined-request.md)
 - [Refined request](../../request-refiner-artifacts/2026-07-20-212409-commit-4a-refined-request.md)
 - [Research](research.md#commit-4a-implementation-research-revalidation--2026-07-20)
 - [Parent adaptive execution plan](plan.md#commit-4a-reviewer-contract-separation)
@@ -113,6 +114,14 @@ or one `COMMIT_UNIT_NEEDS_WORK reason="..."` terminal. Reviewer prompt explicitl
 
 ## Implementation Plan
 
+### Fast Closeout Override
+
+- Keep exactly one implementation unit and one code commit. Do not split 4A further.
+- Preserve the current core separation and fixture migration; do not rewrite from scratch.
+- Apply all bounded fixes before running another test batch. Do not perform review/test after each small edit.
+- The accepted minimal shape is: implementer-only result, one fresh read-only reviewer call, one strict internal gate parser, one candidate mutation oracle with exact control-plane exclusions, and runner-owned retry/commit decisions.
+- New coordinators, event systems, state-root migration, profile dispatch, final-gate production, PR/merge changes, and dependency work are forbidden.
+
 ### Commit 1: Separate writable implementer and read-only reviewer
 
 - target files:
@@ -125,27 +134,32 @@ or one `COMMIT_UNIT_NEEDS_WORK reason="..."` terminal. Reviewer prompt explicitl
   1. move review-only result/parsing/prompt ownership to `reviewer_agent.py` while avoiding circular imports.
   2. make `CodexImplementerAgent.implement()` perform only the writable implementation call.
   3. add `CodexReadOnlyReviewer.review()` using a fresh non-resumed `read-only` child call.
-  4. reject missing/reused review session identity, malformed `INTERNAL_REVIEW_GATE`, HEAD drift, and full tracked/untracked byte drift as non-retryable protocol failures.
+  4. reject missing/reused review session identity, malformed `INTERNAL_REVIEW_GATE`, HEAD drift, and candidate tracked/untracked byte drift as non-retryable protocol failures.
      - `reused` means the fresh reviewer session id equals the current attempt's implementation session id. Historical reviewer session ids from earlier attempts are recorded but are not a uniqueness oracle.
-     - run the post-review HEAD/full-digest oracle in a `finally`-equivalent path after success, timeout, nonzero exit, or parse failure. Mutation/protocol evidence takes precedence over the child process error while retaining the underlying error in diagnostics.
+     - require exactly one complete `INTERNAL_REVIEW_GATE` for both `READY` and `NEEDS_WORK`; protocol shape is validated before interpreting the decision status.
+     - run the post-review HEAD/candidate-digest oracle in a `finally`-equivalent path after success, timeout, nonzero exit, or parse failure. Mutation/protocol evidence takes precedence over the child process error while retaining the underlying error in diagnostics.
+     - exclude only the exact review diagnostic subtree and active attempt ledger snapshot/lock/events files written by the parent runtime. Never exclude `.codex-flow/` as a whole; plan, queue, handoff, and unrelated control files remain covered.
   5. call implementer and reviewer sequentially from runner; label process failures with the actual `implementation|review` phase and never commit a review-failure attempt.
   6. keep review findings retryable only through the existing next implementer attempt; reviewer never repairs.
   7. migrate test fakes from `"resume" in args` to review-prompt detection so fresh review calls cannot accidentally execute implementation behavior.
   8. preserve only plan-declared required skills in child runtime attestation. Remove the generic runtime's automatic `review-all-in-one` skill injection and replace the old `review_skill` artifact marker with explicit internal-review evidence.
-  9. write the review attempt artifact with at least `review_mode="fresh_read_only"`, implementation/reviewer session ids, `head_unchanged`, `full_diff_digest_unchanged`, the parsed `INTERNAL_REVIEW_GATE`, and the existing child-attestation/ledger bindings. Do not store raw prompts, diffs, tokens, or other secret-bearing payloads.
+  9. carry explicit `review_finding|protocol_failure|process_failure` classification so malformed gate, session reuse, and mutation never enter the bounded repair loop as ordinary review findings.
+  10. write the review attempt artifact with `review_mode="fresh_read_only"`, `sessions_distinct`, optional stable session hashes rather than raw session ids, invariant booleans, parsed `INTERNAL_REVIEW_GATE`, and existing child-attestation/ledger bindings. Do not store raw prompts, diffs, tokens, environment values, or raw session identifiers.
+  11. remove avoidable duplicate failure serialization only through a behavior-preserving helper used by implementation/review failure paths; do not introduce a new abstraction layer.
 - verification:
   - `python3 -m pytest tests/test_agent_roles.py tests/test_final_gate.py -q`
     - implementation uses workspace-write once.
     - review uses read-only once, omits resume id, and has a distinct session.
     - review prompt forbids edit/repair and requires internal gate.
-    - mutation, HEAD/digest drift, malformed gate, missing/reused session fail closed.
+    - mutation, HEAD/digest drift, malformed/missing/duplicate gate, missing/reused session fail closed as protocol failures.
+    - exact parent-owned diagnostic/ledger writes do not trigger false mutation, while any other `.codex-flow/` or candidate change does.
     - reviewer timeout/nonzero still performs the post-review HEAD/full-digest oracle.
     - reviewer timeout/nonzero is reported as `phase=review`, remains non-retryable, and produces zero commits.
   - `python3 -m pytest tests/test_runner_brief.py tests/test_child_attestation.py tests/test_execution_worktree.py tests/test_runner_repair_edges.py -q`
     - repair loop still returns findings to a new implementer attempt.
     - review artifact, title/summary, commit, execution worktree, attestation behavior remain compatible.
     - `required_skills` equals the plan-declared skill set; the generic runtime does not inject `review-all-in-one`.
-    - review JSON records the fresh reviewer session and invariant evidence under `INTERNAL_REVIEW_GATE` semantics, without the legacy `review_skill="review-all-in-one"` marker.
+    - review JSON records distinct-session and invariant evidence under `INTERNAL_REVIEW_GATE` semantics without raw session ids or the legacy `review_skill="review-all-in-one"` marker.
   - failure matrix assertions:
     - implementation child timeout/nonzero -> `phase=implementation`, no reviewer call, no commit.
     - reviewer child timeout/nonzero with unchanged bytes -> `phase=review`, held diagnostics, no retry and no commit.
@@ -203,7 +217,8 @@ or one `COMMIT_UNIT_NEEDS_WORK reason="..."` terminal. Reviewer prompt explicitl
 
 ### Re-review gate
 
-- the two Important findings are resolved in the plan. Implementation may begin only after a quick read-only re-review confirms blocker=0 and important=0.
+- first re-review approved the pre-candidate plan, then the implementation review found two new Important issues: blanket `.codex-flow/` exclusion and incomplete protocol taxonomy.
+- the Fast Closeout Override resolves both in the executable contract without adding another implementation unit. Implementation may begin after one quick read-only confirmation of this repaired plan.
 
 ## Operator 결정 필요 사항
 
@@ -227,7 +242,7 @@ or one `COMMIT_UNIT_NEEDS_WORK reason="..."` terminal. Reviewer prompt explicitl
 - Alternative considered: implementer-internal fresh review and external two-phase review command.
 - Why this plan: runner가 sequencing을 소유하고 agents가 단일 책임을 가지므로 현재 root cause와 4B seam을 함께 만족한다.
 - Tradeoff: fake/integration tests 수정량이 늘지만 실제 resumed-review coupling을 제거하는 비용이다.
-- What this plan may still miss: real Codex sandbox implementation bug는 unit test만으로 완전히 증명할 수 없다. pre/post digest가 보조 oracle이다.
+- What this plan may still miss: real Codex sandbox implementation bug는 unit test만으로 완전히 증명할 수 없다. exact-exclusion candidate digest와 final scope check가 함께 보조 oracle이다.
 - When to stop and revise: reviewer process가 read-only인데도 candidate bytes를 바꾸거나, child session identity를 신뢰할 수 없거나, runner repair semantics가 깨질 때.
 
 ## 구현 후 검토 리스트
@@ -241,3 +256,12 @@ or one `COMMIT_UNIT_NEEDS_WORK reason="..."` terminal. Reviewer prompt explicitl
 
 - `구현커밋`
 - this document is the exact source plan for the current request.
+
+## Implementation Closeout
+
+- status: completed as one Commit 4A implementation package
+- focused regression: `3 passed`
+- full regression: `230 passed in 318.15s`
+- static gates: `git diff --check` and Python `compileall` passed
+- independent final review: `Blocker 0 / Important 0`
+- scope: 4A only; 4B+ remains outside this commit

@@ -45,19 +45,21 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
 work = pathlib.Path("work.txt")
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     if work.exists():
         work.unlink()
     output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"implementation-session"}')
 else:
     output.write_text(
-        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
         'COMMIT_UNIT_READY title="Deleted stale partial" summary="removed stale partial"\\n',
         encoding="utf-8",
     )
-print('{"session_id":"fake-session"}')
+    print('{"session_id":"review-session"}')
 """,
         encoding="utf-8",
     )

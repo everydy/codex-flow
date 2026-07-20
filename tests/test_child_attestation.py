@@ -25,6 +25,8 @@ from codex_flow.codex_cli import (
 from codex_flow.implementer_agent import CodexImplementerAgent, ImplementerAgentInput
 from codex_flow.plan_readiness import CommitUnit
 from codex_flow.child_runtime import PreparedChildRuntime
+from codex_flow.git_ops import candidate_diff_digest, head_summary
+from codex_flow.reviewer_agent import CodexReadOnlyReviewer, ReviewerAgentInput
 
 
 NOW = datetime(2026, 7, 16, 0, 0, tzinfo=timezone.utc)
@@ -135,16 +137,17 @@ if args == ["app-server", "--listen", "stdio://"]:
 prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
 if os.environ.get("FULL_AGENT") == "1":
-    if "resume" in args:
+    if "Agent 3: Read-only Reviewer" in prompt:
         output.write_text(
-            'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+            'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
             'COMMIT_UNIT_READY title="Attested" summary="implemented"\\n',
             encoding="utf-8",
         )
+        print('{"session_id":"review-session"}')
     else:
         pathlib.Path("work.txt").write_text("implemented\\n", encoding="utf-8")
         output.write_text("implementation phase\\n", encoding="utf-8")
-    print('{"session_id":"implementation-session"}')
+        print('{"session_id":"implementation-session"}')
 else:
     raise SystemExit("unexpected non-discovery invocation")
 """,
@@ -324,26 +327,45 @@ def test_attestation_accepts_explicit_prepared_runtime_without_environment(
     assert verified.child_home == str(child_home.resolve())
 
 
-def test_implementer_and_resumed_review_use_the_same_prepared_home(tmp_path, monkeypatch):
+def test_implementer_and_fresh_review_use_the_same_prepared_home(tmp_path, monkeypatch):
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "codex-flow@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Codex Flow"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("# test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
     child_home, _, fake_codex = write_child_runtime(
         tmp_path, monkeypatch, full_agent=True
     )
     monkeypatch.delenv("CODEX_FLOW_CHILD_HOME")
-    result = CodexImplementerAgent(
+    agent_input = ImplementerAgentInput(
+        repo=tmp_path,
+        plan_path=tmp_path / "plan.md",
+        plan_content="# plan\n",
+        unit=CommitUnit(number=1, title="test", content=""),
+        previous_commit=None,
+        git_status="",
+    )
+    implementation = CodexImplementerAgent(
         command=str(fake_codex), child_home=child_home
-    ).implement(
-        ImplementerAgentInput(
+    ).implement(agent_input)
+    review = CodexReadOnlyReviewer(
+        command=str(fake_codex), child_home=child_home
+    ).review(
+        ReviewerAgentInput(
             repo=tmp_path,
             plan_path=tmp_path / "plan.md",
             plan_content="# plan\n",
             unit=CommitUnit(number=1, title="test", content=""),
-            previous_commit=None,
-            git_status="",
+            implementation_session_id=implementation.session_id,
+            expected_head=head_summary(tmp_path) or "",
+            expected_full_diff_digest=candidate_diff_digest(tmp_path),
         )
     )
 
-    assert result.session_id == "implementation-session"
-    assert result.review.status == "ready"
+    assert implementation.session_id == "implementation-session"
+    assert review.reviewer_session_id == "review-session"
+    assert review.review.status == "ready"
 
 
 def test_exact_manifest_rejects_undeclared_runtime_entry(tmp_path, monkeypatch):

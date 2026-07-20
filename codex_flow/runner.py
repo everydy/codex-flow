@@ -17,9 +17,18 @@ from .codex_cli import (
     verify_child_attestation,
 )
 from .child_runtime import ensure_prepared_child_runtime
-from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, out_of_scope_diff_digest, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
-from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
-from .reviewer_agent import out_of_scope_paths, require_post_unit_review, required_review_skills
+from .git_ops import candidate_diff_digest, changed_paths_since, commit_paths, dirty_paths, head_summary, out_of_scope_diff_digest, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
+from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput
+from .reviewer_agent import (
+    CommitUnitReview,
+    CodexReadOnlyReviewer,
+    ReviewerAgentInput,
+    ReviewerAgentResult,
+    ReviewerProcessFailure,
+    out_of_scope_paths,
+    review_control_plane_exclusions,
+    required_review_skills,
+)
 
 
 def next_ready_unit(queue_data: dict) -> dict | None:
@@ -98,8 +107,8 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             "## Execution Contract",
             "",
             "Implement only this unit. Keep the diff narrow. Do not create a git commit; Codex Flow will commit after review.",
-            f"Before a commit can be created, the post-unit review must load and apply `{POST_UNIT_REVIEW_SKILL}`.",
-            "Blocker or important findings from that review must be fixed in the review pass or returned as `COMMIT_UNIT_NEEDS_WORK`.",
+            "A separate fresh read-only reviewer runs after implementation.",
+            "Blocker or important findings are returned as `COMMIT_UNIT_NEEDS_WORK` for a later writable repair attempt.",
             "",
             "Return one final line in one of these forms:",
             f'COMMIT_UNIT_READY title="{unit["title"]}" summary="..."',
@@ -399,7 +408,13 @@ def execute_unit(
         extra_args=codex_args,
         child_home=runtime.home,
     )
-    agent_result = None
+    reviewer = CodexReadOnlyReviewer(
+        command=codex_command,
+        extra_args=codex_args,
+        child_home=runtime.home,
+    )
+    implementation_result = None
+    review_result = None
     last_repair_reason = resume_reason
     previous_repair_attempts = int(unit.get("repair_attempts") or 0) if resume_needs_work else 0
     used_repair_attempts = 0
@@ -453,20 +468,21 @@ def execute_unit(
                     "repair_attempts": used_repair_attempts,
                     "review_gate": unit.get("review_gate"),
                 }
+        agent_input = ImplementerAgentInput(
+            repo=repo,
+            plan_path=plan_dir / "plan.md",
+            plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
+            unit=selected_unit,
+            previous_commit=head_summary(repo),
+            git_status=scoped_status_summary(status(repo), [str(path) for path in unit.get("allowed_paths", [])]),
+            repair_attempt=attempt,
+            repair_reason=last_repair_reason,
+            execution_policy=dict(unit.get("execution_policy") or {}),
+            allowed_paths=tuple(str(path) for path in unit.get("allowed_paths", [])),
+        )
         try:
-            agent_result = agent.implement(
-                ImplementerAgentInput(
-                    repo=repo,
-                    plan_path=plan_dir / "plan.md",
-                    plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
-                    unit=selected_unit,
-                    previous_commit=head_summary(repo),
-                    git_status=scoped_status_summary(status(repo), [str(path) for path in unit.get("allowed_paths", [])]),
-                    repair_attempt=attempt,
-                    repair_reason=last_repair_reason,
-                    execution_policy=dict(unit.get("execution_policy") or {}),
-                    allowed_paths=tuple(str(path) for path in unit.get("allowed_paths", [])),
-                ),
+            implementation_result = agent.implement(
+                agent_input,
                 diagnostic_dir=attempt_dir,
                 timeout_seconds=codex_timeout_seconds,
                 attempt_ledger_path=attempt_ledger_path,
@@ -531,10 +547,107 @@ def execute_unit(
                 "repair_reason": str(exc),
                 "review_gate": None,
             }
-        agent_result = replace_agent_review(
-            agent_result,
-            require_post_unit_review(agent_result.review, agent_result.review_message),
-        )
+        review_expected_head = head_summary(repo) or ""
+        review_exclusions = review_control_plane_exclusions(repo, attempt_dir, attempt_ledger_path)
+        review_expected_digest = candidate_diff_digest(repo, review_exclusions)
+        try:
+            review_result = reviewer.review(
+                ReviewerAgentInput(
+                    repo=repo,
+                    plan_path=plan_dir / "plan.md",
+                    plan_content=(plan_dir / "plan.md").read_text(encoding="utf-8"),
+                    unit=selected_unit,
+                    implementation_session_id=implementation_result.session_id,
+                    expected_head=review_expected_head,
+                    expected_full_diff_digest=review_expected_digest,
+                    excluded_candidate_paths=review_exclusions,
+                    execution_policy=dict(unit.get("execution_policy") or {}),
+                    allowed_paths=tuple(str(path) for path in unit.get("allowed_paths", [])),
+                ),
+                diagnostic_dir=attempt_dir,
+                timeout_seconds=codex_timeout_seconds,
+                attempt_ledger_path=attempt_ledger_path,
+                diff_probe=scoped_diff_probe,
+            )
+        except ReviewerProcessFailure as exc:
+            partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
+            unit["status"] = "needs_work"
+            unit["updated_at"] = state.timestamp()
+            unit["repair_attempts"] = used_repair_attempts
+            unit["last_needs_work_reason"] = str(exc)
+            unit["diagnostic_path"] = str(exc.diagnostic_dir.relative_to(plan_dir))
+            unit["changed_paths"] = partial_changed
+            current_snapshot = attempt_ledger.load()
+            ledger_snapshot = attempt_ledger.finalize_attempt(
+                expected_revision=current_snapshot.revision,
+                expected_head=before_head or "",
+                observed_head=head_summary(repo) or "",
+                scoped_diff_digest=scoped_diff_probe(),
+                full_diff_digest=scoped_diff_digest(repo, []),
+                out_of_scope_diff_digest=out_of_scope_diff_digest(repo, allowed_paths),
+                process_closed=current_snapshot.record.get("descendants_remaining") is False,
+                termination_reason=str(current_snapshot.record.get("status") or "review_process_failure"),
+            )
+            unit["attempt_ledger_revision"] = ledger_snapshot.revision
+            failure_kind = (
+                FailureKind.PROTOCOL
+                if not exc.head_unchanged or not exc.full_diff_digest_unchanged
+                else FailureKind.PROCESS_FAILURE
+            )
+            failure = FailureRecord.create(
+                kind=failure_kind,
+                phase="review",
+                signature=str(exc),
+                attempt_id=f"{unit['id']}/attempt-{attempt}",
+                expected_head=review_expected_head,
+                observed_head=exc.observed_head,
+                scoped_diff_digest=scoped_diff_probe(),
+                fixable=False,
+            )
+            unit["failure_fingerprints"] = sorted({*unit.get("failure_fingerprints", []), failure.fingerprint})
+            unit["last_failure_state_digest"] = hashlib.sha256(
+                "\0".join((review_expected_head, scoped_diff_digest(repo, []), str(exc))).encode("utf-8")
+            ).hexdigest()
+            review_path = write_review_failure_attempt(
+                plan_dir,
+                unit["id"],
+                attempt,
+                exc,
+                implementation_session_id=implementation_result.session_id,
+                child_attestation=str(attestation_path.relative_to(plan_dir)),
+                ledger_revision=ledger_snapshot.revision,
+            )
+            write_attempt_handoff(
+                attempt_dir,
+                unit_id=unit["id"],
+                ledger_revision=ledger_snapshot.revision,
+                status="needs_work",
+                next_action="inspect held review diagnostics; do not retry the same fingerprint",
+            )
+            ensure_attempt_view_revision(
+                ledger_snapshot.revision,
+                queue_unit=unit,
+                review_path=review_path,
+                handoff_path=attempt_dir / "handoff.json",
+            )
+            plans.save_queue(plan_dir, queue_data)
+            append_log(
+                plan_dir,
+                f"Commit unit {selected_unit.number} needs_work in review: {exc} | ledger_revision={ledger_snapshot.revision}",
+            )
+            state.refresh_dashboard(source_repo)
+            return {
+                "unit": unit,
+                "prompt_path": prompt_path,
+                "action": "needs_work",
+                "reason": str(exc),
+                "diagnostic_path": exc.diagnostic_dir,
+                "changed_paths": partial_changed,
+                "auto_resolved_dirty": auto_resolved_dirty,
+                "repair_attempts": used_repair_attempts,
+                "repair_reason": str(exc),
+                "review_gate": None,
+            }
         current_snapshot = attempt_ledger.load()
         current_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
         ledger_snapshot = attempt_ledger.finalize_attempt(
@@ -552,7 +665,7 @@ def execute_unit(
             plan_dir,
             unit["id"],
             attempt,
-            agent_result.review,
+            review_result,
             child_attestation=str(attestation_path.relative_to(plan_dir)),
             ledger_revision=ledger_snapshot.revision,
         )
@@ -560,7 +673,7 @@ def execute_unit(
             attempt_dir,
             unit_id=unit["id"],
             ledger_revision=ledger_snapshot.revision,
-            status=agent_result.review.status,
+            status=review_result.review.status,
             next_action="continue gate evaluation",
         )
         ensure_attempt_view_revision(
@@ -569,21 +682,25 @@ def execute_unit(
             review_path=review_path,
             handoff_path=attempt_dir / "handoff.json",
         )
-        if agent_result.review.gate:
-            unit["review_gate"] = agent_result.review.gate.to_dict()
-            append_log(plan_dir, f"Review gate for commit unit {selected_unit.number} attempt {attempt}: {review_gate_summary(agent_result.review)}")
-        if agent_result.review.status != "needs_work":
+        if review_result.review.gate:
+            unit["review_gate"] = review_result.review.gate.to_dict()
+            append_log(plan_dir, f"Review gate for commit unit {selected_unit.number} attempt {attempt}: {review_gate_summary(review_result.review)}")
+        if review_result.review.status != "needs_work":
             break
-        last_repair_reason = agent_result.review.reason
+        last_repair_reason = review_result.review.reason
         failure = FailureRecord.create(
-            kind=FailureKind.REVIEW_FINDING,
+            kind=(
+                FailureKind.PROTOCOL
+                if review_result.review.failure_kind == "protocol_failure"
+                else FailureKind.REVIEW_FINDING
+            ),
             phase="review",
             signature=last_repair_reason,
             attempt_id=f"{unit['id']}/attempt-{attempt}",
             expected_head=before_head or "",
             observed_head=head_summary(repo) or "",
             scoped_diff_digest=scoped_diff_probe(),
-            fixable=agent_result.review.retryable,
+            fixable=review_result.review.retryable,
         )
         prior_fingerprints = set(str(value) for value in unit.get("failure_fingerprints", []))
         can_retry = retry_eligible(
@@ -595,13 +712,13 @@ def execute_unit(
         unit["last_failure_state_digest"] = hashlib.sha256(
             "\0".join((before_head or "", scoped_diff_digest(repo, []), last_repair_reason)).encode("utf-8")
         ).hexdigest()
-        if not agent_result.review.retryable:
+        if not review_result.review.retryable:
             unit["status"] = "needs_work"
             unit["updated_at"] = state.timestamp()
             unit["repair_attempts"] = used_repair_attempts
             unit["last_needs_work_reason"] = last_repair_reason
-            if agent_result.review.gate:
-                unit["review_gate"] = agent_result.review.gate.to_dict()
+            if review_result.review.gate:
+                unit["review_gate"] = review_result.review.gate.to_dict()
             partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
             unit["changed_paths"] = partial_changed
             plans.save_queue(plan_dir, queue_data)
@@ -617,7 +734,7 @@ def execute_unit(
                 "auto_resolved_dirty": auto_resolved_dirty,
                 "repair_attempts": used_repair_attempts,
                 "repair_reason": last_repair_reason,
-                "review_gate": review_gate_payload(agent_result.review),
+                "review_gate": review_gate_payload(review_result.review),
             }
         if can_retry and index < len(attempts) - 1:
             append_log(plan_dir, f"Commit unit {selected_unit.number} requested repair: {last_repair_reason}")
@@ -626,8 +743,8 @@ def execute_unit(
         unit["updated_at"] = state.timestamp()
         unit["repair_attempts"] = used_repair_attempts
         unit["last_needs_work_reason"] = last_repair_reason
-        if agent_result.review.gate:
-            unit["review_gate"] = agent_result.review.gate.to_dict()
+        if review_result.review.gate:
+            unit["review_gate"] = review_result.review.gate.to_dict()
         partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
         unit["changed_paths"] = partial_changed
         plans.save_queue(plan_dir, queue_data)
@@ -643,10 +760,10 @@ def execute_unit(
             "auto_resolved_dirty": auto_resolved_dirty,
             "repair_attempts": used_repair_attempts,
             "repair_reason": last_repair_reason,
-            "review_gate": review_gate_payload(agent_result.review),
+            "review_gate": review_gate_payload(review_result.review),
         }
-    if agent_result is None:
-        raise SystemExit("Codex implementer did not return a result")
+    if implementation_result is None or review_result is None:
+        raise SystemExit("Codex implementer or reviewer did not return a result")
 
     after = status(repo)
     changed = repair_changed_paths(preserved_repair_dirty, before, after)
@@ -658,8 +775,8 @@ def execute_unit(
         unit["repair_attempts"] = used_repair_attempts
         unit["last_needs_work_reason"] = reason
         unit["changed_paths"] = changed
-        if agent_result.review.gate:
-            unit["review_gate"] = agent_result.review.gate.to_dict()
+        if review_result.review.gate:
+            unit["review_gate"] = review_result.review.gate.to_dict()
         plans.save_queue(plan_dir, queue_data)
         append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work before commit: {reason}")
         state.refresh_dashboard(source_repo)
@@ -673,7 +790,7 @@ def execute_unit(
             "auto_resolved_dirty": auto_resolved_dirty,
             "repair_attempts": used_repair_attempts,
             "repair_reason": reason,
-            "review_gate": review_gate_payload(agent_result.review),
+            "review_gate": review_gate_payload(review_result.review),
         }
     outside_scope = out_of_scope_paths(changed, [str(path) for path in unit.get("allowed_paths", [])])
     if outside_scope:
@@ -683,8 +800,8 @@ def execute_unit(
         unit["repair_attempts"] = used_repair_attempts
         unit["last_needs_work_reason"] = reason
         unit["changed_paths"] = changed
-        if agent_result.review.gate:
-            unit["review_gate"] = agent_result.review.gate.to_dict()
+        if review_result.review.gate:
+            unit["review_gate"] = review_result.review.gate.to_dict()
         plans.save_queue(plan_dir, queue_data)
         append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work before commit: {reason}")
         state.refresh_dashboard(source_repo)
@@ -699,12 +816,12 @@ def execute_unit(
             "auto_resolved_dirty": auto_resolved_dirty,
             "repair_attempts": used_repair_attempts,
             "repair_reason": reason,
-            "review_gate": review_gate_payload(agent_result.review),
+            "review_gate": review_gate_payload(review_result.review),
         }
     commit_hash = ""
     action = "done"
     if commit and changed:
-        commit_hash = commit_paths(repo, changed, commit_message(unit, agent_result.review.title))
+        commit_hash = commit_paths(repo, changed, commit_message(unit, review_result.review.title))
         action = "committed"
     elif not changed:
         action = "skipped"
@@ -714,8 +831,8 @@ def execute_unit(
     unit["changed_paths"] = changed
     unit["commit"] = commit_hash
     unit["repair_attempts"] = used_repair_attempts
-    if agent_result.review.gate:
-        unit["review_gate"] = agent_result.review.gate.to_dict()
+    if review_result.review.gate:
+        unit["review_gate"] = review_result.review.gate.to_dict()
     if last_repair_reason:
         unit["last_repair_reason"] = last_repair_reason
     plans.save_queue(plan_dir, queue_data)
@@ -724,10 +841,10 @@ def execute_unit(
         log_parts.append(f"changed: {', '.join(changed)}")
     if commit_hash:
         log_parts.append(f"commit: {commit_hash}")
-    if agent_result.review.summary:
-        log_parts.append(f"summary: {agent_result.review.summary}")
-    if agent_result.review.gate:
-        log_parts.append(review_gate_summary(agent_result.review))
+    if review_result.review.summary:
+        log_parts.append(f"summary: {review_result.review.summary}")
+    if review_result.review.gate:
+        log_parts.append(review_gate_summary(review_result.review))
     if used_repair_attempts:
         log_parts.append(f"repair_attempts: {used_repair_attempts}")
     log_parts.append(f"ledger_revision={unit.get('attempt_ledger_revision', 0)}")
@@ -746,7 +863,7 @@ def execute_unit(
         "auto_resolved_dirty": auto_resolved_dirty,
         "repair_attempts": used_repair_attempts,
         "repair_reason": last_repair_reason,
-        "review_gate": review_gate_payload(agent_result.review),
+        "review_gate": review_gate_payload(review_result.review),
     }
 
 
@@ -766,24 +883,16 @@ def review_gate_summary(review: CommitUnitReview) -> str:
     return f"review_gate={gate.status} score={gate.score} blockers={gate.blockers} important={gate.important} minor={gate.minor}"
 
 
-def replace_agent_review(agent_result, review: CommitUnitReview):
-    return type(agent_result)(
-        session_id=agent_result.session_id,
-        implementation_message=agent_result.implementation_message,
-        review_message=agent_result.review_message,
-        review=review,
-    )
-
-
 def write_review_attempt(
     plan_dir: Path,
     unit_id: str,
     attempt: int,
-    review: CommitUnitReview,
+    result: ReviewerAgentResult,
     *,
     child_attestation: str,
     ledger_revision: int,
 ) -> Path:
+    review = result.review
     attempts_dir = plan_dir / "attempts" / unit_id
     attempts_dir.mkdir(parents=True, exist_ok=True)
     path = attempts_dir / f"attempt-{attempt}-review.json"
@@ -794,13 +903,68 @@ def write_review_attempt(
         "title": review.title,
         "summary": review.summary,
         "reason": review.reason,
+        "failure_kind": review.failure_kind,
         "review_gate": review_gate_payload(review),
-        "review_skill": POST_UNIT_REVIEW_SKILL,
+        "review_mode": result.review_mode,
+        "sessions_distinct": bool(result.reviewer_session_id)
+        and result.reviewer_session_id != result.implementation_session_id,
+        "implementation_session_sha256": session_digest(result.implementation_session_id),
+        "reviewer_session_sha256": session_digest(result.reviewer_session_id),
+        "expected_head": result.expected_head,
+        "observed_head": result.observed_head,
+        "head_unchanged": result.head_unchanged,
+        "expected_full_diff_digest": result.expected_full_diff_digest,
+        "observed_full_diff_digest": result.observed_full_diff_digest,
+        "full_diff_digest_unchanged": result.full_diff_digest_unchanged,
         "child_attestation": child_attestation,
         "ledger_revision": ledger_revision,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
+
+
+def write_review_failure_attempt(
+    plan_dir: Path,
+    unit_id: str,
+    attempt: int,
+    error: ReviewerProcessFailure,
+    *,
+    implementation_session_id: str,
+    child_attestation: str,
+    ledger_revision: int,
+) -> Path:
+    attempts_dir = plan_dir / "attempts" / unit_id
+    attempts_dir.mkdir(parents=True, exist_ok=True)
+    path = attempts_dir / f"attempt-{attempt}-review.json"
+    payload = {
+        "unit": unit_id,
+        "attempt": attempt,
+        "status": "needs_work",
+        "title": "",
+        "summary": "",
+        "reason": str(error),
+        "failure_kind": "protocol_failure" if not error.head_unchanged or not error.full_diff_digest_unchanged else "process_failure",
+        "review_gate": None,
+        "review_mode": "fresh_read_only",
+        "sessions_distinct": None,
+        "implementation_session_sha256": session_digest(implementation_session_id),
+        "reviewer_session_sha256": "",
+        "expected_head": error.expected_head,
+        "observed_head": error.observed_head,
+        "head_unchanged": error.head_unchanged,
+        "expected_full_diff_digest": error.expected_full_diff_digest,
+        "observed_full_diff_digest": error.observed_full_diff_digest,
+        "full_diff_digest_unchanged": error.full_diff_digest_unchanged,
+        "process_error": type(error.original).__name__,
+        "child_attestation": child_attestation,
+        "ledger_revision": ledger_revision,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def session_digest(session_id: str) -> str:
+    return hashlib.sha256(session_id.encode("utf-8")).hexdigest() if session_id else ""
 
 
 def execution_attempt_dir(plan_dir: Path, unit_id: str, attempt: int) -> Path:

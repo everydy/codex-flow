@@ -315,6 +315,28 @@ def scoped_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
     return digest.hexdigest() if paths else ""
 
 
+def candidate_diff_digest(repo: str | Path, excluded_paths: tuple[str, ...] = ()) -> str:
+    """Digest candidate bytes except exact parent-owned paths that change during the probe."""
+    repo_path = require_git_repo(repo)
+    snapshot = status(repo_path)
+    excluded = tuple(path.replace("\\", "/").strip("/") for path in excluded_paths if path.strip("/"))
+
+    def included(relative: str) -> bool:
+        normalized = relative.replace("\\", "/").strip("/")
+        return not any(normalized == path or normalized.startswith(path + "/") for path in excluded)
+
+    paths = sorted(entry.path for entry in snapshot.entries if included(entry.path))
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        diff = run_process(["git", "diff", "--binary", "HEAD", "--", relative], cwd=repo_path)
+        digest.update(diff.stdout.encode("utf-8"))
+        path = repo_path / relative
+        if path.is_file() and not diff.stdout:
+            digest.update(path.read_bytes())
+    return digest.hexdigest() if paths else ""
+
+
 def out_of_scope_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
     repo_path = require_git_repo(repo)
     snapshot = status(repo_path)

@@ -81,17 +81,19 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" in args:
+if "Agent 3: Read-only Reviewer" in prompt:
     output.write_text(
-        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
         'COMMIT_UNIT_READY title="Worktree unit" summary="updated work.txt"\\n',
         encoding="utf-8",
     )
+    print('{"session_id":"review-session"}')
 else:
     pathlib.Path("work.txt").write_text("execution repo only\\n", encoding="utf-8")
     output.write_text("implementation complete\\n", encoding="utf-8")
-print('{"session_id":"fake-session"}')
+    print('{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
     )
@@ -107,20 +109,22 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" in args:
+if "Agent 3: Read-only Reviewer" in prompt:
     output.write_text(
-        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
         'COMMIT_UNIT_READY title="Disposable unit" summary="reviewed"\\n',
         encoding="utf-8",
     )
+    print('{"session_id":"review-session"}')
 else:
     counter = pathlib.Path(__file__).with_suffix(".count")
     number = int(counter.read_text(encoding="utf-8")) + 1 if counter.exists() else 1
     counter.write_text(str(number), encoding="utf-8")
     pathlib.Path(f"unit-{number}.txt").write_text(f"unit {number}\\n", encoding="utf-8")
     output.write_text("implementation complete\\n", encoding="utf-8")
-print('{"session_id":"fake-session"}')
+    print('{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
     )

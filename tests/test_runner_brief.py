@@ -134,16 +134,21 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-work = pathlib.Path("work.txt")
-previous = work.read_text(encoding="utf-8") if work.exists() else ""
-work.write_text(previous + "implemented\\n", encoding="utf-8")
-output.write_text(
-    'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
-    'COMMIT_UNIT_READY title="Fake implementation" summary="changed work.txt"\\n',
-    encoding="utf-8",
-)
-print('{"session_id":"fake-session"}')
+if "Agent 3: Read-only Reviewer" in prompt:
+    output.write_text(
+        'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'COMMIT_UNIT_READY title="Fake implementation" summary="changed work.txt"\\n',
+        encoding="utf-8",
+    )
+    print('{"session_id":"review-session"}')
+else:
+    work = pathlib.Path("work.txt")
+    previous = work.read_text(encoding="utf-8") if work.exists() else ""
+    work.write_text(previous + "implemented\\n", encoding="utf-8")
+    output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
     )
@@ -159,9 +164,14 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-output.write_text('COMMIT_UNIT_NEEDS_WORK reason="fake failure"\\n', encoding="utf-8")
-print('{"session_id":"fake-session"}')
+output.write_text(
+    'INTERNAL_REVIEW_GATE status="needs_work" blockers=0 important=1 minor=0 reason="fake failure"\\n'
+    'COMMIT_UNIT_NEEDS_WORK reason="fake failure"\\n',
+    encoding="utf-8",
+)
+print('{"session_id":"review-session"}' if "Agent 3: Read-only Reviewer" in prompt else '{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
     )
@@ -177,13 +187,15 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     pathlib.Path("work.txt").write_text("implemented\\n", encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"implementation-session"}')
 else:
     output.write_text('COMMIT_UNIT_READY title="Ungated" summary="missing review evidence"\\n', encoding="utf-8")
-print('{"session_id":"fake-session"}')
+    print('{"session_id":"review-session"}')
 """,
         encoding="utf-8",
     )
@@ -199,17 +211,19 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     pathlib.Path("work.txt").write_text("implemented\\n", encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"implementation-session"}')
 else:
     output.write_text(
-        'REVIEW_GATE status="pass" reason="counts omitted"\\n'
+        'INTERNAL_REVIEW_GATE status="pass" reason="counts omitted"\\n'
         'COMMIT_UNIT_READY title="Incomplete gate" summary="missing counts"\\n',
         encoding="utf-8",
     )
-print('{"session_id":"fake-session"}')
+    print('{"session_id":"review-session"}')
 """,
         encoding="utf-8",
     )
@@ -225,18 +239,20 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     pathlib.Path("work.txt").write_text("allowed\\n", encoding="utf-8")
     pathlib.Path("outside.txt").write_text("not allowed\\n", encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"implementation-session"}')
 else:
     output.write_text(
-        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
         'COMMIT_UNIT_READY title="Out of scope" summary="changed two paths"\\n',
         encoding="utf-8",
     )
-print('{"session_id":"fake-session"}')
+    print('{"session_id":"review-session"}')
 """,
         encoding="utf-8",
     )
@@ -253,19 +269,21 @@ import subprocess
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     pathlib.Path("work.txt").write_text("child commit\\n", encoding="utf-8")
     subprocess.run(["git", "add", "work.txt"], check=True)
     subprocess.run(["git", "commit", "-m", "unexpected child commit"], check=True, capture_output=True)
     output.write_text("implementation phase\\n", encoding="utf-8")
+    print('{"session_id":"implementation-session"}')
 else:
     output.write_text(
-        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
         'COMMIT_UNIT_READY title="Child committed" summary="unexpected commit"\\n',
         encoding="utf-8",
     )
-print('{"session_id":"fake-session"}')
+    print('{"session_id":"review-session"}')
 """,
         encoding="utf-8",
     )
@@ -283,27 +301,31 @@ import sys
 args = sys.argv[1:]
 prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     work = pathlib.Path("work.txt")
     previous = work.read_text(encoding="utf-8") if work.exists() else ""
     line = "repair\\n" if "Repair attempt:" in prompt else "initial\\n"
     work.write_text(previous + line, encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
-    print('{"session_id":"fake-session"}')
+    print('{"session_id":"implementation-session"}')
 else:
     counter = pathlib.Path(__file__).with_suffix(".count")
     count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
     count += 1
     counter.write_text(str(count), encoding="utf-8")
     if count == 1:
-        output.write_text('COMMIT_UNIT_NEEDS_WORK reason="first review failed"\\n', encoding="utf-8")
+        output.write_text(
+            'INTERNAL_REVIEW_GATE status="needs_work" blockers=0 important=1 minor=0 reason="first review failed"\\n'
+            'COMMIT_UNIT_NEEDS_WORK reason="first review failed"\\n',
+            encoding="utf-8",
+        )
     else:
         output.write_text(
-            'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+            'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
             'COMMIT_UNIT_READY title="Fake repair" summary="repair succeeded"\\n',
             encoding="utf-8",
         )
-    print('{"session_id":"fake-session"}')
+    print('{"session_id":"review-session"}')
 """,
         encoding="utf-8",
     )
@@ -319,20 +341,21 @@ import pathlib
 import sys
 
 args = sys.argv[1:]
+prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     work = pathlib.Path("work.txt")
     previous = work.read_text(encoding="utf-8") if work.exists() else ""
     work.write_text(previous + "implemented\\n", encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
 else:
     output.write_text(
-        'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+        'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
         'COMMIT_UNIT_READY title="Fake" summary="ready"\\n'
         'COMMIT_UNIT_NEEDS_WORK reason=""\\n',
         encoding="utf-8",
     )
-print('{"session_id":"fake-session"}')
+print('{"session_id":"review-session"}' if "Agent 3: Read-only Reviewer" in prompt else '{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
     )
@@ -351,12 +374,12 @@ args = sys.argv[1:]
 prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
 work = pathlib.Path("work.txt")
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     previous = work.read_text(encoding="utf-8") if work.exists() else ""
     line = "gate-repair\\n" if "Repair attempt:" in prompt else "gate-initial\\n"
     work.write_text(previous + line, encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
-    print('{"session_id":"fake-session"}')
+    print('{"session_id":"implementation-session"}')
 else:
     counter = pathlib.Path(__file__).with_suffix(".count")
     count = int(counter.read_text(encoding="utf-8")) if counter.exists() else 0
@@ -364,17 +387,17 @@ else:
     counter.write_text(str(count), encoding="utf-8")
     if count == 1:
         output.write_text(
-            'REVIEW_GATE status="pass" blockers=0 important=1 minor=0 reason="important issue remains"\\n'
+            'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=1 minor=0 reason="important issue remains"\\n'
             'COMMIT_UNIT_READY title="Fake gated implementation" summary="ready but gate blocks"\\n',
             encoding="utf-8",
         )
     else:
         output.write_text(
-            'REVIEW_GATE status="pass" blockers=0 important=0 minor=1 reason="minor follow-up only"\\n'
+            'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=1 reason="minor follow-up only"\\n'
             'COMMIT_UNIT_READY title="Fake gated repair" summary="gate passed"\\n',
             encoding="utf-8",
         )
-    print('{"session_id":"fake-session"}')
+    print('{"session_id":"review-session"}')
 """,
         encoding="utf-8",
     )
@@ -392,15 +415,19 @@ import sys
 args = sys.argv[1:]
 prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     work = pathlib.Path("work.txt")
     previous = work.read_text(encoding="utf-8") if work.exists() else ""
     line = "partial-repair\\n" if "Repair attempt:" in prompt else "partial-initial\\n"
     work.write_text(previous + line, encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
 else:
-    output.write_text('COMMIT_UNIT_NEEDS_WORK reason="still failing"\\n', encoding="utf-8")
-print('{"session_id":"fake-session"}')
+    output.write_text(
+        'INTERNAL_REVIEW_GATE status="needs_work" blockers=0 important=1 minor=0 reason="still failing"\\n'
+        'COMMIT_UNIT_NEEDS_WORK reason="still failing"\\n',
+        encoding="utf-8",
+    )
+print('{"session_id":"review-session"}' if "Agent 3: Read-only Reviewer" in prompt else '{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
     )
@@ -422,6 +449,28 @@ time.sleep(5)
     return fake_codex
 
 
+def write_fake_codex_review_failure(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_review_failure_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+prompt = sys.stdin.read()
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+if "Agent 3: Read-only Reviewer" in prompt:
+    raise SystemExit(7)
+pathlib.Path("work.txt").write_text("implemented\\n", encoding="utf-8")
+output.write_text("implementation phase\\n", encoding="utf-8")
+print('{"session_id":"implementation-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
 def write_fake_codex_resume_repair_ready(tmp_path):
     fake_codex = tmp_path.parent / f"fake_codex_resume_repair_{tmp_path.name}.py"
     fake_codex.write_text(
@@ -433,20 +482,24 @@ args = sys.argv[1:]
 prompt = sys.stdin.read()
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
 work = pathlib.Path("work.txt")
-if "resume" not in args:
+if "Agent 3: Read-only Reviewer" not in prompt:
     if "Repair attempt:" in prompt and "Previous needs_work reason: still failing" in prompt and work.exists():
         work.write_text(work.read_text(encoding="utf-8") + "final-repair\\n", encoding="utf-8")
     output.write_text("implementation phase\\n", encoding="utf-8")
 else:
     if work.exists() and "partial-initial" in work.read_text(encoding="utf-8") and "final-repair" in work.read_text(encoding="utf-8"):
         output.write_text(
-            'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
+            'INTERNAL_REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="clean"\\n'
             'COMMIT_UNIT_READY title="Fake resumed repair" summary="resumed repair succeeded"\\n',
             encoding="utf-8",
         )
     else:
-        output.write_text('COMMIT_UNIT_NEEDS_WORK reason="resume context missing"\\n', encoding="utf-8")
-print('{"session_id":"fake-session"}')
+        output.write_text(
+            'INTERNAL_REVIEW_GATE status="needs_work" blockers=0 important=1 minor=0 reason="resume context missing"\\n'
+            'COMMIT_UNIT_NEEDS_WORK reason="resume context missing"\\n',
+            encoding="utf-8",
+        )
+print('{"session_id":"review-session"}' if "Agent 3: Read-only Reviewer" in prompt else '{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
     )
@@ -464,7 +517,7 @@ def test_run_next_writes_prompt_and_marks_unit_prompted(tmp_path):
     prompt_text = result["prompt_path"].read_text(encoding="utf-8")
     assert "## Skill Routing Manifest" in prompt_text
     assert "Required skills: `요청개선`, `plan-first-implementation`" in prompt_text
-    assert "post-unit review must load and apply `review-all-in-one`" in prompt_text
+    assert "A separate fresh read-only reviewer runs after implementation." in prompt_text
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["units"][0]["status"] == "prompted"
     assert queue["units"][0]["prompt_path"] == "prompts/unit-001.md"
@@ -580,7 +633,7 @@ def test_run_next_execute_with_fake_codex_commits_unit(tmp_path):
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 2
 
 
-def test_run_next_refuses_commit_without_review_all_in_one_evidence(tmp_path):
+def test_run_next_refuses_commit_without_internal_review_evidence(tmp_path):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex_without_review_gate(tmp_path)
     plan = make_plan(tmp_path)
@@ -589,7 +642,7 @@ def test_run_next_refuses_commit_without_review_all_in_one_evidence(tmp_path):
 
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert result["action"] == "needs_work"
-    assert "review-all-in-one evidence" in result["reason"]
+    assert "internal review evidence" in result["reason"]
     assert result["commit"] == ""
     assert queue["units"][0]["status"] == "needs_work"
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
@@ -603,7 +656,7 @@ def test_run_next_refuses_commit_with_incomplete_review_gate(tmp_path):
     result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
 
     assert result["action"] == "needs_work"
-    assert "incomplete review-all-in-one evidence" in result["reason"]
+    assert "incomplete internal review evidence" in result["reason"]
     assert result["commit"] == ""
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
 
@@ -626,7 +679,7 @@ def test_run_next_refuses_unit_commit_with_paths_outside_allowed_scope(tmp_path)
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
 
 
-def test_run_next_attests_review_skill_and_binds_review_attempt(tmp_path, monkeypatch):
+def test_run_next_preserves_plan_skills_and_binds_internal_review_attempt(tmp_path, monkeypatch):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex(tmp_path)
     plan = make_plan(tmp_path)
@@ -644,8 +697,16 @@ def test_run_next_attests_review_skill_and_binds_review_attempt(tmp_path, monkey
         (plan.directory / "attempts" / "unit-001" / "attempt-0-review.json").read_text(encoding="utf-8")
     )
     assert result["action"] == "done"
-    assert "review-all-in-one" in captured[0]
-    assert evidence["review_skill"] == "review-all-in-one"
+    assert captured[0] == ("요청개선", "plan-first-implementation")
+    assert evidence["review_mode"] == "fresh_read_only"
+    assert evidence["sessions_distinct"] is True
+    assert evidence["implementation_session_sha256"]
+    assert evidence["reviewer_session_sha256"]
+    assert "implementation_session_id" not in evidence
+    assert "reviewer_session_id" not in evidence
+    assert evidence["head_unchanged"] is True
+    assert evidence["full_diff_digest_unchanged"] is True
+    assert "review_skill" not in evidence
     assert evidence["child_attestation"] == result["unit"]["child_attestation"]
 
 
@@ -1015,6 +1076,28 @@ def test_run_next_timeout_marks_unit_needs_work_with_diagnostics(tmp_path, capsy
     assert "timed out" in queue["units"][0]["last_needs_work_reason"]
     assert (diagnostic_path / "prompt.json").exists()
     assert (diagnostic_path / "metadata.json").exists()
+
+
+def test_run_next_holds_review_process_failure_with_review_phase_and_no_commit(tmp_path):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_review_failure(tmp_path)
+    plan = make_plan(tmp_path)
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    evidence = json.loads(
+        (plan.directory / "attempts" / "unit-001" / "attempt-0-review.json").read_text(encoding="utf-8")
+    )
+    metadata = json.loads(
+        (plan.directory / "attempts" / "unit-001" / "attempt-0" / "review" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert result["action"] == "needs_work"
+    assert "invariants preserved" in result["reason"]
+    assert evidence["process_error"] == "CodexExecFailure"
+    assert evidence["head_unchanged"] is True
+    assert evidence["full_diff_digest_unchanged"] is True
+    assert metadata["phase"] == "review"
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
 
 
 def test_route_queues_when_pr_lock_is_active(tmp_path, capsys):

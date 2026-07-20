@@ -455,3 +455,52 @@ runner.run_next
 - evidence strength: `High`; local call path, CLI argv construction, reusable digest helper, existing integration fixtures가 서로 일치한다.
 - no blocking open question. fresh review fake migration 범위는 repository tests로 확인 가능하다.
 - implementation stop: fresh review가 resume를 사용하거나 write mutation을 탐지하고도 ready가 되거나, existing repair/commit result payload가 깨지면 4B로 진행하지 않는다.
+
+## Commit 4A Fast Closeout Research Addendum — 2026-07-20
+
+### Mode And Scope
+
+- selected mode: `Pre-Plan Research Gate`
+- source request: `docs/request-refiner-artifacts/2026-07-20-220616-commit-4a-fast-closeout-refined-request.md`
+- lanes: current dirty diff, focused test behavior, independent implementation review.
+- external research: omitted because the observed failures are local ownership/protocol bugs and external evidence would not change the choice.
+
+### Confirmed Facts
+
+1. The core separation works in the candidate: implementation and review are now different calls, the reviewer uses `sandbox="read-only"`, and no resume id is passed.
+2. The candidate grew to nine files with `+848/-313`; most test churn is fixture migration, but runner failure bookkeeping is duplicated.
+3. The first candidate digest treated Codex Flow's own diagnostics as reviewer mutation. The attempted fix excluded all `.codex-flow/`, which is unsafe because plan, queue, and handoff can also be legitimate candidate/control files.
+4. `require_internal_review()` currently validates gate shape only for `ready`; malformed or missing gates on `needs_work` can remain ordinary retryable findings.
+5. exception-shaped review failure is correctly held as `phase=review` with zero commit and evidence, but result-shaped protocol failures are still recorded as `REVIEW_FINDING`.
+
+### Options
+
+#### Option A — Discard and rewrite the 4A diff
+
+- benefit: smallest-looking final diff may be possible.
+- cost: repeats already completed session separation, artifact wiring, and fake migration; highest time risk.
+- adoption: reject.
+
+#### Option B — Keep the blanket `.codex-flow/` exclusion and only fix gate parsing
+
+- benefit: fastest patch.
+- cost: reviewer mutation of plan/queue/handoff can escape the invariant; violates the accepted security contract.
+- adoption: reject.
+
+#### Option C — Preserve the core diff and apply three bounded simplifications
+
+- change: exclude only the exact runner-owned diagnostic/ledger paths during the review window; validate exactly one complete internal gate for every terminal result; carry an explicit protocol-vs-finding classification into runner bookkeeping. Consolidate duplicate failure serialization only where behavior remains identical.
+- benefit: reuses completed work, directly fixes both Important findings, and avoids new architecture.
+- cost: one additional helper contract and targeted tests.
+- adoption: adopt.
+
+### Recommendation
+
+Finish 4A as one code commit using Option C. Do not create 4A-1/4A-2 units. Do not add an event system or move all state in this unit. Reviewer evidence should store session relationship/hash rather than unnecessary raw session identifiers. Run tests in batches only after the bounded patch is complete, repair concrete failures, then run one independent final review.
+
+### Evidence Quality
+
+- local code/diff: `High`
+- focused empirical behavior: `High`
+- independent review: `High`, blocker 0 / Important 2 before repair
+- open question: none; the exact runner-owned paths are available from `diagnostic_dir` and `attempt_ledger_path` at call time.
