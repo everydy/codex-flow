@@ -173,6 +173,127 @@ flowchart LR
 
 ## Implementation Plan
 
+### Commit 4 Replan Override — reviewed planning replacement
+
+기존 단일 `Commit 4: Runtime final gate, profile별 실행과 review gate`는 범위가 지나치게 커 helper와 consumer만 먼저 생기고 producer·dispatcher·lowest-level guard가 빠졌다. 아래 Commit 4A~4D가 기존 Commit 4를 대체한다. `69d7df0`, `5d0df36`은 partial historical implementation이며 4D acceptance가 끝날 때까지 Commit 4 완료로 표시하지 않는다.
+
+#### Commit 4A: Reviewer contract separation
+
+- target: `implementer_agent.py`, `reviewer_agent.py`, `final_gate.py`, `tests/test_final_gate.py`, `tests/test_agent_roles.py`.
+- changes:
+  - `AdaptiveCoordinator`는 sequencing과 invariant만 소유한다. unit 실행, typed verification, unit review, final review는 각각 `UnitExecutionStrategy`, `TrustedVerifier`, `ReadOnlyReviewer`, `FinalGateProducer` interface 뒤에 둬 기존 runner/ledger state machine을 복제하지 않는다.
+  - writable implementation과 read-only unit/final review를 별도 interface와 별도 child session으로 분리한다.
+  - reviewer는 `sandbox=read-only`, resume 금지, repair 금지이며 시작/종료 HEAD와 status digest가 같아야 한다.
+  - generic internal result는 `INTERNAL_REVIEW_GATE`를 사용하고 명시 호출형 `review-all-in-one`을 자동 호출하지 않는다.
+- verification: reviewer mutation 시도, HEAD/status 변화, malformed gate, resumed-session 사용, reviewer 내부 implement/repair 호출을 모두 fail-closed 하는 focused tests.
+- success: read-only reviewer가 파일을 바꿀 수 없고 finding은 별도 implementer repair로만 돌아간다.
+- stop: current writable resumed review가 adaptive flag 경로에 하나라도 남으면 중단.
+- execution subplan: [Commit 4A Reviewer Contract Separation Plan](commit-4a-plan.md). 이번 구현은 이 숫자형 단일-unit 문서를 실행 기준으로 사용한다.
+
+#### Commit 4B: Profile strategy dispatcher와 lease/verification
+
+- target: new `adaptive_coordinator.py`, `runner.py`, `execution_policy.py`, `attempt_ledger.py`, `cli.py`, 관련 tests.
+- changes:
+  - coordinator가 `select_mode(effective_profile, interactive)`의 유일한 runtime caller가 된다.
+  - coordinator는 기존 ledger/finalize API를 호출할 뿐 별도 attempt 상태를 만들지 않는다. profile별 동작은 strategy registry에서 선택하고 runner/agent/CLI에 profile 분기를 중복하지 않는다.
+  - `docs_only+interactive`는 `lease-direct-unit`→smoke/diff check→`adopt-attempt`; unattended는 isolated fallback. lease record는 `lease_id`, `owner`, `issued_at`, `expires_at`, `expected_head`, `allowed_paths`, `initial_scoped_digest`, `initial_full_status_digest`, `policy_version`, `ledger_revision`을 가진다. 만료, CAS revision, HEAD, scope, digest 중 하나라도 다르면 adopt를 거부한다.
+  - `contract`는 isolated implementation 뒤 repo-owned `VerificationSpec`만 실행하고 per-unit AI review는 생략해 cumulative review pending으로 기록한다. plan/queue에는 임의 명령이 아니라 registry key만 저장하며 `codex_flow/verification_registry.py`가 key를 고정 argv/cwd/network/mutation 계약으로 해석한다. 등록되지 않은 key와 승인 spec이 없는 contract unit은 fail-closed 한다.
+  - `high_risk`는 isolated implementation 뒤 4A read-only unit reviewer를 실행한다.
+  - feature flag off는 legacy strict behavior를 유지하되 같은 coordinator entry를 거친다.
+- diagnostic events: `profile_selected|lease_issued|lease_adopted|lease_rejected|unit_verification_started|unit_verification_completed|unit_review_started|unit_review_completed`; 공통 fields는 `plan_id`, `unit_id`, `attempt_id`, `lease_id`, `expected_head`, `observed_head`, `profile`, `mode`, `ledger_revision`, `reason`, `elapsed_ms`이며 prompt/diff/token 원문은 저장하지 않는다.
+- verification: profile×interactive matrix, metadata downgrade 거부, lease expiry/CAS/stale HEAD/scope/digest 거부, unknown verification key, contract verifier shell/cwd/network/mutation 거부, high-risk review non-mutation, feature flag off legacy parity.
+- success: profile branching이 runner와 agent에 중복되지 않고 ledger/handoff에 선택 근거가 남는다.
+- stop: docs direct가 unattended에서 열리거나 contract가 arbitrary plan command를 실행하면 중단.
+
+#### Commit 4C: Fresh cumulative final-gate producer
+
+- target: `adaptive_coordinator.py`, `final_gate.py`, `git_ops.py`, `runner.py`, tests.
+- changes:
+  - 모든 unit이 terminal 상태가 된 exact HEAD를 freeze한다.
+  - fresh cumulative read-only review와 trusted verification을 같은 `preflight_id`로 실행한다.
+  - producer는 terminal ledger revision에서 `effective_profile` 결정, verification registry와 각 spec, plan content, policy, activation epoch를 한 snapshot으로 고정한다. final review와 trusted verification은 이 snapshot만 사용하며 실행 중 재분류하지 않는다.
+  - `FinalGateRecord`는 `preflight_id`, `reviewed_head`, `tracked_digest`, `untracked_digest`, `plan_digest`, `terminal_ledger_revision`, `profile_decisions_hash`, `verification_registry_hash`, `verification_contract_hash`, `activation_epoch`, `review_evidence_ref`, `review_evidence_hash`, `verification_evidence_ref`, `verification_evidence_hash`, `policy_version`, `child_attestation_hash`, `created_at`, `review_status`, `verification_status`, `status`를 가진다. raw prompt/diff/secret은 저장하지 않는다.
+  - review/verification 전후 HEAD·tracked/untracked digest와 evidence hash가 같을 때만 `FinalGateRecord`를 atomic write한다.
+  - failed/stale/mutating run은 passing file을 남기지 않고 typed rejection evidence만 보존한다.
+  - final reviewer의 quota/auth/capacity 부족은 `final_review_capacity_unavailable` held 상태로 기록하며 verification 성공만으로 우회하지 않는다.
+  - explicit `final-gate --plan`은 같은 producer service를 호출하는 진단 fallback으로 제공한다. consumer는 current HEAD만 보지 않고 current plan/policy/registry/profile/ledger/activation binding을 모두 다시 계산해 record와 대조한다.
+- diagnostic events: `final_gate_started|final_review_completed|verification_completed|final_gate_written|final_gate_rejected`; fields `plan_id`, `attempt_id`, `preflight_id`, `expected_head`, `observed_head`, `gate`, `policy_version`, `reason`, `ledger_revision`, `elapsed_ms`. prompt/diff/token 원문 저장 금지.
+- rollout: 먼저 shadow mode에서 legacy finalize를 막지 않고 record를 생성·검증해 strict 결과와 parity를 비교한다. producer success/failure/drift/capacity fixture와 canary parity가 통과한 뒤에만 4D enforcement를 켠다.
+- verification: review failure, review capacity/auth failure, verification failure, HEAD drift, tracked/untracked drift, evidence hash mismatch, redactor failure, process cleanup failure, new HEAD rerun, shadow parity.
+- success: producer가 없는 fail-closed dead end가 사라지고 passing gate는 fresh exact HEAD에서만 생성된다.
+- stop: 이전 HEAD의 final review나 focused evidence cache를 재사용하면 중단.
+
+#### Commit 4D: One FinalizeGuard, bypass matrix와 canary activation
+
+- target: `run_all.py`, `cli.py`, `pr.py`, `merge.py`, `skills/구현커밋/SKILL.md`, tests.
+- changes:
+  - `FinalizeGuard`가 `run-all` auto finalize, `open-pr`, `create-pr`, `pr.write_pr_dry_run`, `pr.create_remote_pr`, `pr.merge_plan`, `MergeRunner.merge_local/merge_remote`의 공통 최저 경계가 된다. CLI/wrapper가 아니라 실제 PR 작성·remote create·local merge·remote merge effect 직전의 lowest-level method가 guard를 호출해 direct library call도 우회하지 못한다.
+  - adaptive flag는 profile gate 완화만 제어한다. exact-HEAD final gate를 우회시키는 flag는 두지 않는다.
+  - finalize 직전 HEAD를 다시 비교하며 drift 시 4C producer부터 재실행한다.
+  - `open-pr` preview도 readiness를 나타낼 경우 gate를 요구한다. 단순 미완성 preview가 필요하면 별도 `pr-preview`로 명확히 분리한다.
+  - 같은 HEAD의 valid `FinalGateRecord`는 소비 때 삭제하지 않는 immutable evidence다. PR/merge side-effect 중복 방지는 gate 소비와 별도의 idempotency key로 처리한다.
+  - activation은 durable `AdaptiveActivationState(mode=strict|shadow|canary|default, activation_epoch, expected_head, policy_version, ledger_revision, entered_at, reason)` CAS record로 소유한다. `strict→shadow`는 4A/4B gate 뒤, `shadow→canary`는 parity acceptance 뒤, `canary→default`는 acceptance matrix 통과 뒤에만 허용한다.
+  - canary 중 profile/gate binding mismatch, bypass fixture failure, ledger/HEAD invariant violation은 coordinator가 새 finalize를 먼저 차단한 뒤 CAS `canary→strict` safety downgrade를 실행한다. reviewer capacity/auth failure는 rollback하지 않고 held 처리한다. operator/CI는 promotion만 요청할 수 있고 coordinator validation을 우회하지 못한다.
+  - 상태 전환은 `activation_epoch`를 증가시킨다. in-flight producer와 finalize는 effect 직전 epoch를 재검사하고 과거 epoch이면 reject/held 한다. 과거 `FinalGateRecord`는 삭제하지 않고 epoch mismatch로 무효화하며 새 snapshot evidence를 생성한다. `default` 이후 rollback은 runtime bypass가 아니라 명시적 code rollback + strict-mode evidence 재생성으로만 수행한다.
+  - canary rollback은 typed `adaptive_rollback_activated` event와 trigger를 남긴다. final gate enforcement를 조용히 우회하는 rollback은 금지한다.
+- diagnostic events: `finalize_authorized|finalize_rejected|adaptive_rollback_activated`; 4B~4D 전체 event는 아래 schema와 durable attempt-ledger `events.jsonl` sink를 공유하며 raw payload는 저장하지 않는다.
+- verification: 모든 public entry point의 missing/failed/stale/pass matrix, direct library bypass, same-HEAD immutable evidence reuse, duplicate effect idempotency, feature flag off legacy unit behavior+final gate 유지, producer shadow→canary→rollback parity.
+- success: effectful 또는 readiness를 주장하는 경로가 `FinalizeGuard` 없이 실행될 수 없다.
+- stop: 하나의 direct call bypass 또는 gate producer/consumer recursion이 있으면 Commit 5로 진행하지 않는다.
+
+#### Commit 4 acceptance gate
+
+- required: 4A~4D 각 focused test, 전체 `tests/test_final_gate.py tests/test_runner_brief.py tests/test_child_runtime.py tests/test_agent_roles.py`, profile matrix, producer drift/failure matrix, 모든 public finalize bypass matrix, feature-off parity, independent read-only diff review.
+- strategy verdict: `조건부 적절` (`High` confidence). 가장 강한 반론은 coordinator가 기존 runner/ledger state machine을 복제하는 God object가 될 수 있다는 점이다. 따라서 coordinator는 sequencing/invariant만 소유하고 strategy interface와 기존 ledger API를 호출한다는 구조가 승인 조건이다.
+- burden of proof: 4A reviewer non-mutation, 4B profile/lease/registry matrix, 4C producer shadow parity, 4D lowest-level bypass matrix와 rollback event가 각각 독립적으로 통과해야 한다.
+- kill criteria: reviewer가 수정 권한을 얻음, arbitrary verification 실행, producer 없이 consumer enforcement, direct finalize bypass, silent final-gate rollback 중 하나라도 확인되면 즉시 중단한다.
+- current judgment: `진행 가능`; 계획은 승인 가능한 수준으로 보강됐으며 4A부터 순차 재개한다. 각 하위 commit gate를 넘기 전 다음 단계로 진행하지 않고 4D 전 Commit 5를 시작하지 않는다.
+- rollback: canary에서는 atomic activation-state CAS로 `strict`에 safety downgrade하고 epoch를 올려 in-flight effect를 차단한다. `default` 전환 뒤의 rollback은 명시적 code rollback과 evidence 재생성으로만 하며 silent bypass는 금지한다. partial `69d7df0`/`5d0df36`만으로 adaptive mode를 켜지 않는다.
+
+##### Profile-to-final-gate binding contract
+
+| Profile | Unit execution/gate | Final snapshot input | Consumer check |
+| --- | --- | --- | --- |
+| `docs_only` | interactive lease+smoke 또는 unattended isolated fallback | effective profile decision, lease/adoption result, smoke spec/result | decision hash, terminal ledger revision, plan/policy/registry/activation binding 일치 |
+| `contract` | isolated implementation + registry-backed typed verification | effective profile decision, registry hash, resolved spec/result hashes | verification contract hash와 registry hash 포함 전 binding 일치 |
+| `high_risk` | isolated implementation + read-only unit review | effective profile decision, unit review evidence, trusted verification | unit review terminal state와 전 binding 일치 |
+
+어떤 profile도 final cumulative read-only review를 생략하지 않는다. `FinalizeGuard`는 record의 `status=pass`, `review_status=pass`, `verification_status=pass`와 위 binding 전체가 모두 일치할 때만 authorization을 반환한다.
+
+##### Activation and rollback state transitions
+
+| From → To | Trigger and authority | In-flight handling | Evidence rule |
+| --- | --- | --- | --- |
+| `strict → shadow` | 4A/4B focused gates pass; coordinator CAS | legacy strict finalize 유지, producer 관측만 시작 | shadow record는 authorization에 사용 금지 |
+| `shadow → canary` | shadow parity matrix pass; CI/operator request + coordinator validation | 새 epoch에서만 canary producer/guard 허용 | 이전 epoch record는 보존하되 invalid |
+| `canary → strict` | binding/bypass/invariant failure; coordinator automatic safety downgrade | 새 effect 차단, in-flight는 effect 직전 epoch mismatch로 held | rollback event와 failed evidence 보존, strict evidence 새로 생성 |
+| `canary → default` | 모든 acceptance matrix pass; CI/operator request + coordinator validation | 새 epoch에서 default enforcement | same-epoch fresh record만 허용 |
+| `default → strict code rollback` | release rollback 승인 + reviewed code change | 새 effect 차단 후 code rollback, exact-HEAD 검증 재실행 | runtime flag bypass 금지, 새 policy/epoch evidence 필요 |
+
+##### Executable acceptance matrix
+
+| Case | Given / When | Required oracle |
+| --- | --- | --- |
+| profile dispatch | 각 profile×interactive 조합으로 unit 실행 | strategy가 표와 정확히 일치하고 `profile_selected` 1회, lowering 0회 |
+| reviewer isolation | reviewer가 write/resume/repair 시도 | nonzero/needs-work, HEAD와 tracked/untracked digest 불변, terminal review event 1회 |
+| final producer pass | terminal ledger와 binding이 고정된 HEAD에서 review+verification pass | 같은 `preflight_id`, pass record 1개, 모든 evidence hash 재계산 일치 |
+| final producer drift/failure | HEAD/digest/registry/profile/epoch 중 하나 변경 또는 review capacity 실패 | pass record 0개, typed reject/held 1개, 이전 evidence 삭제 0개 |
+| shadow parity | 동일 fixture를 legacy strict와 shadow producer로 실행 | allow/deny 결과 100% 일치; mismatch 1건이면 canary 진입 금지 |
+| public bypass | CLI, wrapper, `pr.*`, `MergeRunner.*`를 gate missing/failed/stale/pass로 직접 호출 | missing/failed/stale은 effect 0개, pass만 effect 최대 1개 |
+| epoch rollback | canary finalize 진행 중 CAS rollback | effect 직전 epoch mismatch로 effect 0개, held+rollback event 각 1개 |
+| evidence reuse/idempotency | 같은 HEAD/binding으로 PR/merge를 반복 호출 | gate evidence는 재사용 가능, side-effect idempotency key당 effect 최대 1개 |
+| feature-off parity | adaptive profile flag off | legacy strict unit assertions 100% 동일, silent gate bypass 0개 |
+
+##### Diagnostic event schema
+
+- durable sink: external atomic attempt ledger의 append-only `events.jsonl`; event마다 `event_id`를 두고 같은 id의 재전송은 idempotent하게 접는다.
+- required all events: `event_id`, `event`, `severity`, `plan_id`, `activation_epoch`, `ledger_revision`, `policy_version`, `elapsed_ms`, `created_at`.
+- conditional correlation: unit event는 `unit_id`, `attempt_id`; lease event는 `lease_id`; final gate event는 `preflight_id`, `expected_head`, `observed_head`; finalize event는 `gate`, `effect_idempotency_key`를 요구한다. 해당하지 않는 field는 생략하고 빈 문자열을 쓰지 않는다.
+- reason enum: `ok|policy_downgrade_rejected|lease_expired|cas_conflict|head_drift|scope_drift|digest_mismatch|verification_unknown|verification_failed|review_failed|final_review_capacity_unavailable|binding_mismatch|epoch_mismatch|direct_bypass_rejected|rollback_safety_triggered|redaction_failed|process_cleanup_failed`.
+- emission: started event는 외부 작업 직전, terminal event는 결과를 ledger CAS로 고정한 직후 정확히 한 번의 logical event id로 기록한다. event sink 실패로 필수 evidence가 사라지면 final gate/finalize는 fail-closed 한다.
+- redaction/cost: prompt, diff, stdout/stderr, token, credential, arbitrary payload는 금지한다. redactor 실패 시 원 payload를 버리고 정적 `redaction_failed` metadata만 남긴다. control-plane 저빈도 event라 sampling하지 않으며 30일 후 aggregate만 유지하되 release attestation에 참조된 event는 보존 정책을 따른다.
+- verification: schema validator, required/conditional field table, reason enum, event idempotency, start→terminal ordering, terminal exactly-once logical id, sink/redaction failure fail-closed를 simulated clock fixture로 검증한다.
+
 ### Commit 1: Fail-safe policy, typed verification spec와 failure taxonomy
 
 - target files:
@@ -282,44 +403,9 @@ flowchart LR
 - stop conditions:
   - 기존 partial-change evidence를 잃거나 automatic rollback이 생기면 중단.
 
-### Commit 4: Runtime final gate, profile별 실행과 review gate
+### Commit 4: Superseded
 
-- target files:
-  - `codex_flow/final_gate.py` (new)
-  - `codex_flow/implementer_agent.py`
-  - `codex_flow/reviewer_agent.py`
-  - `codex_flow/runner.py`
-  - `codex_flow/run_all.py`
-  - `codex_flow/cli.py`
-  - `codex_flow/pr.py`
-  - `codex_flow/merge.py`
-  - `codex_flow/child_runtime.py`
-  - `skills/구현커밋/SKILL.md`
-  - `tests/test_final_gate.py` (new)
-  - `tests/test_runner_brief.py`
-- changes:
-  - `docs_only`는 interactive orchestrating agent가 `lease-direct-unit`으로 unit/expected HEAD/allowed paths를 임대받아 직접 수정하고, smoke/diff-check 후 `adopt-attempt`로 반환한다. CLI `run-all` unattended에서는 isolated child로 fallback한다.
-  - `contract`는 isolated implementation + trusted `VerificationSpec` unit tests를 실행하고 unit별 full AI review 대신 누적 diff review 대상으로 기록한다.
-  - `high_risk`만 별도 read-only unit review child를 실행하며 review prompt에서 파일 수정과 자동 repair 권한을 제거한다.
-  - generic runtime의 내부 `FinalReviewGate`는 모든 unit 종료 후 exact HEAD에서 fresh read-only cumulative review를 수행한다.
-  - `FinalGateRecord(head, policy_version, review, verification, created_at)`가 pass하지 않으면 `run-all`, `open-pr`, `create-pr`, `merge --auto-resolve` 모두 finalize하지 않는다.
-  - `review-all-in-one`은 runtime 내부 엔진 이름으로 사용하지 않는다. active plan/현재 요청이 명시한 경우에만 external evidence로 추가 요구한다.
-  - gate 완화는 feature flag 뒤에 두고 Commit 1~3이 pass하기 전에는 기존 strict behavior를 유지한다.
-- code snippets:
-  - `mode = select_mode(profile, interactive)`; `DOCS_ONLY+interactive -> lease_direct_unit()`, `CONTRACT -> verify_unit_contract(specs)`, `HIGH_RISK -> run_read_only_unit_review()`.
-  - `require_final_gate(head): record = load_final_gate(); reject if record.head != head or not record.pass`.
-- tradeoff:
-  - chosen: profile별 실행/gate + internal fresh final gate.
-  - alternative: 모든 unit full review 유지.
-  - cost/risk: docs-only absence oracle나 contract gate가 불완전하면 early finding을 놓칠 수 있다.
-  - why acceptable: lowering-safe classifier, typed verification, transactional adoption, exact-HEAD final gate가 함께 활성화된다.
-  - revisit when: final review에서 docs-only/contract 누락 finding 비율이 임계치를 넘을 때.
-- verification:
-  - `python3 -m pytest tests/test_final_gate.py tests/test_runner_brief.py tests/test_child_runtime.py -q`: docs-only interactive lease/adopt, unattended child fallback, contract cumulative diff, high-risk review, profile escalation, review non-mutation, final gate missing/failed/stale HEAD 차단, 네 finalize 명령의 fresh pass 허용.
-- success criteria:
-  - 어떤 finalize path도 exact-HEAD final review/verification 없이 진행하지 않고 `review-all-in-one` 명시 호출 계약을 침범하지 않는다.
-- stop conditions:
-  - review child가 파일을 바꾸거나 finalize 우회 경로가 하나라도 있으면 중단.
+이전 단일 Commit 4 계약은 위 `Commit 4 Replan Override`의 4A~4D로 완전히 대체됐다. 구현자는 이 historical section을 실행 기준으로 사용하지 않는다.
 
 ### Commit 5: Atomic external state와 legacy 호환
 

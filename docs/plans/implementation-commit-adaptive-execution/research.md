@@ -282,3 +282,176 @@ flowchart TD
 - Recommendation: Option C, adaptive transactional supervisor를 구현한다.
 - Open question: state root와 parent-direct opt-in은 계획의 안전한 기본값으로 잠그고, 첫 구현에서는 parent-direct를 열지 않는다.
 - Insufficient evidence: child process descendant 전체 종료의 macOS/Linux 차이는 구현 시 fake process-tree test와 실제 subprocess smoke로 확인해야 한다.
+
+## Commit 4 Blocker Research Addendum — 2026-07-20
+
+### Goal
+
+Commit 4 독립 검토에서 확인된 세 blocker를 해결할 구조를 정한다. 대상은 fresh cumulative final-gate evidence의 생산 부재, 실행 profile dispatcher 미배선, direct `open-pr` 우회다. 이번 조사는 구현을 재개하지 않고 plan을 다시 잠그기 위한 `Pre-Plan Research Gate`다.
+
+### Scope And Entry Points
+
+```text
+runner.execute_unit
+  -> CodexImplementerAgent.implement
+     -> writable implementation
+     -> writable resumed review
+
+RunAllRunner / CLI / pr / MergeRunner
+  -> readiness 확인
+  -> final-gate consumer 일부
+  -> PR 또는 merge side effect
+```
+
+읽은 파일: `codex_flow/final_gate.py`, `execution_policy.py`, `implementer_agent.py`, `reviewer_agent.py`, `runner.py`, `run_all.py`, `cli.py`, `pr.py`, `merge.py`, `tests/test_final_gate.py`, `tests/test_runner_brief.py`, `skills/구현커밋/SKILL.md`.
+
+### Confirmed Current Behavior
+
+1. `FinalGateRecord` reader/writer와 exact-HEAD validator는 존재하지만 fresh cumulative review와 trusted verification을 실행해 record를 만드는 runtime owner가 없다.
+2. `select_mode()`는 호출자가 없으며 모든 unit은 여전히 writable implementation 뒤 writable resumed review를 실행한다.
+3. `run-all`과 일부 PR/merge wrapper에는 feature-flagged consumer check가 추가됐지만 `MergeRunner` 직접 호출과 direct `open-pr` dry-run을 포함한 모든 공개 effect 경계가 하나의 guard를 공유하지 않는다.
+4. feature flag를 켜면 producer가 없어서 finalize가 항상 fail-closed 되고, 끄면 기존 per-unit full review 구조가 그대로 남는다.
+5. 현재 review prompt는 같은 session에서 파일을 고칠 수 있어 `high_risk read-only reviewer`와 `final cumulative read-only review`의 비변경 계약을 충족하지 않는다.
+
+### Existing Abstractions And Boundaries
+
+- 재사용: lowering-safe `ExecutionPolicy`, typed `VerificationSpec`, `AttemptLedger`, exact-HEAD helpers, isolated child runtime/attestation.
+- 분리 필요: writable implementer, read-only unit reviewer, fresh cumulative final reviewer, finalize authorization.
+- 우회 금지: `RunAllRunner`, `pr.create_remote_pr`, `pr.merge_plan`, `MergeRunner.merge_local/merge_remote`, CLI `open-pr/create-pr/merge`가 서로 다른 gate logic을 가지면 안 된다.
+- 명시 호출형 `review-all-in-one`은 generic runtime 내부 엔진 이름으로 재사용하지 않는다.
+
+### Solution Options
+
+#### Option A — Central Adaptive Coordinator
+
+- operating principle: 하나의 coordinator가 profile 선택, 실행/lease, unit gate, fresh final review/verification, exact-HEAD gate write, finalize authorization을 소유한다.
+- supporting evidence: 현재 blocker는 producer/consumer와 profile ownership이 서로 다른 모듈에 흩어진 데서 발생했다.
+- fit conditions: 장기적으로 bypass-free state machine을 우선할 때.
+- failure modes: coordinator가 비대해지거나 내부 strategy가 분리되지 않으면 새 결합점이 된다.
+- implementation implication: unit strategy와 final review runner는 별도 객체로 두고 coordinator는 순서와 invariant만 소유한다.
+- adoption: `Adopt`.
+
+#### Option B — Existing Runner Incremental Retrofit
+
+- operating principle: 현재 `runner.execute_unit`에 profile별 분기를 넣고 `run-all` 뒤 `generate_adaptive_final_gate()`를 추가한다.
+- supporting evidence: 기존 classifier, ledger, verification spec을 가장 적은 변경으로 재사용할 수 있다.
+- fit conditions: Commit 4 변경량을 최소화해야 할 때.
+- failure modes: runner/agent/PR/merge에 분기가 중복되어 direct library call bypass가 다시 생길 수 있다.
+- implementation implication: 모든 effectful entry point가 하나의 lowest-level guard를 공유한다는 별도 테스트가 필수다.
+- adoption: `Pilot only`; 최종 구조로는 채택하지 않는다.
+
+#### Option C — Explicit Two-Phase `final-gate` CLI
+
+- operating principle: `codex-flow final-gate --plan ...`이 evidence만 만들고 finalize 명령은 소비만 한다.
+- supporting evidence: exact-HEAD freshness와 side effect를 가장 쉽게 분리한다.
+- fit conditions: operator-visible 수동/자동화 단계를 허용할 때.
+- failure modes: unattended flow가 추가 명령 없이 멈추고, library caller guard가 없으면 우회된다.
+- implementation implication: `--auto-final-gate`와 lowest-level finalize guard가 함께 필요하다.
+- adoption: `Fallback`; 자동 coordinator가 실패할 때 진단·수동 재실행 경로로 보존한다.
+
+### Recommendation And Plan Implications
+
+Option A를 채택하되 한 번의 큰 Commit 4로 구현하지 않는다. 다음 네 원자 단위로 분해한다.
+
+1. `Commit 4A`: writable implementer와 read-only reviewer/final reviewer 계약 분리.
+2. `Commit 4B`: profile strategy dispatcher와 docs lease/contract verification/high-risk review 연결.
+3. `Commit 4C`: fresh cumulative review+verification producer와 exact-HEAD atomic gate write.
+4. `Commit 4D`: 모든 public finalize path를 하나의 `FinalizeGuard`에 수렴하고 bypass matrix 테스트 후 feature flag canary.
+
+Commit 5는 4D가 통과하기 전 시작하지 않는다. 이미 생성된 `69d7df0`과 `5d0df36`은 partial historical implementation으로 취급하며 완료 증거로 사용하지 않는다.
+
+### Source Evaluation
+
+- 외부 웹 자료는 사용하지 않았다.
+- `threshold intentionally narrowed`: 문제는 특정 외부 API semantics가 아니라 로컬 control-flow와 ownership 불일치이며, 현재 코드·테스트·독립 review evidence가 causal chain을 직접 증명한다.
+- codebase evidence `High`; 현재 52-test focused pass는 helper 회귀 방지 근거일 뿐 Commit 4 acceptance evidence로는 `Insufficient`.
+
+### Evidence
+
+- commits: `69d7df0`, `5d0df36`
+- focused verification: `52 passed in 5.54s`
+- independent review: `REVIEW_GATE status="needs_work" blockers=3 important=1`
+- blocker paths: `codex_flow/final_gate.py`, `implementer_agent.py`, `run_all.py`, `cli.py`, `pr.py`, `merge.py`
+
+### Review And Strategy Gate Outcome
+
+- implementation-before `review-all-in-one`의 첫 판정은 `보완 후 진행`이었다. producer-before-consumer, lowest-level guard와 reviewer separation은 맞았지만 profile/spec와 final evidence의 binding, rollback state transition, executable oracle, diagnostic schema가 부족했다.
+- `해결전략검토` 판정은 `조건부 적절` (`High` confidence)이다. 가장 강한 반론은 중앙 coordinator가 기존 runner/ledger state machine을 복제하는 God object가 될 위험이다.
+- 반론을 수용해 coordinator는 sequencing/invariant만 소유하고 `UnitExecutionStrategy`, `TrustedVerifier`, `ReadOnlyReviewer`, `FinalGateProducer`를 분리한다. terminal ledger의 profile/spec/policy/registry/activation snapshot을 hash로 final record와 consumer에 묶는다.
+- rollout은 `strict → shadow → canary → default`의 CAS activation state와 epoch로 관리한다. canary safety downgrade는 진행 중 effect를 epoch mismatch로 차단하고 evidence를 삭제하지 않는다. default 이후에는 silent flag rollback을 금지한다.
+- approval oracle은 profile matrix, reviewer non-mutation, producer drift/failure/shadow parity, 모든 public finalize direct-call bypass, rollback epoch race, event schema/ordering/idempotency다.
+- what would change the verdict to `적절`: 4A~4D 구현이 각 focused oracle을 통과하고, shadow parity 100%, direct bypass 0, reviewer mutation 0, silent rollback 0을 fresh exact-HEAD evidence로 증명하는 것.
+
+## Commit 4A Implementation Research Revalidation — 2026-07-20
+
+### Mode And Scope
+
+- selected mode: `Pre-Plan Research Gate`
+- evidence lanes: local codebase, tests, existing plan/research; 외부 runtime semantics가 판단을 바꾸지 않으므로 웹 조사는 생략했다.
+- source request: `docs/request-refiner-artifacts/2026-07-20-212409-commit-4a-refined-request.md`
+- scope: reviewer contract separation only. Commit 4B profile dispatcher, 4C final producer, 4D finalize guard는 제외한다.
+
+### Confirmed Call Path
+
+```text
+runner.run_next
+  -> CodexImplementerAgent.implement
+     -> run_codex_exec(... sandbox="workspace-write")
+     -> parse implementation session id
+     -> run_codex_exec(... resume_session_id=<implementation>, sandbox="workspace-write")
+     -> parse REVIEW_GATE + COMMIT_UNIT terminal
+  -> runner validates review and may retry implementer
+```
+
+- `codex_flow/implementer_agent.py`: 구현자 하나가 구현과 리뷰를 모두 소유하고, 리뷰는 동일 session resume다.
+- `codex_flow/codex_cli.py`: resume 경로는 새 `--sandbox` argument를 구성하지 않으므로 현재 `sandbox="workspace-write"` 인자는 fresh review isolation을 증명하지 못한다.
+- `codex_flow/runner.py`: `agent_result.review`에 결합돼 있어 runner가 별도 reviewer를 호출하는 seam이 없다.
+- `codex_flow/reviewer_agent.py`: 현재는 gate 후처리 helper만 있고 reviewer protocol/runtime은 없다.
+- `codex_flow/git_ops.py`: `scoped_diff_digest(repo, [])`는 tracked diff와 untracked file bytes를 함께 hash하므로 reviewer 전후 비변경 oracle로 재사용할 수 있다.
+- integration fakes in `tests/test_runner_brief.py`, `tests/test_execution_worktree.py`, `tests/test_runner_repair_edges.py`, `tests/test_child_attestation.py`는 `"resume" in args`를 review 신호로 사용해 4A 계약에 맞춘 prompt-based fresh-review fixture migration이 필요하다.
+
+### Architectural Boundaries To Preserve
+
+- attempt ledger와 repair retry 소유권은 runner에 남긴다. reviewer가 repair를 직접 수행하지 않는다.
+- child runtime attestation과 prepared `CODEX_HOME`은 재사용할 수 있지만 구현 session id는 재사용하지 않는다.
+- implementation failure와 review process failure는 phase가 다르게 기록돼야 한다.
+- current plan/queue review payload shape와 commit title/summary 소비 계약은 유지한다.
+- generic runtime은 명시 호출형 `review-all-in-one` skill을 내부 리뷰 엔진으로 자동 호출하지 않는다. 내부 machine line은 `INTERNAL_REVIEW_GATE`로 분리한다.
+
+### Solution Options
+
+#### Option A — Implementer-internal reviewer wrapper
+
+- change: `CodexImplementerAgent` 내부에서 fresh read-only review call로만 교체하고 기존 combined result를 유지한다.
+- benefit: runner 변경이 가장 작다.
+- weakness: 구현자가 여전히 리뷰 lifecycle을 소유해 interface separation과 향후 profile strategy 연결이 불명확하다.
+- adoption: Reject for final 4A; temporary compatibility 이상의 가치가 없다.
+
+#### Option B — Runner-owned separate ReviewerAgent
+
+- change: implementer는 writable implementation result만 반환하고, runner가 `CodexReadOnlyReviewer.review()`를 별도 fresh session으로 호출한다.
+- benefit: implementation/review 권한과 failure phase가 분리되고 repair는 기존 runner loop에 남는다.
+- risk: runner result plumbing과 test fakes를 함께 갱신해야 한다.
+- adoption: Adopt. root cause를 직접 해결하면서 Commit 4B의 coordinator가 재사용할 seam을 만든다.
+
+#### Option C — External post-unit review command
+
+- change: unit implementation 종료 뒤 별도 CLI command가 review artifact를 만든다.
+- benefit: 가장 강한 process separation.
+- weakness: 현재 attempt transaction과 automatic repair loop가 둘로 갈라지고 4C producer 역할과 중복될 수 있다.
+- adoption: Defer; explicit diagnostic fallback에는 적합하지만 4A runtime 기본값에는 과하다.
+
+### Recommended 4A Contract
+
+1. `ImplementerAgentResult`는 implementation session/message만 소유한다.
+2. 새 `ReviewerAgent` protocol과 `CodexReadOnlyReviewer`는 fresh `run_codex_exec`을 `sandbox="read-only"`, `resume_session_id=None`, `phase="review"`로 호출한다.
+3. reviewer prompt는 수정·repair·commit을 금지하고 `INTERNAL_REVIEW_GATE`와 단일 `COMMIT_UNIT_*` terminal만 반환한다.
+4. review 호출 전후 `head_summary`와 full `scoped_diff_digest(repo, [])`를 비교한다. mismatch는 non-retryable `needs_work`다.
+5. runner는 implementation과 review exception phase를 구분하고, review finding만 기존 bounded repair loop로 되돌린다.
+6. generic child required-skill closure에서 자동 `review-all-in-one` 추가를 제거한다. 현재 사용자 요청의 pre/post `review-all-in-one`은 parent workflow evidence로만 수행한다.
+
+### Evidence Quality And Open Questions
+
+- evidence strength: `High`; local call path, CLI argv construction, reusable digest helper, existing integration fixtures가 서로 일치한다.
+- no blocking open question. fresh review fake migration 범위는 repository tests로 확인 가능하다.
+- implementation stop: fresh review가 resume를 사용하거나 write mutation을 탐지하고도 ready가 되거나, existing repair/commit result payload가 깨지면 4B로 진행하지 않는다.
