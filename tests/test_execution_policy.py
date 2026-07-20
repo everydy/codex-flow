@@ -7,6 +7,8 @@ from codex_flow.execution_policy import (
     ExecutionProfile,
     FailureKind,
     FailureRecord,
+    RecoveryClass,
+    ReviewPolicy,
     UnitGate,
     VerificationPolicyError,
     classify_execution_policy,
@@ -26,8 +28,9 @@ def test_missing_profile_defaults_to_contract():
     policy = classify_execution_policy(unit("docs/guide.md"))
 
     assert policy.effective_profile is ExecutionProfile.CONTRACT
-    assert policy.execution_mode is ExecutionMode.ISOLATED_CHILD
+    assert policy.execution_mode is ExecutionMode.PARENT_DIRECT
     assert policy.unit_gate is UnitGate.CONTRACT
+    assert policy.review_policy is ReviewPolicy.FINAL_ONLY
     assert "missing" in " ".join(policy.inference_reasons)
 
 
@@ -37,6 +40,7 @@ def test_docs_only_requires_an_explicit_declaration_and_docs_absence_oracle():
     assert policy.effective_profile is ExecutionProfile.DOCS_ONLY
     assert policy.execution_mode is ExecutionMode.PARENT_DIRECT
     assert policy.unit_gate is UnitGate.SMOKE
+    assert policy.review_policy is ReviewPolicy.FINAL_ONLY
 
 
 def test_docs_only_rejects_broad_docs_glob_that_could_include_code_or_config():
@@ -71,6 +75,7 @@ def test_high_risk_inference_cannot_be_lowered_by_metadata(title, path):
     assert policy.effective_profile is ExecutionProfile.HIGH_RISK
     assert policy.execution_mode is ExecutionMode.ISOLATED_CHILD
     assert policy.unit_gate is UnitGate.FULL
+    assert policy.review_policy is ReviewPolicy.PER_UNIT
 
 
 def test_unknown_profile_fails_safe_to_contract():
@@ -112,10 +117,67 @@ def test_failure_retry_matrix_and_duplicate_fingerprint():
         scoped_diff_digest="diff",
     )
 
-    assert retry_eligible(retryable, prior_fingerprints=set(), retries_used=0)
-    assert not retry_eligible(retryable, prior_fingerprints={retryable.fingerprint}, retries_used=0)
-    assert not retry_eligible(retryable, prior_fingerprints=set(), retries_used=1)
-    assert not retry_eligible(non_retryable, prior_fingerprints=set(), retries_used=0)
+    assert not retry_eligible(retryable, prior_fingerprints=set(), retries_used=0)
+    approved = FailureRecord.create(
+        kind=FailureKind.TEST_FINDING,
+        phase="verify",
+        signature="bounded repair",
+        attempt_id="attempt-3",
+        expected_head="abc",
+        observed_head="abc",
+        scoped_diff_digest="diff",
+        repair_paths=("src/api.py",),
+    )
+    assert retry_eligible(
+        approved,
+        prior_fingerprints=set(),
+        retries_used=0,
+        approved_by_recovery_owner=True,
+        allowed_paths=("src/**",),
+    )
+    assert not retry_eligible(
+        approved,
+        prior_fingerprints={approved.fingerprint},
+        retries_used=0,
+        approved_by_recovery_owner=True,
+        allowed_paths=("src/**",),
+    )
+    assert not retry_eligible(
+        approved,
+        prior_fingerprints=set(),
+        retries_used=1,
+        approved_by_recovery_owner=True,
+        allowed_paths=("src/**",),
+    )
+    assert not retry_eligible(
+        non_retryable,
+        prior_fingerprints=set(),
+        retries_used=0,
+        approved_by_recovery_owner=True,
+        allowed_paths=("src/**",),
+    )
+    assert approved.recovery_class is RecoveryClass.REPAIRABLE_IN_SCOPE
+
+
+def test_repair_rejects_paths_outside_original_scope():
+    record = FailureRecord.create(
+        kind=FailureKind.TEST_FINDING,
+        phase="verify",
+        signature="bounded repair",
+        attempt_id="attempt-1",
+        expected_head="abc",
+        observed_head="abc",
+        scoped_diff_digest="diff",
+        repair_paths=("outside.txt",),
+    )
+
+    assert not retry_eligible(
+        record,
+        prior_fingerprints=set(),
+        retries_used=0,
+        approved_by_recovery_owner=True,
+        allowed_paths=("src/**",),
+    )
 
 
 def test_unfixable_test_finding_is_not_retryable():

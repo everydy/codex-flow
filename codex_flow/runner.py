@@ -7,7 +7,8 @@ from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
 from .attempt_ledger import AttemptLedger
-from .execution_policy import FailureKind, FailureRecord, retry_eligible
+from .execution_policy import ExecutionMode, FailureKind, FailureRecord, classify_execution_policy, retry_eligible
+from .main_unit import begin_main_unit
 from .codex_cli import (
     ChildAttestationError,
     ChildRuntimeConfigError,
@@ -233,6 +234,26 @@ def run_next(
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt_text, encoding="utf-8")
     if execute:
+        policy = classify_execution_policy(unit)
+        unit["execution_policy"] = policy.to_dict()
+        if policy.execution_mode is ExecutionMode.PARENT_DIRECT:
+            contract = begin_main_unit(plan_dir / "plan.md", unit_id=unit["id"])
+            append_log(plan_dir, f"Main handoff opened for {unit['id']} at ledger revision {contract.ledger_revision}.")
+            return {
+                "unit": unit,
+                "prompt_path": prompt_path,
+                "action": "main_handoff",
+                "reason": "main agent owns implementation; complete or hold the open transaction",
+                "contract": {
+                    "owner": "main",
+                    "unit_id": contract.unit_id,
+                    "ledger_path": str(contract.ledger_path),
+                    "ledger_revision": contract.ledger_revision,
+                    "expected_head": contract.expected_head,
+                    "allowed_paths": list(contract.allowed_paths),
+                    "queue_revision": contract.queue_revision,
+                },
+            }
         return execute_unit(
             plan_dir=plan_dir,
             queue_data=queue_data,
@@ -1050,7 +1071,7 @@ def run_all(
         if result is None:
             break
         results.append(result)
-        if dry_run or result.get("action") in {"human_gate", "needs_work", "source_drift"}:
+        if dry_run or result.get("action") in {"human_gate", "main_handoff", "needs_work", "source_drift"}:
             break
     return results
 

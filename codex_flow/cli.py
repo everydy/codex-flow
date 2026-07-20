@@ -10,6 +10,7 @@ from . import briefs, dashboard as dashboard_view, inbox, plan_readiness, plans,
 from .run_all import RunAllRunner
 from .attempt_ledger import AttemptLedger, LedgerConflict
 from .git_ops import head_summary, scoped_diff_digest
+from .main_unit import MainUnitError, begin_main_unit, complete_main_unit, hold_main_unit
 
 
 FAILURE_ACTIONS = {
@@ -51,7 +52,7 @@ def default_repair_attempts(value: int | None, *, auto_resolve: bool) -> int:
         if value < 0:
             raise SystemExit("--repair-attempts must be 0 or greater")
         return value
-    return 1 if auto_resolve else 0
+    return 0
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -133,6 +134,24 @@ def build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--attempt", type=Path, required=True, help="Attempt directory or attempt-ledger.json path.")
     adopt.add_argument("--expected-revision", type=int, required=True)
     adopt.add_argument("--evidence", type=Path, required=True)
+
+    begin_main = subparsers.add_parser("begin-main-unit", help="Lock the next unit for direct main-agent implementation.")
+    begin_main.add_argument("--plan", type=Path, required=True)
+    begin_main.add_argument("--unit")
+
+    complete_main = subparsers.add_parser("complete-main-unit", help="Verify and exact-commit an open main-agent unit.")
+    complete_main.add_argument("--plan", type=Path, required=True)
+    complete_main.add_argument("--unit", required=True)
+    complete_main.add_argument("--expected-revision", type=int, required=True)
+    complete_main.add_argument("--evidence", type=Path, required=True)
+    complete_main.add_argument("--message", required=True)
+
+    hold_main = subparsers.add_parser("hold-main-unit", help="Hold a candidate without rollback or automatic retry.")
+    hold_main.add_argument("--plan", type=Path, required=True)
+    hold_main.add_argument("--unit", required=True)
+    hold_main.add_argument("--expected-revision", type=int, required=True)
+    hold_main.add_argument("--failure-class", required=True)
+    hold_main.add_argument("--reason", required=True)
 
     subparsers.add_parser("morning-brief", help="Write today's morning review brief.")
 
@@ -321,6 +340,54 @@ def main(argv: list[str] | None = None) -> int:
             return exit_code_for_action(result.get("action", ""))
         else:
             print("status: prompted")
+        return 0
+
+    if args.command == "begin-main-unit":
+        try:
+            contract = begin_main_unit(args.plan, unit_id=args.unit)
+        except MainUnitError as exc:
+            print(f"main_unit_rejected: {exc}")
+            return 1
+        print(json.dumps({
+            "unit_id": contract.unit_id,
+            "owner": "main",
+            "ledger_path": str(contract.ledger_path),
+            "ledger_revision": contract.ledger_revision,
+            "expected_head": contract.expected_head,
+            "allowed_paths": list(contract.allowed_paths),
+            "queue_revision": contract.queue_revision,
+        }, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if args.command == "complete-main-unit":
+        try:
+            evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
+            result = complete_main_unit(
+                args.plan,
+                unit_id=args.unit,
+                expected_revision=args.expected_revision,
+                evidence=evidence,
+                message=args.message,
+            )
+        except (MainUnitError, OSError, json.JSONDecodeError) as exc:
+            print(f"main_unit_rejected: {exc}")
+            return 1
+        print(f"main_unit_completed: unit={result.unit_id} revision={result.ledger_revision} commit={result.commit}")
+        return 0
+
+    if args.command == "hold-main-unit":
+        try:
+            result = hold_main_unit(
+                args.plan,
+                unit_id=args.unit,
+                expected_revision=args.expected_revision,
+                failure_class=args.failure_class,
+                reason=args.reason,
+            )
+        except MainUnitError as exc:
+            print(f"main_unit_rejected: {exc}")
+            return 1
+        print(f"main_unit_held: unit={result.unit_id} revision={result.ledger_revision}")
         return 0
 
     if args.command == "run-all":

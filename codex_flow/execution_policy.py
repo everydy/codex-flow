@@ -30,6 +30,19 @@ class UnitGate(StrEnum):
     FULL = "full"
 
 
+class ReviewPolicy(StrEnum):
+    FINAL_ONLY = "final_only"
+    PER_UNIT = "per_unit"
+
+
+class RecoveryClass(StrEnum):
+    REPAIRABLE_IN_SCOPE = "repairable_in_scope"
+    REPAIRABLE_NEW_SCOPE = "repairable_new_scope"
+    ENVIRONMENT = "environment"
+    OPERATOR = "operator"
+    PROTOCOL = "protocol"
+
+
 class FailureKind(StrEnum):
     PROTOCOL = "protocol"
     AUTH_CONFIG = "auth_config"
@@ -50,7 +63,7 @@ _PROFILE_ORDER = {
 
 _PROFILE_RUNTIME = {
     ExecutionProfile.DOCS_ONLY: (ExecutionMode.PARENT_DIRECT, UnitGate.SMOKE),
-    ExecutionProfile.CONTRACT: (ExecutionMode.ISOLATED_CHILD, UnitGate.CONTRACT),
+    ExecutionProfile.CONTRACT: (ExecutionMode.PARENT_DIRECT, UnitGate.CONTRACT),
     ExecutionProfile.HIGH_RISK: (ExecutionMode.ISOLATED_CHILD, UnitGate.FULL),
 }
 
@@ -84,6 +97,7 @@ class ExecutionPolicy:
     effective_profile: ExecutionProfile
     execution_mode: ExecutionMode
     unit_gate: UnitGate
+    review_policy: ReviewPolicy
     inference_reasons: tuple[str, ...]
     policy_version: str = POLICY_VERSION
 
@@ -94,6 +108,9 @@ class ExecutionPolicy:
             "effective_profile": self.effective_profile.value,
             "execution_mode": self.execution_mode.value,
             "unit_gate": self.unit_gate.value,
+            "executor_adapter": "main" if self.execution_mode is ExecutionMode.PARENT_DIRECT else "isolated-child",
+            "review_policy": self.review_policy.value,
+            "automatic_repair": False,
             "inference_reasons": list(self.inference_reasons),
         }
 
@@ -132,7 +149,19 @@ def classify_execution_policy(unit: Mapping) -> ExecutionPolicy:
     if effective is not declared_or_default:
         reasons.append(f"raised profile from {declared_or_default.value} to {effective.value}")
     mode, gate = _PROFILE_RUNTIME[effective]
-    return ExecutionPolicy(declared, effective, mode, gate, tuple(reasons))
+    requested_adapter = str(policy_data.get("executor_adapter") or "").replace("_", "-")
+    requested_review = str(policy_data.get("review_policy") or "")
+    if requested_adapter == "isolated-child":
+        mode = ExecutionMode.ISOLATED_CHILD
+        reasons.append("explicit isolated-child adapter")
+    if effective is ExecutionProfile.HIGH_RISK:
+        review_policy = ReviewPolicy.PER_UNIT
+    elif requested_review == ReviewPolicy.PER_UNIT.value:
+        review_policy = ReviewPolicy.PER_UNIT
+        reasons.append("explicit per-unit review")
+    else:
+        review_policy = ReviewPolicy.FINAL_ONLY
+    return ExecutionPolicy(declared, effective, mode, gate, review_policy, tuple(reasons))
 
 
 def infer_profile_lower_bound(unit: Mapping) -> tuple[ExecutionProfile, str]:
@@ -172,6 +201,8 @@ class FailureRecord:
     attempt_id: str
     expected_head: str
     observed_head: str
+    recovery_class: RecoveryClass
+    repair_paths: tuple[str, ...] = ()
 
     def to_dict(self) -> dict:
         return {
@@ -182,6 +213,9 @@ class FailureRecord:
             "attempt_id": self.attempt_id,
             "expected_head": self.expected_head,
             "observed_head": self.observed_head,
+            "recovery_class": self.recovery_class.value,
+            "repair_paths_sha256": hashlib.sha256("\0".join(self.repair_paths).encode("utf-8")).hexdigest(),
+            "repair_path_count": len(self.repair_paths),
         }
 
     @classmethod
@@ -197,6 +231,7 @@ class FailureRecord:
         scoped_diff_digest: str,
         policy_version: str = POLICY_VERSION,
         fixable: bool = True,
+        repair_paths: Sequence[str] = (),
     ) -> "FailureRecord":
         normalized = normalize_failure_signature(signature)
         canonical = {
@@ -210,15 +245,30 @@ class FailureRecord:
         fingerprint = hashlib.sha256(
             json.dumps(canonical, sort_keys=True, separators=(",", ":")).encode("utf-8")
         ).hexdigest()
+        recovery_class = recovery_class_for(kind)
         return cls(
             kind=kind,
             phase=phase,
             fingerprint=fingerprint,
-            retryable=fixable and kind in {FailureKind.TEST_FINDING, FailureKind.REVIEW_FINDING, FailureKind.TRANSIENT},
+            retryable=fixable and recovery_class is RecoveryClass.REPAIRABLE_IN_SCOPE,
             attempt_id=attempt_id,
             expected_head=expected_head,
             observed_head=observed_head,
+            recovery_class=recovery_class,
+            repair_paths=tuple(str(path) for path in repair_paths),
         )
+
+
+def recovery_class_for(kind: FailureKind) -> RecoveryClass:
+    if kind in {FailureKind.TEST_FINDING, FailureKind.REVIEW_FINDING}:
+        return RecoveryClass.REPAIRABLE_IN_SCOPE
+    if kind is FailureKind.SCOPE_MISMATCH:
+        return RecoveryClass.REPAIRABLE_NEW_SCOPE
+    if kind in {FailureKind.TRANSIENT, FailureKind.PROCESS_FAILURE}:
+        return RecoveryClass.ENVIRONMENT
+    if kind is FailureKind.AUTH_CONFIG:
+        return RecoveryClass.OPERATOR
+    return RecoveryClass.PROTOCOL
 
 
 def normalize_failure_signature(value: str) -> str:
@@ -232,8 +282,22 @@ def normalize_failure_signature(value: str) -> str:
     return normalized
 
 
-def retry_eligible(record: FailureRecord, *, prior_fingerprints: set[str], retries_used: int) -> bool:
-    return record.retryable and record.fingerprint not in prior_fingerprints and retries_used < 1
+def retry_eligible(
+    record: FailureRecord,
+    *,
+    prior_fingerprints: set[str],
+    retries_used: int,
+    approved_by_recovery_owner: bool = False,
+    allowed_paths: Sequence[str] = (),
+) -> bool:
+    return (
+        approved_by_recovery_owner
+        and record.retryable
+        and bool(record.repair_paths)
+        and all(any(fnmatch(path, pattern) for pattern in allowed_paths) for path in record.repair_paths)
+        and record.fingerprint not in prior_fingerprints
+        and retries_used < 1
+    )
 
 
 class VerificationPolicyError(ValueError):

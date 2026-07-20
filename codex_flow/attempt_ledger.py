@@ -27,6 +27,9 @@ EVENT_FIELDS = {
     "pid",
     "process_group",
     "reason",
+    "queue_revision",
+    "expected_head",
+    "observed_head",
 }
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()

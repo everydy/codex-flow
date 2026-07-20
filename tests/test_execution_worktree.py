@@ -201,6 +201,7 @@ def test_run_next_edits_and_commits_only_in_execution_worktree(tmp_path, capsys,
     plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
     queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
     queue["units"][0]["allowed_paths"].append("work.txt")
+    queue["units"][0].setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
     (plan_dir / "queue.json").write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     execution_repo = Path(queue["execution_repo"])
     refreshed_repos: list[Path] = []
@@ -273,6 +274,8 @@ def test_disposable_two_unit_graph_resumes_without_merge_then_cleans_up_safely(t
     execution_repo = Path(queue["execution_repo"])
     queue["units"][0]["allowed_paths"] = ["unit-1.txt"]
     queue["units"][1]["allowed_paths"] = ["unit-2.txt"]
+    for unit in queue["units"]:
+        unit.setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
     (plan_dir / "queue.json").write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     first = runner.run_next(

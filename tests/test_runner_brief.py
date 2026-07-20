@@ -55,12 +55,14 @@ def isolate_attestation_preflight(tmp_path, monkeypatch):
     )
 
 
-def make_plan(tmp_path):
+def make_plan(tmp_path, *, isolated=True):
     ticket = tickets.submit_ticket("아침 리뷰 테스트", repo=tmp_path)
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     for unit in queue["units"]:
         unit["allowed_paths"] = list(dict.fromkeys([*unit.get("allowed_paths", []), "work.txt"]))
+        if isolated:
+            unit.setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
     plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return plan
 
@@ -68,14 +70,32 @@ def make_plan(tmp_path):
 def test_queue_sync_persists_effective_execution_policy(tmp_path):
     plan = make_plan(tmp_path)
 
-    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue = plans.load_queue(plan.plan_path)[1]
     policy = queue["units"][0]["execution_policy"]
 
     assert policy["policy_version"]
     assert policy["effective_profile"] == "contract"
     assert policy["execution_mode"] == "isolated_child"
+    assert policy["executor_adapter"] == "isolated-child"
     assert policy["unit_gate"] == "contract"
+    assert policy["review_policy"] == "final_only"
     assert policy["inference_reasons"]
+
+
+def test_run_next_default_main_path_does_not_construct_child(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    plan = make_plan(tmp_path, isolated=False)
+
+    monkeypatch.setattr(
+        runner,
+        "CodexImplementerAgent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("child must not be constructed")),
+    )
+    result = runner.run_next(plan.plan_path, execute=True, commit=True)
+
+    assert result["action"] == "main_handoff"
+    assert result["contract"]["owner"] == "main"
+    assert result["contract"]["ledger_revision"] == 1
 
 
 def test_queue_policy_inference_reads_commit_body_high_risk_signals(tmp_path):
@@ -274,7 +294,11 @@ output = pathlib.Path(args[args.index("--output-last-message") + 1])
 if "Agent 3: Read-only Reviewer" not in prompt:
     pathlib.Path("work.txt").write_text("child commit\\n", encoding="utf-8")
     subprocess.run(["git", "add", "work.txt"], check=True)
-    subprocess.run(["git", "commit", "-m", "unexpected child commit"], check=True, capture_output=True)
+    subprocess.run(
+        ["git", "-c", "user.email=codex-flow@example.com", "-c", "user.name=Codex Flow", "commit", "-m", "unexpected child commit"],
+        check=True,
+        capture_output=True,
+    )
     output.write_text("implementation phase\\n", encoding="utf-8")
     print('{"session_id":"implementation-session"}')
 else:
@@ -874,8 +898,8 @@ def test_run_next_auto_resolve_stops_after_repair_budget(tmp_path, capsys):
     log = (plan.directory / "log.md").read_text(encoding="utf-8")
     assert status == 1
     assert "action: needs_work" in output
-    assert "repair_attempts: 1" in output
-    assert "Repair attempt 1/1" in log
+    assert "repair_attempts" not in output
+    assert "Repair attempt" not in log
     assert "Commit unit 1 needs_work: fake failure" in log
 
 
@@ -908,7 +932,7 @@ def test_run_next_does_not_retry_conflicting_review_protocol(tmp_path, capsys):
     assert "Repair attempt" not in log
 
 
-def test_run_all_auto_resolve_repairs_transient_needs_work(tmp_path, capsys):
+def test_run_all_auto_resolve_does_not_retry_needs_work(tmp_path, capsys):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex_needs_work_then_ready(tmp_path)
     plan = make_plan(tmp_path)
@@ -929,17 +953,14 @@ def test_run_all_auto_resolve_repairs_transient_needs_work(tmp_path, capsys):
     output = capsys.readouterr().out
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     log = (plan.directory / "log.md").read_text(encoding="utf-8")
-    assert status == 0
-    assert "units_processed: 3" in output
-    assert "repair_attempts=1" in output
-    assert all(unit["status"] == "done" for unit in queue["units"])
-    assert queue["units"][0]["repair_attempts"] == 1
-    assert "Repair attempt 1/1" in log
-    assert "Repair succeeded for commit unit 1" in log
-    assert "Completed commit unit 3." in log
+    assert status == 1
+    assert "units_processed: 1" in output
+    assert "repair_attempts" not in output
+    assert queue["units"][0]["status"] == "needs_work"
+    assert "Repair attempt" not in log
 
 
-def test_review_gate_blocks_commit_until_important_findings_are_repaired(tmp_path, capsys):
+def test_review_gate_holds_important_findings_without_automatic_repair(tmp_path, capsys):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex_review_gate_blocks_then_passes(tmp_path)
     plan = make_plan(tmp_path)
@@ -962,19 +983,15 @@ def test_review_gate_blocks_commit_until_important_findings_are_repaired(tmp_pat
     log = (plan.directory / "log.md").read_text(encoding="utf-8")
     attempt_0 = json.loads((plan.directory / "attempts" / "unit-001" / "attempt-0-review.json").read_text(encoding="utf-8"))
     assert attempt_0["ledger_revision"] >= 1
-    attempt_1 = json.loads((plan.directory / "attempts" / "unit-001" / "attempt-1-review.json").read_text(encoding="utf-8"))
-
-    assert status == 0
-    assert "action: committed" in output
-    assert "repair_attempts: 1" in output
-    assert queue["units"][0]["status"] == "done"
-    assert queue["units"][0]["review_gate"]["important"] == 0
-    assert queue["units"][0]["review_gate"]["minor"] == 1
+    assert status == 1
+    assert "action: needs_work" in output
+    assert "repair_attempts" not in output
+    assert queue["units"][0]["status"] == "needs_work"
+    assert queue["units"][0]["review_gate"]["important"] == 1
     assert attempt_0["status"] == "needs_work"
     assert attempt_0["review_gate"]["important"] == 1
-    assert attempt_1["review_gate"]["passed"] is True
     assert "Review gate for commit unit 1 attempt 0: review_gate=pass score=80 blockers=0 important=1 minor=0" in log
-    assert "Review gate for commit unit 1 attempt 1: review_gate=pass score=95 blockers=0 important=0 minor=1" in log
+    assert "attempt 1" not in log
 
 
 def test_run_next_auto_resolve_resumes_failed_needs_work_with_partial_changes(tmp_path, capsys):
@@ -1023,11 +1040,11 @@ def test_run_next_auto_resolve_resumes_failed_needs_work_with_partial_changes(tm
     stash_list = subprocess.run(["git", "stash", "list"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
     assert second_status == 0
     assert "action: committed" in second_output
-    assert "repair_attempts: 2" in second_output
+    assert "repair_attempts: 1" in second_output
     assert second_queue["units"][0]["status"] == "done"
     assert second_queue["units"][0]["changed_paths"] == ["work.txt"]
     assert "Preserved previous needs_work changes for unit-001: work.txt" in log
-    assert "Repair attempt 2/2" in log
+    assert "Repair attempt 1/1" in log
     assert "codex-flow auto-shelve" not in stash_list
     assert "final-repair" in (tmp_path / "work.txt").read_text(encoding="utf-8")
 

@@ -57,6 +57,8 @@ class RunAllRunner:
             return RunAllResult("human_gate", steps, "run_all: human_gate")
         if any(step.get("action") == "needs_work" for step in steps):
             return RunAllResult("needs_work", steps, "run_all: needs_work")
+        if any(step.get("action") == "main_handoff" for step in steps):
+            return RunAllResult("main_handoff", steps, "run_all: main agent transaction opened")
         plan_dir, plan_content, log_content = plan_readiness.read_plan_file(plan_path)
         readiness = plan_readiness.check_plan_ready(plan_content, log_content)
         if not readiness.ready:

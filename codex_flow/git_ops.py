@@ -132,6 +132,13 @@ def head_summary(repo: str | Path) -> str | None:
     return result.stdout.strip() or None
 
 
+def head_sha(repo: str | Path) -> str:
+    result = run_process(["git", "rev-parse", "HEAD"], cwd=require_git_repo(repo))
+    if result.status != 0:
+        raise SystemExit(command_failure("git rev-parse HEAD failed", result))
+    return result.stdout.strip()
+
+
 def current_branch(repo: str | Path) -> str:
     result = run_process(["git", "branch", "--show-current"], cwd=require_git_repo(repo))
     if result.status != 0:
@@ -341,7 +348,9 @@ def out_of_scope_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
     repo_path = require_git_repo(repo)
     snapshot = status(repo_path)
     paths = sorted(
-        entry.path for entry in snapshot.entries if not path_allowed(entry.path, allowed_paths)
+        entry.path
+        for entry in snapshot.entries
+        if not entry.path.startswith(FLOW_PREFIX) and not path_allowed(entry.path, allowed_paths)
     )
     digest = hashlib.sha256()
     for relative in paths:
