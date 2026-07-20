@@ -1,12 +1,15 @@
 from __future__ import annotations
 
 import argparse
+import json
 from pathlib import Path
 import sys
 import time
 
 from . import briefs, dashboard as dashboard_view, inbox, plan_readiness, plans, pr, runner, source_plan, state, tickets
 from .run_all import RunAllRunner
+from .attempt_ledger import AttemptLedger, LedgerConflict
+from .git_ops import head_summary, scoped_diff_digest
 
 
 FAILURE_ACTIONS = {
@@ -125,6 +128,11 @@ def build_parser() -> argparse.ArgumentParser:
     mark.add_argument("--plan", type=Path, required=True)
     mark.add_argument("--unit", required=True)
     mark.add_argument("--status", required=True, choices=sorted(state.UNIT_STATUSES))
+
+    adopt = subparsers.add_parser("adopt-attempt", help="Validate and adopt a held attempt without rollback.")
+    adopt.add_argument("--attempt", type=Path, required=True, help="Attempt directory or attempt-ledger.json path.")
+    adopt.add_argument("--expected-revision", type=int, required=True)
+    adopt.add_argument("--evidence", type=Path, required=True)
 
     subparsers.add_parser("morning-brief", help="Write today's morning review brief.")
 
@@ -354,6 +362,26 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "mark":
         unit = plans.mark_unit(args.plan, args.unit, args.status)
         print(f"unit_marked: {unit['id']} -> {unit['status']}")
+        return 0
+    if args.command == "adopt-attempt":
+        ledger_path = args.attempt if args.attempt.name.endswith(".json") else args.attempt / "attempt-ledger.json"
+        try:
+            evidence = json.loads(args.evidence.read_text(encoding="utf-8"))
+            ledger = AttemptLedger(ledger_path)
+            current = ledger.load()
+            repo = state.resolve_repo(args.repo)
+            allowed_paths = [str(path) for path in current.record.get("allowed_paths", [])]
+            adopted = AttemptLedger(ledger_path).adopt_attempt(
+                expected_revision=args.expected_revision,
+                evidence=evidence,
+                current_head=head_summary(repo) or "",
+                current_scoped_diff_digest=scoped_diff_digest(repo, allowed_paths),
+                current_full_diff_digest=scoped_diff_digest(repo, []),
+            )
+        except (LedgerConflict, ValueError, OSError, json.JSONDecodeError) as exc:
+            print(f"attempt_adoption_rejected: {exc}")
+            return 1
+        print(f"attempt_adopted: revision={adopted.revision}")
         return 0
 
     if args.command == "morning-brief":

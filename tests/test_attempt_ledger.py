@@ -3,10 +3,12 @@ from __future__ import annotations
 import json
 import os
 import threading
+import subprocess
 
 import pytest
 
 from codex_flow.attempt_ledger import AttemptLedger, LedgerConflict
+from codex_flow.git_ops import out_of_scope_diff_digest
 
 
 def test_ledger_compare_and_set_is_atomic_and_rejects_stale_revision(tmp_path):
@@ -85,3 +87,87 @@ def test_atomic_replace_failure_preserves_previous_snapshot(tmp_path, monkeypatc
     with pytest.raises(OSError, match="simulated crash"):
         ledger.update({"status": "after"})
     assert ledger.load().record["status"] == "before"
+
+
+def test_finalize_holds_head_moving_failure_without_rollback(tmp_path):
+    ledger = AttemptLedger(tmp_path / "ledger.json")
+    started = ledger.update({"status": "running"})
+
+    final = ledger.finalize_attempt(
+        expected_revision=started.revision,
+        expected_head="before",
+        observed_head="after",
+        scoped_diff_digest="diff",
+        full_diff_digest="full",
+        out_of_scope_diff_digest="",
+        process_closed=True,
+        termination_reason="process_failure",
+    )
+
+    assert final.record["status"] == "held_adoption_required"
+    assert final.record["observed_head"] == "after"
+
+
+def test_adopt_attempt_rejects_stale_revision_and_evidence_mismatch(tmp_path):
+    ledger = AttemptLedger(tmp_path / "ledger.json")
+    started = ledger.update(
+        {
+            "status": "held_adoption_required",
+            "observed_head": "abc",
+            "scoped_diff_digest": "digest",
+            "full_diff_digest": "full",
+            "scope_valid": True,
+            "process_closed": True,
+        }
+    )
+
+    with pytest.raises(LedgerConflict):
+        ledger.adopt_attempt(expected_revision=0, evidence={"observed_head": "abc", "scoped_diff_digest": "digest", "full_diff_digest": "full"}, current_head="abc", current_scoped_diff_digest="digest", current_full_diff_digest="full")
+    with pytest.raises(ValueError, match="observed_head"):
+        ledger.adopt_attempt(expected_revision=started.revision, evidence={"observed_head": "wrong", "scoped_diff_digest": "digest", "full_diff_digest": "full"}, current_head="abc", current_scoped_diff_digest="digest", current_full_diff_digest="full")
+
+    adopted = ledger.adopt_attempt(
+        expected_revision=started.revision,
+        evidence={"observed_head": "abc", "scoped_diff_digest": "digest", "full_diff_digest": "full"},
+        current_head="abc",
+        current_scoped_diff_digest="digest",
+        current_full_diff_digest="full",
+    )
+    assert adopted.record["status"] == "adopted"
+
+
+def test_out_of_scope_digest_changes_when_predirty_file_bytes_change(tmp_path):
+    subprocess.run(["git", "init", "-q"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.email", "test@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Test"], cwd=tmp_path, check=True)
+    (tmp_path / "allowed.md").write_text("allowed\n")
+    (tmp_path / "outside.py").write_text("base\n")
+    subprocess.run(["git", "add", "."], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-qm", "base"], cwd=tmp_path, check=True)
+    (tmp_path / "outside.py").write_text("dirty one\n")
+    before = out_of_scope_diff_digest(tmp_path, ["allowed.md"])
+
+    (tmp_path / "outside.py").write_text("dirty two\n")
+    after = out_of_scope_diff_digest(tmp_path, ["allowed.md"])
+
+    assert before != after
+
+
+def test_stale_initialized_ledger_rejects_relaunch_state(tmp_path):
+    ledger = AttemptLedger(tmp_path / "ledger.json")
+    ledger.start_attempt(
+        expected_head="head-a",
+        scoped_diff_digest="scoped-a",
+        full_diff_digest="full-a",
+        out_of_scope_diff_digest="outside-a",
+        allowed_paths=["docs/**"],
+    )
+
+    with pytest.raises(ValueError, match="stale attempt start invariants"):
+        ledger.validate_start(
+            expected_head="head-b",
+            scoped_diff_digest="scoped-a",
+            full_diff_digest="full-a",
+            out_of_scope_diff_digest="outside-a",
+            allowed_paths=["docs/**"],
+        )

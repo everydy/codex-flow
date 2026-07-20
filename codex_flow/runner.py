@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
 from .attempt_ledger import AttemptLedger
+from .execution_policy import FailureKind, FailureRecord, retry_eligible
 from .codex_cli import (
     ChildAttestationError,
     ChildRuntimeConfigError,
@@ -15,7 +17,7 @@ from .codex_cli import (
     verify_child_attestation,
 )
 from .child_runtime import ensure_prepared_child_runtime
-from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
+from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, out_of_scope_diff_digest, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
 from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
 from .reviewer_agent import out_of_scope_paths, require_post_unit_review, required_review_skills
 
@@ -370,6 +372,22 @@ def execute_unit(
         prepare_branch(repo, branch)
     before_head = head_summary(repo)
     before = status(repo)
+    resume_state_digest = hashlib.sha256(
+        "\0".join((before_head or "", scoped_diff_digest(repo, []), resume_reason)).encode("utf-8")
+    ).hexdigest()
+    if resume_needs_work and unit.get("last_failure_state_digest") == resume_state_digest:
+        reason = "same canonical failure state already attempted; new evidence or a scoped repair is required"
+        append_log(plan_dir, f"Commit unit {selected_unit.number} held without duplicate retry: {reason}")
+        return {
+            "unit": unit,
+            "prompt_path": prompt_path,
+            "action": "needs_work",
+            "reason": reason,
+            "changed_paths": list(unit.get("changed_paths", [])),
+            "auto_resolved_dirty": auto_resolved_dirty,
+            "repair_attempts": int(unit.get("repair_attempts") or 0),
+            "review_gate": unit.get("review_gate"),
+        }
     unit["status"] = "in_progress"
     unit["prompt_path"] = str(prompt_path.relative_to(plan_dir))
     unit["updated_at"] = state.timestamp()
@@ -400,6 +418,41 @@ def execute_unit(
         attempt_ledger_path = attempt_dir / "attempt-ledger.json"
         def scoped_diff_probe() -> str:
             return scoped_diff_digest(repo, [str(path) for path in unit.get("allowed_paths", [])])
+        attempt_ledger = AttemptLedger(attempt_ledger_path)
+        allowed_paths = [str(path) for path in unit.get("allowed_paths", [])]
+        if attempt_ledger.load().revision == 0:
+            attempt_ledger.start_attempt(
+                expected_head=before_head or "",
+                scoped_diff_digest=scoped_diff_probe(),
+                full_diff_digest=scoped_diff_digest(repo, []),
+                out_of_scope_diff_digest=out_of_scope_diff_digest(repo, allowed_paths),
+                allowed_paths=allowed_paths,
+            )
+        else:
+            try:
+                attempt_ledger.validate_start(
+                    expected_head=before_head or "",
+                    scoped_diff_digest=scoped_diff_probe(),
+                    full_diff_digest=scoped_diff_digest(repo, []),
+                    out_of_scope_diff_digest=out_of_scope_diff_digest(repo, allowed_paths),
+                    allowed_paths=allowed_paths,
+                )
+            except ValueError as exc:
+                unit["status"] = "needs_work"
+                unit["last_needs_work_reason"] = str(exc)
+                unit["updated_at"] = state.timestamp()
+                plans.save_queue(plan_dir, queue_data)
+                append_log(plan_dir, f"Commit unit {selected_unit.number} stale attempt held: {exc}")
+                return {
+                    "unit": unit,
+                    "prompt_path": prompt_path,
+                    "action": "needs_work",
+                    "reason": str(exc),
+                    "changed_paths": list(unit.get("changed_paths", [])),
+                    "auto_resolved_dirty": auto_resolved_dirty,
+                    "repair_attempts": used_repair_attempts,
+                    "review_gate": unit.get("review_gate"),
+                }
         try:
             agent_result = agent.implement(
                 ImplementerAgentInput(
@@ -427,8 +480,32 @@ def execute_unit(
             unit["last_needs_work_reason"] = str(exc)
             unit["diagnostic_path"] = str(exc.diagnostic_dir.relative_to(plan_dir))
             unit["changed_paths"] = partial_changed
-            ledger_snapshot = AttemptLedger(attempt_ledger_path).load()
+            current_snapshot = attempt_ledger.load()
+            ledger_snapshot = attempt_ledger.finalize_attempt(
+                expected_revision=current_snapshot.revision,
+                expected_head=before_head or "",
+                observed_head=head_summary(repo) or "",
+                scoped_diff_digest=scoped_diff_probe(),
+                full_diff_digest=scoped_diff_digest(repo, []),
+                out_of_scope_diff_digest=out_of_scope_diff_digest(repo, allowed_paths),
+                process_closed=current_snapshot.record.get("descendants_remaining") is False,
+                termination_reason=str(current_snapshot.record.get("status") or "process_failure"),
+            )
             unit["attempt_ledger_revision"] = ledger_snapshot.revision
+            failure = FailureRecord.create(
+                kind=FailureKind.PROCESS_FAILURE,
+                phase="implementation",
+                signature=str(exc),
+                attempt_id=f"{unit['id']}/attempt-{attempt}",
+                expected_head=before_head or "",
+                observed_head=head_summary(repo) or "",
+                scoped_diff_digest=scoped_diff_probe(),
+                fixable=False,
+            )
+            unit["failure_fingerprints"] = sorted({*unit.get("failure_fingerprints", []), failure.fingerprint})
+            unit["last_failure_state_digest"] = hashlib.sha256(
+                "\0".join((before_head or "", scoped_diff_digest(repo, []), str(exc))).encode("utf-8")
+            ).hexdigest()
             write_attempt_handoff(
                 attempt_dir,
                 unit_id=unit["id"],
@@ -458,7 +535,18 @@ def execute_unit(
             agent_result,
             require_post_unit_review(agent_result.review, agent_result.review_message),
         )
-        ledger_snapshot = AttemptLedger(attempt_ledger_path).load()
+        current_snapshot = attempt_ledger.load()
+        current_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
+        ledger_snapshot = attempt_ledger.finalize_attempt(
+            expected_revision=current_snapshot.revision,
+            expected_head=before_head or "",
+            observed_head=head_summary(repo) or "",
+            scoped_diff_digest=scoped_diff_probe(),
+            full_diff_digest=scoped_diff_digest(repo, []),
+            out_of_scope_diff_digest=out_of_scope_diff_digest(repo, allowed_paths),
+            process_closed=current_snapshot.record.get("descendants_remaining") is False,
+            termination_reason="completed" if current_snapshot.record.get("status") == "pass" else str(current_snapshot.record.get("status")),
+        )
         unit["attempt_ledger_revision"] = ledger_snapshot.revision
         review_path = write_review_attempt(
             plan_dir,
@@ -487,6 +575,26 @@ def execute_unit(
         if agent_result.review.status != "needs_work":
             break
         last_repair_reason = agent_result.review.reason
+        failure = FailureRecord.create(
+            kind=FailureKind.REVIEW_FINDING,
+            phase="review",
+            signature=last_repair_reason,
+            attempt_id=f"{unit['id']}/attempt-{attempt}",
+            expected_head=before_head or "",
+            observed_head=head_summary(repo) or "",
+            scoped_diff_digest=scoped_diff_probe(),
+            fixable=agent_result.review.retryable,
+        )
+        prior_fingerprints = set(str(value) for value in unit.get("failure_fingerprints", []))
+        can_retry = retry_eligible(
+            failure,
+            prior_fingerprints=prior_fingerprints,
+            retries_used=used_repair_attempts,
+        )
+        unit["failure_fingerprints"] = sorted({*prior_fingerprints, failure.fingerprint})
+        unit["last_failure_state_digest"] = hashlib.sha256(
+            "\0".join((before_head or "", scoped_diff_digest(repo, []), last_repair_reason)).encode("utf-8")
+        ).hexdigest()
         if not agent_result.review.retryable:
             unit["status"] = "needs_work"
             unit["updated_at"] = state.timestamp()
@@ -511,7 +619,7 @@ def execute_unit(
                 "repair_reason": last_repair_reason,
                 "review_gate": review_gate_payload(agent_result.review),
             }
-        if index < len(attempts) - 1:
+        if can_retry and index < len(attempts) - 1:
             append_log(plan_dir, f"Commit unit {selected_unit.number} requested repair: {last_repair_reason}")
             continue
         unit["status"] = "needs_work"

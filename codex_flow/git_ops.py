@@ -315,6 +315,23 @@ def scoped_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
     return digest.hexdigest() if paths else ""
 
 
+def out_of_scope_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
+    repo_path = require_git_repo(repo)
+    snapshot = status(repo_path)
+    paths = sorted(
+        entry.path for entry in snapshot.entries if not path_allowed(entry.path, allowed_paths)
+    )
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        diff = run_process(["git", "diff", "--binary", "HEAD", "--", relative], cwd=repo_path)
+        digest.update(diff.stdout.encode("utf-8"))
+        path = repo_path / relative
+        if path.is_file() and not diff.stdout:
+            digest.update(path.read_bytes())
+    return digest.hexdigest() if paths else ""
+
+
 def stash_paths(repo: str | Path, paths: list[str], message: str) -> str:
     repo_path = require_git_repo(repo)
     if not paths:
