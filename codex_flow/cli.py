@@ -12,9 +12,11 @@ from .attempt_ledger import AttemptLedger, LedgerConflict
 from .git_ops import head_summary, scoped_diff_digest
 from .main_unit import MainUnitError, begin_main_unit, complete_main_unit, hold_main_unit
 from .final_gate import FinalGateError, produce_final_gate
+from .merge import MergeRunner
 
 
 FAILURE_ACTIONS = {
+    "branch_finalization_blocked",
     "hard_stop",
     "human_gate",
     "max_units_reached",
@@ -533,9 +535,16 @@ def main(argv: list[str] | None = None) -> int:
                 print(auto_complete_result)
                 if "source_drift" in auto_complete_result:
                     return 1
-        message = pr.merge_plan(args.plan, target=args.target, remote=args.remote, execute=args.execute or args.auto_resolve)
-        print(message)
-        return 0 if not message.startswith(("merge: hard-stop", "merge: needs_work", "final_gate:")) else 2
+        merge_runner = MergeRunner()
+        result = (
+            merge_runner.merge_remote(args.plan, target=args.target, execute=args.execute or args.auto_resolve)
+            if args.remote
+            else merge_runner.merge_local(args.plan, target=args.target, execute=args.execute or args.auto_resolve)
+        )
+        print(result.message)
+        if result.action in {"hard_stop", "merge_needs_work", "needs_work"}:
+            return 2
+        return exit_code_for_action(result.action)
 
     parser.print_help()
     return 1

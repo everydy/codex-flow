@@ -2,9 +2,9 @@ from __future__ import annotations
 
 import subprocess
 
-from codex_flow import inbox
+from codex_flow import cli, inbox
 from codex_flow.git_ops import ProcessResult
-from codex_flow.merge import MergeRunner
+from codex_flow.merge import MergeResult, MergeRunner
 from codex_flow.final_gate import produce_final_gate
 
 
@@ -73,6 +73,26 @@ def test_merge_runner_reports_branch_finalization_blocked_when_safe_delete_fails
 
     assert result.action == "branch_finalization_blocked"
     assert "branch_close_held" in result.message
+
+
+def test_branch_finalization_blocked_returns_failure_exit_code():
+    assert cli.exit_code_for_action("branch_finalization_blocked") == 1
+
+
+def test_merge_cli_returns_failure_when_branch_finalization_is_blocked(tmp_path, monkeypatch, capsys):
+    plan_path = tmp_path / "plan.md"
+    plan_path.write_text("Title: Demo\n", encoding="utf-8")
+
+    class StubMergeRunner:
+        def merge_local(self, *_args, **_kwargs):
+            return MergeResult("branch_finalization_blocked", "branch_finalization_blocked: held")
+
+    monkeypatch.setattr(cli, "MergeRunner", StubMergeRunner)
+
+    status = cli.main(["merge", "--plan", str(plan_path), "--execute"])
+
+    assert status == 1
+    assert "branch_finalization_blocked: held" in capsys.readouterr().out
 
 
 def init_git_repo(tmp_path):
