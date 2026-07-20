@@ -2,13 +2,11 @@ from __future__ import annotations
 
 from pathlib import Path
 import json
-import os
 import re
 
 from . import inbox, plan_readiness, plans, state
 from .git_ops import command_failure, merge_branch, push_branch, run_process
-from .git_ops import head_summary
-from .final_gate import require_final_gate
+from .final_gate import FinalizeGuard
 from .merge import MergeRunner
 
 
@@ -87,7 +85,6 @@ def write_pr_dry_run(plan_path: str | Path) -> Path:
 
 def create_remote_pr(plan_path: str | Path, draft: bool = True) -> tuple[str, Path]:
     plan_dir, queue = plans.load_queue(plan_path)
-    require_adaptive_final_gate(plan_dir, queue)
     queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
     if not plan_is_complete(queue, plan_dir / "plan.md"):
         raise SystemExit("Plan is not complete; remote PR creation stopped.")
@@ -95,6 +92,7 @@ def create_remote_pr(plan_path: str | Path, draft: bool = True) -> tuple[str, Pa
     lock_path = read_pr_lock(repo)
     if lock_path:
         raise ActivePrLockError(lock_path)
+    require_adaptive_final_gate(plan_dir, queue)
     branch = branch_from_queue(queue)
     push_branch(repo, branch)
     args = [
@@ -234,18 +232,13 @@ def drain_inbox(repo: str | Path) -> str:
 
 
 def merge_plan(plan_path: str | Path, target: str = "main", remote: bool = False, execute: bool = False) -> str:
-    plan_dir, queue = plans.load_queue(plan_path)
-    require_adaptive_final_gate(plan_dir, queue)
     runner = MergeRunner()
     result = runner.merge_remote(plan_path, target=target, execute=execute) if remote else runner.merge_local(plan_path, target=target, execute=execute)
     return result.message
 
 
 def require_adaptive_final_gate(plan_dir: Path, queue: dict) -> None:
-    if os.environ.get("CODEX_FLOW_ADAPTIVE_GATES") != "1":
-        return
-    repo = plans.execution_context_for_plan(plan_dir, queue).execution_repo
-    require_final_gate(plan_dir / "final-gate.json", expected_head=head_summary(repo) or "")
+    FinalizeGuard.require(plan_dir / "plan.md")
 
 
 def build_pr_body(plan_dir: Path, queue: dict) -> str:

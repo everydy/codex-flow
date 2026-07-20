@@ -6,6 +6,7 @@ import pytest
 
 from codex_flow import cli, plans, pr, tickets
 from codex_flow.dashboard import render_dashboard
+from codex_flow.final_gate import produce_final_gate
 
 
 def test_route_short_request_fails_instead_of_reusing_active_plan(tmp_path, capsys):
@@ -111,10 +112,22 @@ def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
     from codex_flow.git_ops import ProcessResult
     from codex_flow.merge import MergeRunner
 
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "switch", "-c", "codex/demo"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "codex-flow@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Codex Flow"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("# Test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
     plan_dir = tmp_path / ".codex-flow" / "plans" / "demo"
     plan_dir.mkdir(parents=True)
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Done\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    produce_final_gate(
+        plan_dir / "plan.md",
+        review_evidence={"status": "pass"},
+        test_evidence={"status": "pass"},
+    )
     pr.write_pr_lock(tmp_path, "codex/demo", "https://github.com/example/repo/pull/7", "reviewing")
 
     monkeypatch.setattr(merge, "push_branch", lambda repo, branch: None)

@@ -877,7 +877,7 @@ def test_run_next_cli_no_commit_keeps_escape_hatch(tmp_path, capsys):
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
 
 
-def test_run_all_cli_executes_and_commits_by_default(tmp_path, capsys):
+def test_run_all_cli_holds_merge_until_final_gate_exists(tmp_path, capsys):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex(tmp_path)
     plan = make_plan(tmp_path)
@@ -896,14 +896,13 @@ def test_run_all_cli_executes_and_commits_by_default(tmp_path, capsys):
 
     output = capsys.readouterr().out
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
-    assert status == 0
+    assert status == 1
     assert "units_processed: 2" in output
-    assert "merge: local merged" in output
-    assert "branch_closed:" in output
+    assert "final_gate: final gate evidence is missing" in output
     assert all(unit["status"] == "done" for unit in queue["units"])
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 3
-    assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == "main"
-    assert subprocess.run(["git", "branch", "--list", "codex/*"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == ""
+    assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip().startswith("codex/")
+    assert subprocess.run(["git", "branch", "--list", "codex/*"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip()
 
 
 def test_run_next_needs_work_returns_nonzero(tmp_path, capsys):
@@ -1224,7 +1223,7 @@ def test_open_pr_auto_resolve_executes_unfinished_units_before_dry_run(tmp_path,
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 3
 
 
-def test_merge_auto_resolve_executes_unfinished_units_and_merges_without_execute_flag(tmp_path, capsys):
+def test_merge_auto_resolve_executes_units_but_holds_without_final_gate(tmp_path, capsys):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex(tmp_path)
     plan = make_plan(tmp_path)
@@ -1245,7 +1244,7 @@ def test_merge_auto_resolve_executes_unfinished_units_and_merges_without_execute
     )
 
     output = capsys.readouterr().out
-    assert status == 0
+    assert status == 2
     assert "auto_resolve_units:" in output
-    assert "merge: local merged" in output
-    assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == "main"
+    assert "final_gate: final gate evidence is missing" in output
+    assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip().startswith("codex/")

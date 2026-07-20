@@ -69,7 +69,11 @@ class RunAllRunner:
                 return RunAllResult("prompts_generated", steps, f"run_all: prompts_generated remaining={next_unit}")
             return RunAllResult("not_ready", steps, readiness.reason)
         _, queue = plans.load_queue(plan_path)
-        if merge or remote or open_pr or (execute and not no_merge):
+        if remote:
+            lock_path = pr.read_pr_lock(plans.execution_context_for_plan(plan_dir, queue).source_repo)
+            if lock_path:
+                return RunAllResult("pr_locked", steps, pr.format_active_pr_lock(lock_path))
+        if merge or remote or (execute and not no_merge and not open_pr):
             try:
                 pr.require_adaptive_final_gate(plan_dir, queue)
             except Exception as exc:

@@ -4,6 +4,7 @@ import subprocess
 
 from codex_flow import inbox
 from codex_flow.merge import MergeRunner
+from codex_flow.final_gate import produce_final_gate
 
 
 def test_drain_inbox_requests_routes_all_until_lock(tmp_path):
@@ -30,11 +31,15 @@ def test_merge_runner_local_merge_success(tmp_path):
     (tmp_path / "feature.txt").write_text("feature\n", encoding="utf-8")
     subprocess.run(["git", "add", "feature.txt"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-m", "feature"], cwd=tmp_path, check=True, capture_output=True)
-    subprocess.run(["git", "switch", "main"], cwd=tmp_path, check=True, capture_output=True)
     plan_dir = tmp_path / ".codex-flow" / "plans" / "demo"
     plan_dir.mkdir(parents=True)
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Feature\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    produce_final_gate(
+        plan_dir / "plan.md",
+        review_evidence={"status": "pass"},
+        test_evidence={"status": "pass"},
+    )
 
     result = MergeRunner().merge_local(plan_dir / "plan.md", target="main", execute=True)
 

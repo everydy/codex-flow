@@ -21,6 +21,7 @@ from .git_ops import (
     unmerged_paths,
 )
 from .merge_agent import CodexMergeAgent, MergeAgent, MergeAgentInput
+from .final_gate import FinalizeGuard, FinalGateError
 
 
 @dataclass(frozen=True)
@@ -45,6 +46,10 @@ class MergeRunner:
             return MergeResult("needs_work", "merge: needs_work plan is not complete", branch, target)
         if not execute:
             return MergeResult("hard_stop", "merge: hard-stop use --execute to run an actual merge", branch, target)
+        try:
+            FinalizeGuard.require(plan_dir / "plan.md")
+        except FinalGateError as exc:
+            return MergeResult("needs_work", f"final_gate: {exc}", branch, target)
         repo = plan_dir.parents[2]
         dirty = dirty_paths(status(repo))
         if dirty:
@@ -72,6 +77,10 @@ class MergeRunner:
             return MergeResult("needs_work", "merge: needs_work plan is not complete", branch, target)
         if not execute:
             return MergeResult("hard_stop", "merge: hard-stop use --execute to run an actual merge", branch, target)
+        try:
+            FinalizeGuard.require(plan_dir / "plan.md")
+        except FinalGateError as exc:
+            return MergeResult("needs_work", f"final_gate: {exc}", branch, target)
         repo = plan_dir.parents[2]
         active_lock = read_active_pr_lock(repo)
         if active_lock and active_lock[1] != branch:

@@ -11,6 +11,7 @@ from .run_all import RunAllRunner
 from .attempt_ledger import AttemptLedger, LedgerConflict
 from .git_ops import head_summary, scoped_diff_digest
 from .main_unit import MainUnitError, begin_main_unit, complete_main_unit, hold_main_unit
+from .final_gate import FinalGateError, produce_final_gate
 
 
 FAILURE_ACTIONS = {
@@ -152,6 +153,11 @@ def build_parser() -> argparse.ArgumentParser:
     hold_main.add_argument("--expected-revision", type=int, required=True)
     hold_main.add_argument("--failure-class", required=True)
     hold_main.add_argument("--reason", required=True)
+
+    final_gate = subparsers.add_parser("write-final-gate", help="Bind cumulative review and canonical tests to the terminal exact HEAD.")
+    final_gate.add_argument("--plan", type=Path, required=True)
+    final_gate.add_argument("--review-evidence", type=Path, required=True)
+    final_gate.add_argument("--test-evidence", type=Path, required=True)
 
     subparsers.add_parser("morning-brief", help="Write today's morning review brief.")
 
@@ -390,6 +396,21 @@ def main(argv: list[str] | None = None) -> int:
         print(f"main_unit_held: unit={result.unit_id} revision={result.ledger_revision}")
         return 0
 
+    if args.command == "write-final-gate":
+        try:
+            review_evidence = json.loads(args.review_evidence.read_text(encoding="utf-8"))
+            test_evidence = json.loads(args.test_evidence.read_text(encoding="utf-8"))
+            record = produce_final_gate(
+                args.plan,
+                review_evidence=review_evidence,
+                test_evidence=test_evidence,
+            )
+        except (FinalGateError, OSError, json.JSONDecodeError) as exc:
+            print(f"final_gate_rejected: {exc}")
+            return 1
+        print(f"final_gate_written: head={record.reviewed_head} evidence={record.evidence_hash}")
+        return 0
+
     if args.command == "run-all":
         execute_work = default_execute(args.execute, preview=args.preview, dry_run=args.dry_run)
         repair_attempts = default_repair_attempts(args.repair_attempts, auto_resolve=args.auto_resolve)
@@ -514,7 +535,7 @@ def main(argv: list[str] | None = None) -> int:
                     return 1
         message = pr.merge_plan(args.plan, target=args.target, remote=args.remote, execute=args.execute or args.auto_resolve)
         print(message)
-        return 0 if not message.startswith("merge: hard-stop") and not message.startswith("merge: needs_work") else 2
+        return 0 if not message.startswith(("merge: hard-stop", "merge: needs_work", "final_gate:")) else 2
 
     parser.print_help()
     return 1
