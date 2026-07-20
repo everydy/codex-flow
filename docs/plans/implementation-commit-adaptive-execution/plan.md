@@ -26,6 +26,14 @@ Commit 4A에서 검증한 격리 실행과 read-only reviewer 분리는 보존�
 
 `b2db89e`는 rollback하거나 다시 구현하지 않는다. 4A는 optional `isolated-codex-child` adapter의 안전 기반으로 고정한다.
 
+## Execution Progress
+
+- Lean 4B complete: `0089580` (`118` related regression tests passed before commit)
+- Lean 4C complete: `dfad52c` (`final_only` default and final-review unit removal)
+- Lean 4D complete: `27e9069` (atomic cumulative final gate and direct merge bypass block)
+- Phase 5 provenance: [convergence-manifest.md](convergence-manifest.md)
+- `origin/main` convergence: linear ancestor, remote-only divergence `0`
+
 ## Non-Negotiable Simplification
 
 `구현커밋` 기본 본문과 기본 경로에서 제거한다.
