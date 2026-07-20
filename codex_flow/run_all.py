@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from pathlib import Path
 
-from . import plan_readiness, pr, runner
+from . import plan_readiness, plans, pr, runner
 from .merge import MergeRunner
 
 
@@ -66,6 +66,12 @@ class RunAllRunner:
                 next_unit = readiness.next_unit.number if readiness.next_unit else "unknown"
                 return RunAllResult("prompts_generated", steps, f"run_all: prompts_generated remaining={next_unit}")
             return RunAllResult("not_ready", steps, readiness.reason)
+        _, queue = plans.load_queue(plan_path)
+        if merge or remote or open_pr or (execute and not no_merge):
+            try:
+                pr.require_adaptive_final_gate(plan_dir, queue)
+            except Exception as exc:
+                return RunAllResult("needs_work", steps, f"final_gate: {exc}")
         if merge or (execute and not no_merge and not open_pr and not remote):
             merge_result = MergeRunner().merge_remote(plan_path, target=target, execute=True) if remote else MergeRunner().merge_local(plan_path, target=target, execute=True)
             return RunAllResult(merge_result.action, steps, merge_result.message)
