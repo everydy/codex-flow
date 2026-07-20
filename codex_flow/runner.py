@@ -5,6 +5,7 @@ import os
 from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
+from .attempt_ledger import AttemptLedger
 from .codex_cli import (
     ChildAttestationError,
     ChildRuntimeConfigError,
@@ -14,7 +15,7 @@ from .codex_cli import (
     verify_child_attestation,
 )
 from .child_runtime import ensure_prepared_child_runtime
-from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, scoped_status_summary, stash_paths, status
+from .git_ops import changed_paths_since, commit_paths, dirty_paths, head_summary, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
 from .implementer_agent import CommitUnitReview, CodexImplementerAgent, ImplementerAgentInput, POST_UNIT_REVIEW_SKILL
 from .reviewer_agent import out_of_scope_paths, require_post_unit_review, required_review_skills
 
@@ -396,6 +397,9 @@ def execute_unit(
             plans.save_queue(plan_dir, queue_data)
             append_log(plan_dir, f"Repair attempt {attempt}/{repair_attempt_limit} for commit unit {selected_unit.number}: {last_repair_reason}")
         attempt_dir = execution_attempt_dir(plan_dir, unit["id"], attempt)
+        attempt_ledger_path = attempt_dir / "attempt-ledger.json"
+        def scoped_diff_probe() -> str:
+            return scoped_diff_digest(repo, [str(path) for path in unit.get("allowed_paths", [])])
         try:
             agent_result = agent.implement(
                 ImplementerAgentInput(
@@ -407,9 +411,13 @@ def execute_unit(
                     git_status=scoped_status_summary(status(repo), [str(path) for path in unit.get("allowed_paths", [])]),
                     repair_attempt=attempt,
                     repair_reason=last_repair_reason,
+                    execution_policy=dict(unit.get("execution_policy") or {}),
+                    allowed_paths=tuple(str(path) for path in unit.get("allowed_paths", [])),
                 ),
                 diagnostic_dir=attempt_dir,
                 timeout_seconds=codex_timeout_seconds,
+                attempt_ledger_path=attempt_ledger_path,
+                diff_probe=scoped_diff_probe,
             )
         except (CodexExecTimeout, CodexExecFailure) as exc:
             partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
@@ -419,8 +427,20 @@ def execute_unit(
             unit["last_needs_work_reason"] = str(exc)
             unit["diagnostic_path"] = str(exc.diagnostic_dir.relative_to(plan_dir))
             unit["changed_paths"] = partial_changed
+            ledger_snapshot = AttemptLedger(attempt_ledger_path).load()
+            unit["attempt_ledger_revision"] = ledger_snapshot.revision
+            write_attempt_handoff(
+                attempt_dir,
+                unit_id=unit["id"],
+                ledger_revision=ledger_snapshot.revision,
+                status="needs_work",
+                next_action="inspect held diagnostics; do not retry the same fingerprint",
+            )
             plans.save_queue(plan_dir, queue_data)
-            append_log(plan_dir, f"Commit unit {selected_unit.number} needs_work: {exc}")
+            append_log(
+                plan_dir,
+                f"Commit unit {selected_unit.number} needs_work: {exc} | ledger_revision={ledger_snapshot.revision}",
+            )
             state.refresh_dashboard(source_repo)
             return {
                 "unit": unit,
@@ -438,12 +458,28 @@ def execute_unit(
             agent_result,
             require_post_unit_review(agent_result.review, agent_result.review_message),
         )
-        write_review_attempt(
+        ledger_snapshot = AttemptLedger(attempt_ledger_path).load()
+        unit["attempt_ledger_revision"] = ledger_snapshot.revision
+        review_path = write_review_attempt(
             plan_dir,
             unit["id"],
             attempt,
             agent_result.review,
             child_attestation=str(attestation_path.relative_to(plan_dir)),
+            ledger_revision=ledger_snapshot.revision,
+        )
+        write_attempt_handoff(
+            attempt_dir,
+            unit_id=unit["id"],
+            ledger_revision=ledger_snapshot.revision,
+            status=agent_result.review.status,
+            next_action="continue gate evaluation",
+        )
+        ensure_attempt_view_revision(
+            ledger_snapshot.revision,
+            queue_unit=unit,
+            review_path=review_path,
+            handoff_path=attempt_dir / "handoff.json",
         )
         if agent_result.review.gate:
             unit["review_gate"] = agent_result.review.gate.to_dict()
@@ -586,6 +622,7 @@ def execute_unit(
         log_parts.append(review_gate_summary(agent_result.review))
     if used_repair_attempts:
         log_parts.append(f"repair_attempts: {used_repair_attempts}")
+    log_parts.append(f"ledger_revision={unit.get('attempt_ledger_revision', 0)}")
     append_log(plan_dir, " | ".join(log_parts))
     if used_repair_attempts:
         append_log(plan_dir, f"Repair succeeded for commit unit {selected_unit.number} after {used_repair_attempts} attempt(s).")
@@ -637,6 +674,7 @@ def write_review_attempt(
     review: CommitUnitReview,
     *,
     child_attestation: str,
+    ledger_revision: int,
 ) -> Path:
     attempts_dir = plan_dir / "attempts" / unit_id
     attempts_dir.mkdir(parents=True, exist_ok=True)
@@ -651,6 +689,7 @@ def write_review_attempt(
         "review_gate": review_gate_payload(review),
         "review_skill": POST_UNIT_REVIEW_SKILL,
         "child_attestation": child_attestation,
+        "ledger_revision": ledger_revision,
     }
     path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return path
@@ -658,6 +697,48 @@ def write_review_attempt(
 
 def execution_attempt_dir(plan_dir: Path, unit_id: str, attempt: int) -> Path:
     return plan_dir / "attempts" / unit_id / f"attempt-{attempt}"
+
+
+def write_attempt_handoff(
+    attempt_dir: Path,
+    *,
+    unit_id: str,
+    ledger_revision: int,
+    status: str,
+    next_action: str,
+) -> Path:
+    path = attempt_dir / "handoff.json"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "unit": unit_id,
+        "ledger_revision": ledger_revision,
+        "status": status,
+        "next_action": next_action,
+    }
+    path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return path
+
+
+def ensure_attempt_view_revision(
+    expected_revision: int,
+    *,
+    queue_unit: dict,
+    review_path: Path,
+    handoff_path: Path,
+) -> None:
+    observed = {
+        "queue": int(queue_unit.get("attempt_ledger_revision") or -1),
+        "review": int(json.loads(review_path.read_text(encoding="utf-8")).get("ledger_revision", -1)),
+        "handoff": int(json.loads(handoff_path.read_text(encoding="utf-8")).get("ledger_revision", -1)),
+    }
+    mismatches = {name: revision for name, revision in observed.items() if revision != expected_revision}
+    if not mismatches:
+        return
+    queue_unit["attempt_ledger_revision"] = expected_revision
+    for path in (review_path, handoff_path):
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        payload["ledger_revision"] = expected_revision
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
 
 def run_all(

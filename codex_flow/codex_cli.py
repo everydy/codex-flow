@@ -15,6 +15,14 @@ import threading
 import time
 import tomllib
 
+from .attempt_ledger import AttemptLedger
+from .attempt_supervisor import (
+    AttemptSupervisor,
+    SupervisorPolicy,
+    prompt_digest,
+    redact_diagnostic,
+)
+from .execution_policy import ExecutionProfile
 from .git_ops import ProcessResult, command_failure, run_process
 
 
@@ -972,6 +980,11 @@ def run_codex_exec(
     diagnostic_dir: str | Path | None = None,
     phase: str = "codex-exec",
     child_home: str | Path | None = None,
+    execution_profile: ExecutionProfile = ExecutionProfile.CONTRACT,
+    attempt_ledger_path: str | Path | None = None,
+    diff_probe=None,
+    liveness_probe=None,
+    cancel_probe=None,
 ) -> CodexExecResult:
     repo_path = Path(repo).expanduser().resolve()
     model_selection = model_selection_metadata(extra_args)
@@ -980,7 +993,7 @@ def run_codex_exec(
     )
     with tempfile.TemporaryDirectory(prefix="codex-flow-agent-") as temp_dir:
         diag_dir = Path(diagnostic_dir).expanduser().resolve() if diagnostic_dir else None
-        output_path = (diag_dir if diag_dir else Path(temp_dir)) / "last-message.txt"
+        raw_output_path = Path(temp_dir) / "last-message.raw.txt"
         if resume_session_id:
             args = [
                 command,
@@ -988,7 +1001,7 @@ def run_codex_exec(
                 "resume",
                 "--json",
                 "--output-last-message",
-                str(output_path),
+                str(raw_output_path),
                 *with_codex_cli_defaults(extra_args),
                 resume_session_id,
                 "-",
@@ -1003,14 +1016,17 @@ def run_codex_exec(
                 "--sandbox",
                 sandbox,
                 "--output-last-message",
-                str(output_path),
+                str(raw_output_path),
                 *with_codex_cli_defaults(extra_args),
                 "-",
             ]
         if diag_dir:
             diag_dir.mkdir(parents=True, exist_ok=True)
-            write_text(diag_dir / "prompt.md", prompt)
-            write_json(diag_dir / "args.json", args)
+            write_json(
+                diag_dir / "prompt.json",
+                {"sha256": prompt_digest(prompt), "length": len(prompt.encode("utf-8"))},
+            )
+            write_json(diag_dir / "args.json", diagnostic_argv(args))
             write_metadata(
                 diag_dir,
                 {
@@ -1024,45 +1040,60 @@ def run_codex_exec(
             )
         started = datetime.now(timezone.utc)
         result: ProcessResult | None = None
-        try:
-            result = run_process(
-                args,
-                cwd=repo_path,
-                input_text=prompt,
-                env=child_env,
-                timeout_seconds=timeout_seconds,
-            )
-        except subprocess.TimeoutExpired as exc:
-            if diag_dir:
-                write_text(diag_dir / "stdout.log", output_to_text(exc.stdout))
-                write_text(diag_dir / "stderr.log", output_to_text(exc.stderr))
-                write_metadata(
-                    diag_dir,
-                    {
-                        "phase": phase,
-                        "status": "timeout",
-                        "started_at": started.isoformat(),
-                        "finished_at": utc_now(),
-                        "timeout_seconds": timeout_seconds,
-                        "elapsed_seconds": elapsed_seconds(started),
-                        "model_selection": model_selection,
-                        "child_runtime": child_runtime,
-                    },
-                )
-                raise CodexExecTimeout(timeout_seconds or elapsed_seconds(started), diag_dir) from exc
-            raise
+        supervisor_dir = diag_dir or Path(temp_dir)
+        supervisor = AttemptSupervisor(
+            ledger=AttemptLedger(attempt_ledger_path or (supervisor_dir / "attempt-ledger.json")),
+            attempt_id=supervisor_dir.parent.name or "codex-exec",
+            unit_id=supervisor_dir.parent.parent.name if len(supervisor_dir.parents) > 1 else "standalone",
+            phase=phase,
+            policy=SupervisorPolicy(
+                profile=execution_profile,
+                hard_timeout_seconds=float(timeout_seconds) if timeout_seconds is not None else None,
+            ),
+            diff_probe=diff_probe,
+            liveness_probe=liveness_probe,
+            cancel_probe=cancel_probe,
+        )
+        supervised = supervisor.run(
+            args,
+            cwd=repo_path,
+            input_text=prompt,
+            env=child_env,
+        )
+        result = supervised.process
         if diag_dir:
             write_text(diag_dir / "stdout.log", result.stdout)
             write_text(diag_dir / "stderr.log", result.stderr)
-        final_message = output_path.read_text(encoding="utf-8") if output_path.exists() else result.stdout
+        raw_final_message = raw_output_path.read_text(encoding="utf-8") if raw_output_path.exists() else result.stdout
+        final_redaction_failed = False
+        try:
+            final_message = redact_diagnostic(raw_final_message, child_env)
+        except Exception:
+            final_message = ""
+            final_redaction_failed = True
+            final_ledger = AttemptLedger(attempt_ledger_path or (supervisor_dir / "attempt-ledger.json"))
+            failed_snapshot = final_ledger.update({"status": "diagnostic_redaction_failed"})
+            final_ledger.append_event(
+                {
+                    "attempt_id": supervisor_dir.parent.name or "codex-exec",
+                    "unit_id": supervisor_dir.parent.parent.name if len(supervisor_dir.parents) > 1 else "standalone",
+                    "phase": phase,
+                    "event": "diagnostic_redaction_failed",
+                    "elapsed_ms": int(supervised.elapsed_seconds * 1000),
+                    "child_output_age_ms": 0,
+                    "ledger_revision": failed_snapshot.revision,
+                }
+            )
         if diag_dir:
-            stable_output_path = output_path
+            stable_output_path = diag_dir / "last-message.txt"
             write_text(stable_output_path, final_message)
             write_metadata(
                 diag_dir,
                 {
                     "phase": phase,
-                    "status": "failed" if result.status != 0 else "pass",
+                    "status": "timeout" if supervised.reason == "hard_timeout" else ("failed" if result.status != 0 or supervised.reason != "completed" or final_redaction_failed else "pass"),
+                    "termination_reason": supervised.reason,
+                    "descendants_remaining": supervised.descendants_remaining,
                     "started_at": started.isoformat(),
                     "finished_at": utc_now(),
                     "timeout_seconds": timeout_seconds,
@@ -1076,6 +1107,14 @@ def run_codex_exec(
                 stable_output_path = Path(stable_file.name)
             stable_output_path.write_text(final_message, encoding="utf-8")
 
+    if supervised.reason == "hard_timeout":
+        if diag_dir:
+            raise CodexExecTimeout(timeout_seconds or elapsed_seconds(started), diag_dir)
+        raise subprocess.TimeoutExpired(args, timeout_seconds or elapsed_seconds(started))
+    if supervised.reason != "completed" or final_redaction_failed:
+        if diag_dir:
+            raise CodexExecFailure(result.status or 70, diag_dir)
+        raise SystemExit(f"{command} supervision failed: {supervised.reason}")
     if result.status != 0:
         if diag_dir:
             raise CodexExecFailure(result.status, diag_dir)
@@ -1159,6 +1198,21 @@ def output_to_text(value: str | bytes | None) -> str:
     if isinstance(value, bytes):
         return value.decode("utf-8", errors="replace")
     return value
+
+
+def diagnostic_argv(args: list[str]) -> dict[str, object]:
+    """Persist command shape without positional values or flag payloads."""
+    flags = []
+    for arg in args[1:]:
+        if not arg.startswith("-"):
+            continue
+        flags.append(arg.split("=", 1)[0])
+    return {
+        "command": Path(args[0]).name if args else "",
+        "argument_count": len(args),
+        "flags": flags,
+        "sha256": hashlib.sha256("\0".join(args).encode("utf-8")).hexdigest(),
+    }
 
 
 def write_text(path: Path, value: str) -> None:

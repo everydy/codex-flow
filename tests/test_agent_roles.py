@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
-from codex_flow.implementer_agent import ImplementerAgentInput, build_implementation_prompt, build_review_prompt, parse_commit_unit_review, parse_review_gate
+import codex_flow.implementer_agent as implementer_module
+from codex_flow.implementer_agent import CodexImplementerAgent, ImplementerAgentInput, build_implementation_prompt, build_review_prompt, parse_commit_unit_review, parse_review_gate
 from codex_flow.merge_agent import parse_merge_agent_result
 from codex_flow.plan_readiness import CommitUnit
 from codex_flow.planner_agent import PlannerAgentInput, build_planner_prompt, parse_plan_written
@@ -138,3 +140,35 @@ def test_commit_unit_review_prompt_requires_review_all_in_one_gate():
     assert "blockers=0 important=0" in prompt
     assert "COMMIT_UNIT_NEEDS_WORK" in prompt
     assert "fallback" not in prompt
+
+
+def test_implementer_preserves_persisted_high_risk_profile(monkeypatch, tmp_path):
+    observed_profiles = []
+
+    def fake_exec(*args, **kwargs):
+        observed_profiles.append(kwargs["execution_profile"].value)
+        if kwargs.get("resume_session_id"):
+            message = '\n'.join([
+                'REVIEW_GATE status="pass" blockers=0 important=0 minor=0 reason="ok"',
+                'COMMIT_UNIT_READY title="Done" summary="ok"',
+            ])
+            return SimpleNamespace(stdout="", final_message=message)
+        return SimpleNamespace(stdout='{"session_id":"session-1"}\n', final_message="implemented")
+
+    monkeypatch.setattr(implementer_module, "run_codex_exec", fake_exec)
+    agent = CodexImplementerAgent()
+
+    agent.implement(
+        ImplementerAgentInput(
+            repo=tmp_path,
+            plan_path=tmp_path / "plan.md",
+            plan_content="### Commit 1: Neutral\n\nNo signal",
+            unit=CommitUnit(number=1, title="Neutral", content="No signal"),
+            previous_commit=None,
+            git_status="",
+            execution_policy={"declared_profile": "high_risk", "effective_profile": "high_risk"},
+            allowed_paths=("README.md",),
+        )
+    )
+
+    assert observed_profiles == ["high_risk", "high_risk"]

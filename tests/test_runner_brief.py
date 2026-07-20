@@ -11,6 +11,25 @@ from codex_flow import briefs, cli, plans, pr, runner, source_plan, tickets
 from codex_flow.codex_cli import CHILD_MANIFEST_ENV
 
 
+def test_attempt_derived_views_regenerate_from_ledger_revision(tmp_path):
+    review = tmp_path / "review.json"
+    handoff = tmp_path / "handoff.json"
+    review.write_text('{"ledger_revision": 1}\n', encoding="utf-8")
+    handoff.write_text('{"ledger_revision": 2}\n', encoding="utf-8")
+    unit = {"attempt_ledger_revision": 3}
+
+    runner.ensure_attempt_view_revision(
+        9,
+        queue_unit=unit,
+        review_path=review,
+        handoff_path=handoff,
+    )
+
+    assert unit["attempt_ledger_revision"] == 9
+    assert json.loads(review.read_text())["ledger_revision"] == 9
+    assert json.loads(handoff.read_text())["ledger_revision"] == 9
+
+
 @pytest.fixture(autouse=True)
 def isolate_attestation_preflight(tmp_path, monkeypatch):
     counter = iter(range(1000))
@@ -881,6 +900,7 @@ def test_review_gate_blocks_commit_until_important_findings_are_repaired(tmp_pat
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     log = (plan.directory / "log.md").read_text(encoding="utf-8")
     attempt_0 = json.loads((plan.directory / "attempts" / "unit-001" / "attempt-0-review.json").read_text(encoding="utf-8"))
+    assert attempt_0["ledger_revision"] >= 1
     attempt_1 = json.loads((plan.directory / "attempts" / "unit-001" / "attempt-1-review.json").read_text(encoding="utf-8"))
 
     assert status == 0
@@ -993,7 +1013,7 @@ def test_run_next_timeout_marks_unit_needs_work_with_diagnostics(tmp_path, capsy
     assert "diagnostic_path:" in output
     assert queue["units"][0]["status"] == "needs_work"
     assert "timed out" in queue["units"][0]["last_needs_work_reason"]
-    assert (diagnostic_path / "prompt.md").exists()
+    assert (diagnostic_path / "prompt.json").exists()
     assert (diagnostic_path / "metadata.json").exists()
 
 

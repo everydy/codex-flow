@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Protocol
 
 from .codex_cli import fence, parse_key_values, parse_session_id, run_codex_exec
-from . import plan_readiness
+from . import execution_policy, plan_readiness
 from .plan_readiness import CommitUnit
 
 
@@ -57,6 +57,8 @@ class ImplementerAgentInput:
     git_status: str
     repair_attempt: int = 0
     repair_reason: str = ""
+    execution_policy: dict | None = None
+    allowed_paths: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -73,6 +75,9 @@ class ImplementerAgent(Protocol):
         input_data: ImplementerAgentInput,
         diagnostic_dir: Path | None = None,
         timeout_seconds: int | None = None,
+        attempt_ledger_path: Path | None = None,
+        diff_probe=None,
+        liveness_probe=None,
     ) -> ImplementerAgentResult:
         ...
 
@@ -96,7 +101,18 @@ class CodexImplementerAgent:
         input_data: ImplementerAgentInput,
         diagnostic_dir: Path | None = None,
         timeout_seconds: int | None = None,
+        attempt_ledger_path: Path | None = None,
+        diff_probe=None,
+        liveness_probe=None,
     ) -> ImplementerAgentResult:
+        policy = execution_policy.classify_execution_policy(
+            {
+                "title": input_data.unit.title,
+                "content": input_data.unit.content,
+                "allowed_paths": input_data.allowed_paths,
+                "execution_policy": input_data.execution_policy or {},
+            }
+        )
         implementation = run_codex_exec(
             build_implementation_prompt(input_data),
             repo=input_data.repo,
@@ -107,6 +123,10 @@ class CodexImplementerAgent:
             diagnostic_dir=diagnostic_dir / "implementation" if diagnostic_dir else None,
             phase="implementation",
             child_home=self.child_home,
+            execution_profile=policy.effective_profile,
+            attempt_ledger_path=attempt_ledger_path,
+            diff_probe=diff_probe,
+            liveness_probe=liveness_probe,
         )
         session_id = parse_session_id(implementation.stdout) or ""
         if not session_id:
@@ -122,6 +142,10 @@ class CodexImplementerAgent:
             diagnostic_dir=diagnostic_dir / "review" if diagnostic_dir else None,
             phase="review",
             child_home=self.child_home,
+            execution_profile=policy.effective_profile,
+            attempt_ledger_path=attempt_ledger_path,
+            diff_probe=diff_probe,
+            liveness_probe=liveness_probe,
         )
         return ImplementerAgentResult(
             session_id=session_id,

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, replace
 from pathlib import Path
 import fnmatch
+import hashlib
 import json
 import subprocess
 from collections.abc import Mapping
@@ -292,6 +293,26 @@ def scoped_status_summary(snapshot: GitStatusSnapshot, allowed_paths: list[str])
     if hidden_count:
         lines.append(f"... {hidden_count} unrelated dirty path(s) hidden from implementer prompt")
     return "\n".join(lines)
+
+
+def scoped_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
+    """Digest actual scoped bytes, not only porcelain path/status metadata."""
+    repo_path = require_git_repo(repo)
+    snapshot = status(repo_path)
+    paths = sorted(
+        entry.path
+        for entry in snapshot.entries
+        if not allowed_paths or path_allowed(entry.path, allowed_paths)
+    )
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        diff = run_process(["git", "diff", "--binary", "HEAD", "--", relative], cwd=repo_path)
+        digest.update(diff.stdout.encode("utf-8"))
+        path = repo_path / relative
+        if path.is_file() and not diff.stdout:
+            digest.update(path.read_bytes())
+    return digest.hexdigest() if paths else ""
 
 
 def stash_paths(repo: str | Path, paths: list[str], message: str) -> str:

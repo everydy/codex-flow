@@ -3,6 +3,8 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import codex_flow.codex_cli as codex_cli_module
+from codex_flow.attempt_ledger import AttemptLedger
 
 from codex_flow.codex_cli import (
     CHILD_MANIFEST_ENV,
@@ -212,7 +214,9 @@ def test_run_codex_exec_writes_diagnostics(tmp_path):
 
     assert result.status == 0
     assert result.output_path == diagnostic_dir / "last-message.txt"
-    assert (diagnostic_dir / "prompt.md").read_text(encoding="utf-8") == "hello"
+    prompt_record = (diagnostic_dir / "prompt.json").read_text(encoding="utf-8")
+    assert "hello" not in prompt_record
+    assert '"length": 5' in prompt_record
     assert "fake-session" in (diagnostic_dir / "stdout.log").read_text(encoding="utf-8")
     assert '"phase": "implementation"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
     assert '"source": "inherited"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
@@ -243,7 +247,7 @@ def test_run_codex_exec_timeout_preserves_diagnostics(tmp_path):
         run_codex_exec("hello", repo=tmp_path, command=str(fake), extra_args=[], timeout_seconds=1, diagnostic_dir=diagnostic_dir)
 
     assert exc.value.diagnostic_dir == diagnostic_dir.resolve()
-    assert (diagnostic_dir / "prompt.md").exists()
+    assert (diagnostic_dir / "prompt.json").exists()
     assert '"status": "timeout"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
 
 
@@ -258,6 +262,63 @@ def test_run_codex_exec_failure_preserves_diagnostics(tmp_path):
     assert exc.value.diagnostic_dir == diagnostic_dir.resolve()
     assert "bad things" in (diagnostic_dir / "stderr.log").read_text(encoding="utf-8")
     assert '"status": "failed"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+
+
+def test_run_codex_exec_never_persists_prompt_or_secret_output(tmp_path):
+    secret = "codex-flow-secret-canary"
+    fake = write_fake_codex(tmp_path, f"token={secret}\n")
+    diagnostic_dir = tmp_path / "redacted-diagnostics"
+
+    result = run_codex_exec(
+        f"prompt includes {secret}",
+        repo=tmp_path,
+        command=str(fake),
+        extra_args=[],
+        diagnostic_dir=diagnostic_dir,
+    )
+
+    persisted = "\n".join(
+        path.read_text(encoding="utf-8", errors="replace")
+        for path in diagnostic_dir.rglob("*")
+        if path.is_file()
+    )
+    assert secret not in persisted
+    assert secret not in result.final_message
+    assert "[REDACTED]" in result.final_message
+
+
+def test_run_codex_exec_diagnostic_args_do_not_persist_flag_values(tmp_path):
+    secret = "argument-secret-canary"
+    fake = write_fake_codex(tmp_path, "FINAL_LINE\n")
+    diagnostic_dir = tmp_path / "arg-diagnostics"
+
+    run_codex_exec(
+        "hello",
+        repo=tmp_path,
+        command=str(fake),
+        extra_args=[f"--api-key={secret}"],
+        diagnostic_dir=diagnostic_dir,
+    )
+
+    persisted = (diagnostic_dir / "args.json").read_text(encoding="utf-8")
+    assert secret not in persisted
+    assert "--api-key" in persisted
+
+
+def test_final_message_redaction_failure_is_fail_closed(tmp_path, monkeypatch):
+    fake = write_fake_codex(tmp_path, "FINAL_LINE\n")
+    diagnostic_dir = tmp_path / "redactor-failure"
+
+    def fail_redaction(value, env=None):
+        raise RuntimeError("simulated redactor failure")
+
+    monkeypatch.setattr(codex_cli_module, "redact_diagnostic", fail_redaction)
+
+    with pytest.raises(CodexExecFailure):
+        run_codex_exec("hello", repo=tmp_path, command=str(fake), extra_args=[], diagnostic_dir=diagnostic_dir)
+    assert (diagnostic_dir / "last-message.txt").read_text(encoding="utf-8") == ""
+    assert '"status": "failed"' in (diagnostic_dir / "metadata.json").read_text(encoding="utf-8")
+    assert AttemptLedger(diagnostic_dir / "attempt-ledger.json").load().record["status"] == "diagnostic_redaction_failed"
 
 
 def test_parse_session_id_from_jsonl_and_uuid_fallback():
