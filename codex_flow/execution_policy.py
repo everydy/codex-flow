@@ -199,7 +199,7 @@ def is_test_scope_path(value: str) -> bool:
     if not normalized or normalized.startswith("/"):
         return False
     parts = tuple(part for part in normalized.split("/") if part and part != ".")
-    if not parts or ".." in parts:
+    if len(parts) < 2 or ".." in parts:
         return False
     return parts[0].lower() in {"test", "tests"}
 

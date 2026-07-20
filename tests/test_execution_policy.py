@@ -108,7 +108,7 @@ def test_risk_words_in_test_scope_stay_contract(path):
     assert policy.review_policy is ReviewPolicy.FINAL_ONLY
 
 
-@pytest.mark.parametrize("path", ["../tests/auth_case.py", "/tests/auth_case.py"])
+@pytest.mark.parametrize("path", ["../tests/auth_case.py", "/tests/auth_case.py", "tests"])
 def test_untrusted_test_like_paths_do_not_pass_the_test_scope_oracle(path):
     policy = classify_execution_policy(unit(path, title="Authentication fixture", declared="docs_only"))
 

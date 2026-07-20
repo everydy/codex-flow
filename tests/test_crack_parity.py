@@ -74,6 +74,7 @@ def test_dashboard_projects_main_unit_status_from_queue_without_mutation(tmp_pat
         {
             "status": "in_progress",
             "execution_owner": "main",
+            "repair_attempts": "not-a-number",
             "updated_at": (datetime.now() - timedelta(seconds=75)).replace(microsecond=0).isoformat(),
         }
     )
@@ -152,6 +153,10 @@ def test_dashboard_redacts_wait_reason_and_falls_back_from_corrupt_ledger(tmp_pa
     ledger_path = plan.directory / unit["main_unit_ledger"]
     ledger_path.parent.mkdir(parents=True)
     ledger_path.write_text("{broken", encoding="utf-8")
+    (plan.directory / "log.md").write_text(
+        "# Log\n- token=super-secret-token " + "y" * 300 + "\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("CODEX_TEST_SECRET_TOKEN", "super-secret-token")
 
     output = render_dashboard(tmp_path)
@@ -161,6 +166,9 @@ def test_dashboard_redacts_wait_reason_and_falls_back_from_corrupt_ledger(tmp_pa
     assert "\n- Status source: queue fallback (ledger unreadable)" in output
     waiting_line = next(line for line in output.splitlines() if line.startswith("- Waiting:"))
     assert len(waiting_line) < 220
+    recent_line = next(line for line in output.splitlines() if line.startswith("- token="))
+    assert "[REDACTED]" in recent_line
+    assert len(recent_line) < 250
 
 
 def test_set_clear_pr_lock_cli(tmp_path, capsys):

@@ -82,7 +82,7 @@ def recent_log_lines(log_path: Path, limit: int = 3) -> list[str]:
     if not log_path.exists():
         return []
     lines = [line.strip("- ").strip() for line in log_path.read_text(encoding="utf-8").splitlines() if line.startswith("- ")]
-    return lines[-limit:]
+    return [safe_operator_text(line, limit=240) for line in lines[-limit:]]
 
 
 def format_next(unit: plan_readiness.CommitUnit | None) -> str:
@@ -150,12 +150,15 @@ def current_ledger_path(plan_dir: Path, unit: dict) -> Path | None:
     unit_id = str(unit.get("id") or "").strip()
     if not unit_id:
         return None
-    attempt = max(0, int(unit.get("repair_attempts") or 0))
+    try:
+        attempt = max(0, int(unit.get("repair_attempts") or 0))
+    except (TypeError, ValueError):
+        return None
     return plan_dir / "attempts" / unit_id / f"attempt-{attempt}" / "attempt-ledger.json"
 
 
 def format_elapsed(ledger: dict, updated_at: str) -> str:
-    raw_ms = ledger.get("heartbeat_elapsed_ms", ledger.get("elapsed_ms"))
+    raw_ms = ledger.get("elapsed_ms", ledger.get("heartbeat_elapsed_ms"))
     if isinstance(raw_ms, (int, float)):
         return f"{format_duration(max(0, int(raw_ms)) // 1000)} (ledger)"
     try:
