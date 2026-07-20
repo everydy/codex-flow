@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from codex_flow import briefs, cli, plans, pr, runner, tickets
+from codex_flow import briefs, cli, plans, pr, runner, source_plan, tickets
 from codex_flow.codex_cli import CHILD_MANIFEST_ENV
 
 
@@ -44,6 +44,57 @@ def make_plan(tmp_path):
         unit["allowed_paths"] = list(dict.fromkeys([*unit.get("allowed_paths", []), "work.txt"]))
     plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return plan
+
+
+def test_queue_sync_persists_effective_execution_policy(tmp_path):
+    plan = make_plan(tmp_path)
+
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    policy = queue["units"][0]["execution_policy"]
+
+    assert policy["policy_version"]
+    assert policy["effective_profile"] == "contract"
+    assert policy["execution_mode"] == "isolated_child"
+    assert policy["unit_gate"] == "contract"
+    assert policy["inference_reasons"]
+
+
+def test_queue_policy_inference_reads_commit_body_high_risk_signals(tmp_path):
+    plan = make_plan(tmp_path)
+    content = plan.plan_path.read_text(encoding="utf-8")
+    plan.plan_path.write_text(
+        content.replace("Allowed paths:", "This unit changes authentication behavior.\n\nAllowed paths:", 1),
+        encoding="utf-8",
+    )
+
+    queue = plans.load_queue(plan.plan_path)[1]
+
+    assert queue["units"][0]["execution_policy"]["effective_profile"] == "high_risk"
+
+
+def test_source_route_persists_high_risk_signal_from_detailed_excerpt(tmp_path):
+    source_path = tmp_path / "docs" / "plans" / "settings.md"
+    source_path.parent.mkdir(parents=True)
+    source_path.write_text(
+        "\n".join(
+            [
+                "# Settings plan",
+                "",
+                "### Commit 1: Update settings",
+                "",
+                "- target files:",
+                "  - `config/settings.yaml`",
+                "- changes:",
+                "  - Change OAuth authentication behavior.",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    plan = plans.create_plan_from_source(source_plan.resolve_source_plan(source_path, repo=tmp_path), repo=tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+
+    assert queue["units"][0]["execution_policy"]["effective_profile"] == "high_risk"
 
 
 def init_git_repo(tmp_path):

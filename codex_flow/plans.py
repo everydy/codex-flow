@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import re
 
-from . import plan_first_extract, plan_readiness, source_plan, state
+from . import execution_policy, plan_first_extract, plan_readiness, source_plan, state
 from .git_ops import ExecutionWorktreeContext, cleanup_execution_worktree, is_git_repo, prepare_branch, prepare_execution_worktree
 from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
 from .tickets import Ticket, create_internal_ticket, load_ticket, update_ticket_status
@@ -303,6 +303,9 @@ def queue_from_source_tickets(
                 "skill_routing_evidence": skill_routing_evidence,
             }
         )
+        unit["execution_policy"] = execution_policy.classify_execution_policy(
+            {**unit, "content": ticket.excerpt}
+        ).to_dict()
         units.append(unit)
     context = execution_context or ExecutionWorktreeContext(
         source_repo=source.repo,

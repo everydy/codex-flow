@@ -47,6 +47,7 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
     allowed = "\n".join(f"- {item}" for item in unit.get("allowed_paths", [])) or "- Not specified"
     verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
     skill_routing = render_skill_routing_prompt(unit, plan_dir, commit_unit)
+    policy = unit.get("execution_policy") or {}
     plan_path = plan_dir / "plan.md"
     plan_content = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
     source_plan_content = read_optional(plan_dir / "source-plan.md")
@@ -87,6 +88,9 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             "- Do not deploy.",
             "- Do not reset, checkout, or revert unrelated user changes.",
             "- If secrets, accounts, payments, or external posting are required, stop after preparing the draft.",
+            f"- Effective execution profile: {policy.get('effective_profile', 'contract')}",
+            f"- Selected execution mode: {policy.get('execution_mode', 'isolated_child')}",
+            f"- Selected unit gate: {policy.get('unit_gate', 'contract')}",
             "",
             "## Execution Contract",
             "",

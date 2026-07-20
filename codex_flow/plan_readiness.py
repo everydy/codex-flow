@@ -5,7 +5,7 @@ from pathlib import Path
 import json
 import re
 
-from . import state
+from . import execution_policy, state
 
 
 @dataclass(frozen=True)
@@ -180,6 +180,8 @@ def sync_queue_cache_from_plan(plan_path: str | Path) -> dict:
             old["required_skills"] = list(skill_entry.required_skills)
             old["optional_skills"] = list(skill_entry.optional_skills)
             old["skill_routing_evidence"] = skill_entry.evidence
+        policy_input = {**old, "content": unit.content}
+        old["execution_policy"] = execution_policy.classify_execution_policy(policy_input).to_dict()
         if old["status"] not in state.UNIT_STATUSES:
             old["status"] = "ready"
         queue_units.append(old)
