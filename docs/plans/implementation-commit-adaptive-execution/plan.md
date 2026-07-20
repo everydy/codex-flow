@@ -361,3 +361,14 @@ main-first 경로는 장기 child wait가 없으므로 unit phase transition만 
 ## 후행 실행
 
 후행 실행: 메인 에이전트가 `구현커밋`의 transaction contract만 사용해 Commit 4B → 4C → 4D → Phase 5 → Commit 6 → Phase 7 → Phase 8 → Phase 9 순서로 진행한다. child-per-unit 실행과 병렬 `run-all`은 비활성화한다. 이번 계획 작성 단계에서는 코드 구현, 새 PR, merge, deploy와 canonical skill sync를 실행하지 않는다.
+
+## 실행 진행 상황 (2026-07-21)
+
+- Commit 4B 완료: `0089580` — main-owned unit transaction과 ordinary child 0 계약.
+- Commit 4C 완료: `dfad52c` — `final_only` 기본값과 명시적/high-risk `per_unit`.
+- Commit 4D 완료: `27e9069` — atomic, same-HEAD, fail-closed finalization gate.
+- Phase 5/Commit 6 완료: `4de1f43` — latest `origin/main`과 선형 정본 수렴 및 integration provenance.
+- Phase 7 누적 검토: blocker 0, important 0, minor 1. 상세는 `final-review.md`.
+- Phase 7 pre-evidence 테스트: full `242/242`, focused `81/81`. 상세는 `final-test-report.md`.
+- 다음 gate: evidence commit 후 exact final HEAD 전체 테스트 → final gate → push/Draft PR → same-HEAD CI → merge.
+- Product deploy: 이번 계획의 승인 범위 밖이므로 실행하지 않는다.
