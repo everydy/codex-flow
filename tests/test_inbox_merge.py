@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 
 from codex_flow import inbox
+from codex_flow.git_ops import ProcessResult
 from codex_flow.merge import MergeRunner
 from codex_flow.final_gate import produce_final_gate
 
@@ -46,6 +47,32 @@ def test_merge_runner_local_merge_success(tmp_path):
     assert result.action == "merged_local"
     assert (tmp_path / "feature.txt").read_text(encoding="utf-8") == "feature\n"
     assert subprocess.run(["git", "branch", "--list", "codex/demo"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == ""
+
+
+def test_merge_runner_reports_branch_finalization_blocked_when_safe_delete_fails(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    subprocess.run(["git", "switch", "-c", "codex/demo"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "feature.txt").write_text("feature\n", encoding="utf-8")
+    subprocess.run(["git", "add", "feature.txt"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "feature"], cwd=tmp_path, check=True, capture_output=True)
+    plan_dir = tmp_path / ".codex-flow" / "plans" / "demo"
+    plan_dir.mkdir(parents=True)
+    (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Feature\n\nDone\n", encoding="utf-8")
+    (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    produce_final_gate(
+        plan_dir / "plan.md",
+        review_evidence={"status": "pass"},
+        test_evidence={"status": "pass"},
+    )
+    monkeypatch.setattr(
+        "codex_flow.merge.delete_local_branch",
+        lambda _repo, branch: ProcessResult(["git", "branch", "-d", branch], 1, "", "branch is checked out"),
+    )
+
+    result = MergeRunner().merge_local(plan_dir / "plan.md", target="main", execute=True)
+
+    assert result.action == "branch_finalization_blocked"
+    assert "branch_close_held" in result.message
 
 
 def init_git_repo(tmp_path):

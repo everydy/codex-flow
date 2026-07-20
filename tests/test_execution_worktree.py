@@ -9,6 +9,8 @@ import pytest
 
 from codex_flow import cli, git_ops, plans, runner
 from codex_flow.codex_cli import CHILD_MANIFEST_ENV
+from codex_flow.final_gate import produce_final_gate
+from codex_flow.merge import MergeRunner
 from codex_flow.run_all import RunAllRunner
 
 
@@ -263,10 +265,12 @@ def test_disposable_two_unit_graph_resumes_without_merge_then_cleans_up_safely(t
     repo = tmp_path / "repo"
     repo.mkdir()
     init_git_repo(repo)
+    source = write_source_plan(repo)
+    subprocess.run(["git", "add", str(source.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add source plan"], cwd=repo, check=True, capture_output=True)
     source_head = subprocess.run(
         ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
     ).stdout.strip()
-    source = write_source_plan(repo)
     fake_codex = write_two_unit_fake_codex(tmp_path)
     worktree_root = tmp_path / "worktrees"
     assert cli.main(["--repo", str(repo), "route", str(source), "--worktree-root", str(worktree_root)]) == 0
@@ -324,7 +328,7 @@ def test_disposable_two_unit_graph_resumes_without_merge_then_cleans_up_safely(t
     assert resumed.action == "local_branch"
     assert len(resumed.steps) == 1
     assert [unit["status"] for unit in persisted["units"]] == ["done", "done"]
-    assert len(graph) == 3
+    assert len(graph) == 4
     assert first_paths == ["unit-1.txt"]
     assert second_paths == ["unit-2.txt"]
     assert review_0["child_attestation"] != review_1["child_attestation"]
@@ -334,8 +338,22 @@ def test_disposable_two_unit_graph_resumes_without_merge_then_cleans_up_safely(t
     assert execution_repo.exists()
     assert persisted["cleanup_state"] == "active"
 
-    subprocess.run(["git", "merge", "--ff-only", queue["branch"]], cwd=repo, check=True, capture_output=True)
-    assert cli.main(["cleanup-worktree", "--plan", str(plan_dir / "plan.md"), "--target", "main"]) == 0
+    produce_final_gate(
+        plan_dir / "plan.md",
+        review_evidence={"status": "pass"},
+        test_evidence={"status": "pass"},
+    )
+    merge_result = MergeRunner().merge_local(plan_dir / "plan.md", target="main", execute=True)
+
+    assert merge_result.action == "merged_local"
+    assert "worktree_cleaned" in merge_result.message
     cleaned = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
     assert cleaned["cleanup_state"] == "removed"
     assert not execution_repo.exists()
+    assert subprocess.run(
+        ["git", "branch", "--list", queue["branch"]],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == ""

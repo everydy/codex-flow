@@ -57,17 +57,13 @@ class MergeRunner:
         result = merge_branch(repo, branch, target)
         if result.status == 0:
             append_merge_log(plan_dir, f"Merged local branch `{branch}` into `{target}`.")
-            close_message = self.close_source_branch(repo, plan_dir, branch, target)
-            suffix = f"; {close_message}" if close_message else ""
-            return MergeResult("merged_local", f"merge: local merged {branch} into {target}{suffix}", branch, target)
+            return self.finish_local_merge(repo, plan_path, plan_dir, branch, target)
         resolved = self.resolve_conflict(repo, plan_dir / "plan.md", branch, target, "local", command_failure("git merge failed", result))
         if resolved.action == "merge_needs_work":
             append_merge_log(plan_dir, resolved.message)
             return resolved
         append_merge_log(plan_dir, resolved.message)
-        close_message = self.close_source_branch(repo, plan_dir, branch, target)
-        suffix = f"; {close_message}" if close_message else ""
-        return MergeResult("merged_local", f"merge: local merged {branch} into {target}{suffix}", branch, target)
+        return self.finish_local_merge(repo, plan_path, plan_dir, branch, target)
 
     def merge_remote(self, plan_path: str | Path, target: str = "main", execute: bool = False) -> MergeResult:
         plan_dir, plan_content, log_content = plan_readiness.read_plan_file(plan_path)
@@ -101,8 +97,25 @@ class MergeRunner:
         append_merge_log(plan_dir, f"Merged remote PR `{pr_url}`.")
         if lock_cleared:
             append_merge_log(plan_dir, f"Cleared PR lock for `{branch}`.")
-        suffix = "; pr_lock_cleared=true" if lock_cleared else ""
-        return MergeResult("merged_remote", f"merge: remote merged {pr_url}{suffix}", branch, target, pr_url)
+        fetch = fetch_branch(repo, target)
+        if fetch.status != 0:
+            message = command_failure("git fetch failed after remote merge", fetch)
+            append_merge_log(plan_dir, f"Held local branch `{branch}` after remote merge: {message}.")
+            return MergeResult("branch_finalization_blocked", message, branch, target, pr_url)
+        convergence = merge_branch(repo, f"origin/{target}", target)
+        if convergence.status != 0:
+            message = command_failure("local target convergence failed after remote merge", convergence)
+            append_merge_log(plan_dir, f"Held local branch `{branch}` after remote merge: {message}.")
+            return MergeResult("branch_finalization_blocked", message, branch, target, pr_url)
+        finalized, close_message = self.finalize_source_branch(repo, plan_path, plan_dir, branch, target)
+        suffixes = []
+        if lock_cleared:
+            suffixes.append("pr_lock_cleared=true")
+        if close_message:
+            suffixes.append(close_message)
+        suffix = f"; {'; '.join(suffixes)}" if suffixes else ""
+        action = "merged_remote" if finalized else "branch_finalization_blocked"
+        return MergeResult(action, f"merge: remote merged {pr_url}{suffix}", branch, target, pr_url)
 
     def ensure_remote_pr(self, repo: Path, branch: str, target: str, plan_content: str) -> str:
         existing = run_process(
@@ -178,16 +191,59 @@ class MergeRunner:
                 return MergeResult("merge_needs_work", command_failure("git merge commit failed", commit), branch, target)
         return MergeResult("merge_ready", f"merge: conflicts resolved: {agent_result.summary}", branch, target)
 
-    def close_source_branch(self, repo: Path, plan_dir: Path, branch: str, target: str) -> str:
+    def finish_local_merge(
+        self,
+        repo: Path,
+        plan_path: str | Path,
+        plan_dir: Path,
+        branch: str,
+        target: str,
+    ) -> MergeResult:
+        finalized, close_message = self.finalize_source_branch(repo, plan_path, plan_dir, branch, target)
+        suffix = f"; {close_message}" if close_message else ""
+        action = "merged_local" if finalized else "branch_finalization_blocked"
+        return MergeResult(action, f"merge: local merged {branch} into {target}{suffix}", branch, target)
+
+    def finalize_source_branch(
+        self,
+        repo: Path,
+        plan_path: str | Path,
+        plan_dir: Path,
+        branch: str,
+        target: str,
+    ) -> tuple[bool, str]:
+        from . import plans
+
+        try:
+            _, queue = plans.load_queue(plan_path)
+            context = plans.execution_context_for_plan(plan_dir, queue)
+        except (FileNotFoundError, SystemExit, ValueError):
+            return self.close_source_branch(repo, plan_dir, branch, target)
+
+        if context.execution_repo == context.source_repo:
+            return self.close_source_branch(repo, plan_dir, branch, target)
+
+        try:
+            cleaned = plans.cleanup_plan_worktree(plan_path, target_branch=target)
+        except SystemExit as exc:
+            message = f"branch_finalization_blocked: {exc}"
+            append_merge_log(plan_dir, f"Held execution worktree and local branch `{branch}` after merge: {exc}.")
+            return False, message
+
+        message = f"worktree_cleaned: {cleaned.worktree_path}; branch_closed: {branch}"
+        append_merge_log(plan_dir, f"Finalized execution worktree and local branch `{branch}` after merge.")
+        return True, message
+
+    def close_source_branch(self, repo: Path, plan_dir: Path, branch: str, target: str) -> tuple[bool, str]:
         if branch == target or branch in {"main", "master", "develop", "production", "release"}:
-            return "branch_close: skipped protected_or_target"
+            return True, "branch_close: skipped protected_or_target"
         result = delete_local_branch(repo, branch)
         if result.status == 0:
             append_merge_log(plan_dir, f"Closed local branch `{branch}` with `git branch -d`.")
-            return f"branch_closed: {branch}"
+            return True, f"branch_closed: {branch}"
         message = command_failure("git branch -d failed", result)
         append_merge_log(plan_dir, f"Held local branch `{branch}` after merge: {message}.")
-        return f"branch_close_held: {message}"
+        return False, f"branch_close_held: {message}"
 
 
 def append_merge_log(plan_dir: Path, message: str) -> None:

@@ -239,6 +239,9 @@ def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
     pr.write_pr_lock(tmp_path, "codex/demo", "https://github.com/example/repo/pull/7", "reviewing")
 
     monkeypatch.setattr(merge, "push_branch", lambda repo, branch: None)
+    monkeypatch.setattr(merge, "fetch_branch", lambda repo, branch: ProcessResult(["git", "fetch", "origin", branch], 0, "", ""))
+    monkeypatch.setattr(merge, "merge_branch", lambda repo, source, target: ProcessResult(["git", "merge", source], 0, "", ""))
+    monkeypatch.setattr(MergeRunner, "finalize_source_branch", lambda self, *args, **kwargs: (True, "branch_closed: codex/demo"))
 
     def fake_run_process(args, cwd, input_text=None):
         if args[:3] == ["gh", "pr", "list"]:
