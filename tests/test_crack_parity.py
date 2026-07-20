@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+import json
 import subprocess
 
 import pytest
@@ -61,6 +63,104 @@ def test_dashboard_renders_plan_progress_and_suggested_command(tmp_path):
     assert "Active Plans" in output
     assert "Suggested command:" in output
     assert "run-all" in output
+
+
+def test_dashboard_projects_main_unit_status_from_queue_without_mutation(tmp_path):
+    ticket = tickets.submit_ticket("Main dashboard plan", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    unit = queue["units"][0]
+    unit.update(
+        {
+            "status": "in_progress",
+            "execution_owner": "main",
+            "updated_at": (datetime.now() - timedelta(seconds=75)).replace(microsecond=0).isoformat(),
+        }
+    )
+    plans.save_queue(plan.directory, queue)
+    before = plan.queue_json.read_bytes()
+
+    output = render_dashboard(tmp_path)
+
+    assert "Current owner: `main`" in output
+    assert "Current phase/status: `main` / `in_progress`" in output
+    assert "since queue update" in output
+    assert "Current verification:" in output
+    assert "Status source: queue fallback (ledger not recorded)" in output
+    assert plan.queue_json.read_bytes() == before
+
+
+def test_dashboard_projects_isolated_ledger_heartbeat_without_mutation(tmp_path):
+    ticket = tickets.submit_ticket("Isolated dashboard plan", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    unit = queue["units"][0]
+    unit.update(
+        {
+            "status": "in_progress",
+            "execution_policy": {"executor_adapter": "isolated-child"},
+            "repair_attempts": 0,
+        }
+    )
+    plans.save_queue(plan.directory, queue)
+    ledger_path = plan.directory / "attempts" / unit["id"] / "attempt-0" / "attempt-ledger.json"
+    ledger_path.parent.mkdir(parents=True)
+    ledger_path.write_text(
+        json.dumps(
+            {
+                "revision": 4,
+                "record": {
+                    "phase": "implementation",
+                    "status": "running",
+                    "last_event": "heartbeat",
+                    "heartbeat_elapsed_ms": 65_000,
+                    "child_output_age_ms": 3_000,
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    queue_before = plan.queue_json.read_bytes()
+    ledger_before = ledger_path.read_bytes()
+
+    output = render_dashboard(tmp_path)
+
+    assert "Current owner: `isolated-child`" in output
+    assert "Current phase/status: `implementation` / `running`" in output
+    assert "Elapsed: 1m 5s (ledger)" in output
+    assert "Last progress: heartbeat; child output age 3s" in output
+    assert "Status source: attempt ledger r4" in output
+    assert plan.queue_json.read_bytes() == queue_before
+    assert ledger_path.read_bytes() == ledger_before
+
+
+def test_dashboard_redacts_wait_reason_and_falls_back_from_corrupt_ledger(tmp_path, monkeypatch):
+    ticket = tickets.submit_ticket("Held dashboard plan", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    unit = queue["units"][0]
+    unit.update(
+        {
+            "status": "needs_work",
+            "execution_owner": "main",
+            "main_unit_ledger": f"attempts/{unit['id']}/main/attempt-ledger.json",
+            "failure_class": "environment",
+            "last_needs_work_reason": "token=super-secret-token\n" + "x" * 300,
+        }
+    )
+    plans.save_queue(plan.directory, queue)
+    ledger_path = plan.directory / unit["main_unit_ledger"]
+    ledger_path.parent.mkdir(parents=True)
+    ledger_path.write_text("{broken", encoding="utf-8")
+    monkeypatch.setenv("CODEX_TEST_SECRET_TOKEN", "super-secret-token")
+
+    output = render_dashboard(tmp_path)
+
+    assert "Waiting: environment: token=[REDACTED]" in output
+    assert "super-secret-token" not in output
+    assert "\n- Status source: queue fallback (ledger unreadable)" in output
+    waiting_line = next(line for line in output.splitlines() if line.startswith("- Waiting:"))
+    assert len(waiting_line) < 220
 
 
 def test_set_clear_pr_lock_cli(tmp_path, capsys):
