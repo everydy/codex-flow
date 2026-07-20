@@ -7,7 +7,7 @@ from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
 from .attempt_ledger import AttemptLedger
-from .execution_policy import ExecutionMode, FailureKind, FailureRecord, classify_execution_policy, retry_eligible
+from .execution_policy import ExecutionMode, FailureKind, FailureRecord, ReviewPolicy, classify_execution_policy, retry_eligible
 from .main_unit import begin_main_unit
 from .codex_cli import (
     ChildAttestationError,
@@ -23,6 +23,7 @@ from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput
 from .reviewer_agent import (
     CommitUnitReview,
     CodexReadOnlyReviewer,
+    ReviewGate,
     ReviewerAgentInput,
     ReviewerAgentResult,
     ReviewerProcessFailure,
@@ -61,6 +62,7 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
     verification = "\n".join(f"- {item}" for item in unit.get("verification", [])) or "- Not specified"
     skill_routing = render_skill_routing_prompt(unit, plan_dir, commit_unit)
     policy = unit.get("execution_policy") or {}
+    per_unit_review = policy.get("review_policy") == ReviewPolicy.PER_UNIT.value
     plan_path = plan_dir / "plan.md"
     plan_content = plan_path.read_text(encoding="utf-8") if plan_path.exists() else ""
     source_plan_content = read_optional(plan_dir / "source-plan.md")
@@ -108,8 +110,16 @@ def render_prompt(queue_data: dict, unit: dict, plan_dir: Path, commit_unit: pla
             "## Execution Contract",
             "",
             "Implement only this unit. Keep the diff narrow. Do not create a git commit; Codex Flow will commit after review.",
-            "A separate fresh read-only reviewer runs after implementation.",
-            "Blocker or important findings are returned as `COMMIT_UNIT_NEEDS_WORK` for a later writable repair attempt.",
+            (
+                "A separate fresh read-only reviewer runs after implementation."
+                if per_unit_review
+                else "A deterministic scope/HEAD gate runs now; cumulative review runs once after all units."
+            ),
+            (
+                "Blocker or important findings are held for a later main-owned recovery decision."
+                if per_unit_review
+                else "The unit gate never edits product files or automatically retries the unit."
+            ),
             "",
             "Return one final line in one of these forms:",
             f'COMMIT_UNIT_READY title="{unit["title"]}" summary="..."',
@@ -299,6 +309,7 @@ def execute_unit(
     execution_context = plans.execution_context_for_plan(plan_dir, queue_data)
     repo = execution_context.execution_repo
     source_repo = execution_context.source_repo
+    policy = classify_execution_policy(unit)
     branch = queue_data.get("branch") or f"codex/{queue_data.get('plan_slug', 'plan')}"
     selected_unit = commit_unit or plan_readiness.CommitUnit(number=unit.get("number") or int(str(unit["id"]).split("-")[-1]), title=unit["title"], content="")
     skill_entry = plan_readiness.skill_routing_for_commit(
@@ -429,10 +440,14 @@ def execute_unit(
         extra_args=codex_args,
         child_home=runtime.home,
     )
-    reviewer = CodexReadOnlyReviewer(
-        command=codex_command,
-        extra_args=codex_args,
-        child_home=runtime.home,
+    reviewer = (
+        CodexReadOnlyReviewer(
+            command=codex_command,
+            extra_args=codex_args,
+            child_home=runtime.home,
+        )
+        if policy.review_policy is ReviewPolicy.PER_UNIT
+        else None
     )
     implementation_result = None
     review_result = None
@@ -572,7 +587,15 @@ def execute_unit(
         review_exclusions = review_control_plane_exclusions(repo, attempt_dir, attempt_ledger_path)
         review_expected_digest = candidate_diff_digest(repo, review_exclusions)
         try:
-            review_result = reviewer.review(
+            if reviewer is None:
+                review_result = deterministic_unit_gate_result(
+                    implementation_result.session_id,
+                    unit,
+                    review_expected_head,
+                    review_expected_digest,
+                )
+            else:
+                review_result = reviewer.review(
                 ReviewerAgentInput(
                     repo=repo,
                     plan_path=plan_dir / "plan.md",
@@ -589,7 +612,7 @@ def execute_unit(
                 timeout_seconds=codex_timeout_seconds,
                 attempt_ledger_path=attempt_ledger_path,
                 diff_probe=scoped_diff_probe,
-            )
+                )
         except ReviewerProcessFailure as exc:
             partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
             unit["status"] = "needs_work"
@@ -895,6 +918,33 @@ def commit_message(unit: dict, title: str) -> str:
 
 def review_gate_payload(review: CommitUnitReview) -> dict | None:
     return review.gate.to_dict() if review.gate else None
+
+
+def deterministic_unit_gate_result(
+    implementation_session_id: str,
+    unit: dict,
+    expected_head: str,
+    expected_digest: str,
+) -> ReviewerAgentResult:
+    review = CommitUnitReview(
+        status="pass",
+        title=str(unit.get("title") or unit.get("id") or "Codex Flow unit"),
+        summary="deterministic scope and HEAD gate passed",
+        gate=ReviewGate(status="pass", reason="deterministic_unit_gate"),
+        retryable=False,
+        failure_kind="deterministic_gate",
+    )
+    return ReviewerAgentResult(
+        reviewer_session_id="",
+        implementation_session_id=implementation_session_id,
+        review_message="deterministic_unit_gate",
+        review=review,
+        expected_head=expected_head,
+        observed_head=expected_head,
+        expected_full_diff_digest=expected_digest,
+        observed_full_diff_digest=expected_digest,
+        review_mode="deterministic_unit_gate",
+    )
 
 
 def review_gate_summary(review: CommitUnitReview) -> str:

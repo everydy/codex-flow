@@ -82,7 +82,7 @@ def test_create_plan_from_ticket_writes_plan_queue_and_handoff(tmp_path):
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["ticket_id"] == ticket.id
     assert queue["branch"].startswith("codex/")
-    assert len(queue["units"]) == 3
+    assert len(queue["units"]) == 2
     assert queue["units"][0]["status"] == "ready"
     plan_text = plan.plan_path.read_text(encoding="utf-8")
     decisions_text = (plan.directory / "decisions.md").read_text(encoding="utf-8")

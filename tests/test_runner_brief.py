@@ -63,6 +63,7 @@ def make_plan(tmp_path, *, isolated=True):
         unit["allowed_paths"] = list(dict.fromkeys([*unit.get("allowed_paths", []), "work.txt"]))
         if isolated:
             unit.setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
+            unit["execution_policy"]["review_policy"] = "per_unit"
     plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return plan
 
@@ -78,7 +79,7 @@ def test_queue_sync_persists_effective_execution_policy(tmp_path):
     assert policy["execution_mode"] == "isolated_child"
     assert policy["executor_adapter"] == "isolated-child"
     assert policy["unit_gate"] == "contract"
-    assert policy["review_policy"] == "final_only"
+    assert policy["review_policy"] == "per_unit"
     assert policy["inference_reasons"]
 
 
@@ -96,6 +97,31 @@ def test_run_next_default_main_path_does_not_construct_child(tmp_path, monkeypat
     assert result["action"] == "main_handoff"
     assert result["contract"]["owner"] == "main"
     assert result["contract"]["ledger_revision"] == 1
+
+
+def test_isolated_final_only_runs_deterministic_gate_without_reviewer(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex(tmp_path)
+    plan = make_plan(tmp_path, isolated=False)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0].setdefault("execution_policy", {}).update(
+        {"executor_adapter": "isolated-child", "review_policy": "final_only"}
+    )
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner,
+        "CodexReadOnlyReviewer",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("reviewer must not be constructed")),
+    )
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    assert result["action"] == "committed"
+    evidence = json.loads(
+        (plan.directory / "attempts" / "unit-001" / "attempt-0-review.json").read_text(encoding="utf-8")
+    )
+    assert evidence["review_mode"] == "deterministic_unit_gate"
+    assert evidence["sessions_distinct"] is False
 
 
 def test_queue_policy_inference_reads_commit_body_high_risk_signals(tmp_path):
@@ -591,7 +617,7 @@ def test_run_all_respects_max_units(tmp_path):
 
     assert len(results) == 2
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
-    assert [unit["status"] for unit in queue["units"]] == ["prompted", "prompted", "ready"]
+    assert [unit["status"] for unit in queue["units"]] == ["prompted", "prompted"]
     first_prompt = (plan.directory / queue["units"][0]["prompt_path"]).read_text(encoding="utf-8")
     second_prompt = (plan.directory / queue["units"][1]["prompt_path"]).read_text(encoding="utf-8")
     assert "Required skills: `요청개선`, `plan-first-implementation`" in first_prompt
@@ -620,8 +646,8 @@ def test_run_all_execute_defaults_to_until_complete(tmp_path):
 
     results = runner.run_all(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
 
-    assert len(results) == 3
-    assert [result["unit"]["id"] for result in results] == ["unit-001", "unit-002", "unit-003"]
+    assert len(results) == 2
+    assert [result["unit"]["id"] for result in results] == ["unit-001", "unit-002"]
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert all(unit["status"] == "done" for unit in queue["units"])
 
@@ -734,10 +760,36 @@ def test_run_next_preserves_plan_skills_and_binds_internal_review_attempt(tmp_pa
     assert evidence["child_attestation"] == result["unit"]["child_attestation"]
 
 
-def test_run_next_refuses_done_state_when_child_moves_head(tmp_path):
+def test_run_next_refuses_done_state_when_child_moves_head(tmp_path, monkeypatch):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex_that_commits(tmp_path)
     plan = make_plan(tmp_path)
+
+    class CommittingImplementer:
+        def __init__(self, *_args, **_kwargs):
+            pass
+
+        def implement(self, input_data, **_kwargs):
+            (input_data.repo / "work.txt").write_text("child commit\n", encoding="utf-8")
+            subprocess.run(["git", "add", "work.txt"], cwd=input_data.repo, check=True)
+            subprocess.run(
+                [
+                    "git",
+                    "-c",
+                    "user.email=codex-flow@example.com",
+                    "-c",
+                    "user.name=Codex Flow",
+                    "commit",
+                    "-m",
+                    "unexpected child commit",
+                ],
+                cwd=input_data.repo,
+                check=True,
+                capture_output=True,
+            )
+            return SimpleNamespace(session_id="implementation-session", implementation_message="implementation phase")
+
+    monkeypatch.setattr(runner, "CodexImplementerAgent", CommittingImplementer)
 
     result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
 
@@ -845,11 +897,11 @@ def test_run_all_cli_executes_and_commits_by_default(tmp_path, capsys):
     output = capsys.readouterr().out
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert status == 0
-    assert "units_processed: 3" in output
+    assert "units_processed: 2" in output
     assert "merge: local merged" in output
     assert "branch_closed:" in output
     assert all(unit["status"] == "done" for unit in queue["units"])
-    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 4
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 3
     assert subprocess.run(["git", "branch", "--show-current"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == "main"
     assert subprocess.run(["git", "branch", "--list", "codex/*"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.strip() == ""
 
@@ -1169,7 +1221,7 @@ def test_open_pr_auto_resolve_executes_unfinished_units_before_dry_run(tmp_path,
     assert "auto_resolve_units:" in output
     assert all(unit["status"] == "done" for unit in queue["units"])
     assert (plan.directory / "pr-dry-run.md").exists()
-    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 4
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 3
 
 
 def test_merge_auto_resolve_executes_unfinished_units_and_merges_without_execute_flag(tmp_path, capsys):

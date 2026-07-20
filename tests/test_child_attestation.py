@@ -699,6 +699,7 @@ def test_runner_managed_runtime_without_environment_reaches_fixture_execution(tm
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     queue["units"][0]["allowed_paths"].append("work.txt")
     queue["units"][0].setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
+    queue["units"][0]["execution_policy"]["review_policy"] = "per_unit"
     plan.queue_json.write_text(
         json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8"
     )
@@ -735,6 +736,7 @@ def test_runner_preparation_failure_never_launches_implementer_or_edits_repo(
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     queue["units"][0].setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
+    queue["units"][0]["execution_policy"]["review_policy"] = "per_unit"
     plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     marker = tmp_path.parent / f"launched-{tmp_path.name}"
     fake_codex = tmp_path.parent / f"must-not-launch-{tmp_path.name}.py"
@@ -785,6 +787,7 @@ def test_runner_valid_exact_attestation_allows_fixture_execution(tmp_path, monke
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     queue["units"][0]["allowed_paths"].append("work.txt")
     queue["units"][0].setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
+    queue["units"][0]["execution_policy"]["review_policy"] = "per_unit"
     plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
 
     result = runner.run_next(
@@ -820,6 +823,7 @@ def test_runner_missing_discovered_skill_never_launches_implementer_or_edits_rep
     plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     queue["units"][0].setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
+    queue["units"][0]["execution_policy"]["review_policy"] = "per_unit"
     plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     before = git_oracle(tmp_path)
 

@@ -82,15 +82,6 @@ DEFAULT_UNITS = [
         "optional_skills": ["디자인올인원", "supabase-runtime-debugger", "env-deploy-audit"],
         "skill_routing_evidence": "선택된 구현 단위를 끝까지 완수해야 한다.",
     },
-    {
-        "id": "unit-003",
-        "title": "검증과 리뷰 산출물 정리",
-        "allowed_paths": ["docs/**", ".codex-flow/**"],
-        "verification": ["diff check", "최종 브리프와 남은 리스크 확인"],
-        "required_skills": ["review-all-in-one", "qa-gate"],
-        "optional_skills": ["checkpoint", "session-close"],
-        "skill_routing_evidence": "검증, 리뷰, handoff 산출물이 완료 조건이다.",
-    },
 ]
 
 DEFAULT_FINAL_GATE = {
