@@ -59,12 +59,9 @@ def test_docs_only_is_raised_to_contract_when_any_path_is_not_provably_documenta
 @pytest.mark.parametrize(
     ("title", "path"),
     [
-        ("Change authentication flow", "docs/auth.md"),
         ("Security hardening", "src/security.py"),
         ("Schema migration", "migrations/001.sql"),
         ("Native UI update", "ios/App.swift"),
-        ("Deploy service", "docs/runbook.md"),
-        ("External publish", "README.md"),
         ("Update application view", "Sources/AppView.swift"),
         ("Update OAuth login", "config/settings.yaml"),
     ],
@@ -76,6 +73,54 @@ def test_high_risk_inference_cannot_be_lowered_by_metadata(title, path):
     assert policy.execution_mode is ExecutionMode.ISOLATED_CHILD
     assert policy.unit_gate is UnitGate.FULL
     assert policy.review_policy is ReviewPolicy.PER_UNIT
+
+
+@pytest.mark.parametrize(
+    ("title", "path"),
+    [
+        ("Document authentication flow", "docs/auth.md"),
+        ("Document deploy service", "docs/runbook.md"),
+        ("Document external publish", "README.md"),
+    ],
+)
+def test_risk_words_in_proven_documentation_scope_do_not_force_isolation(title, path):
+    policy = classify_execution_policy(unit(path, title=title, declared="docs_only"))
+
+    assert policy.effective_profile is ExecutionProfile.DOCS_ONLY
+    assert policy.execution_mode is ExecutionMode.PARENT_DIRECT
+    assert policy.review_policy is ReviewPolicy.FINAL_ONLY
+
+
+def test_risk_words_in_documentation_without_explicit_docs_profile_stay_contract():
+    policy = classify_execution_policy(unit("docs/runbook.md", title="Document deploy service"))
+
+    assert policy.effective_profile is ExecutionProfile.CONTRACT
+    assert policy.execution_mode is ExecutionMode.PARENT_DIRECT
+    assert policy.review_policy is ReviewPolicy.FINAL_ONLY
+
+
+@pytest.mark.parametrize("path", ["tests/fixtures/auth_case.json", "test/**"])
+def test_risk_words_in_test_scope_stay_contract(path):
+    policy = classify_execution_policy(unit(path, title="Fixture for authentication deploy"))
+
+    assert policy.effective_profile is ExecutionProfile.CONTRACT
+    assert policy.execution_mode is ExecutionMode.PARENT_DIRECT
+    assert policy.review_policy is ReviewPolicy.FINAL_ONLY
+
+
+@pytest.mark.parametrize("path", ["../tests/auth_case.py", "/tests/auth_case.py"])
+def test_untrusted_test_like_paths_do_not_pass_the_test_scope_oracle(path):
+    policy = classify_execution_policy(unit(path, title="Authentication fixture", declared="docs_only"))
+
+    assert policy.effective_profile is ExecutionProfile.HIGH_RISK
+
+
+def test_mixed_test_and_product_scope_does_not_suppress_risk_inference():
+    policy = classify_execution_policy(
+        unit("tests/auth_case.py", "src/auth.py", title="Update authentication behavior", declared="docs_only")
+    )
+
+    assert policy.effective_profile is ExecutionProfile.HIGH_RISK
 
 
 def test_unknown_profile_fails_safe_to_contract():
@@ -95,6 +140,23 @@ def test_persisted_effective_profile_is_a_non_lowerable_safety_floor():
     )
 
     assert policy.effective_profile is ExecutionProfile.HIGH_RISK
+
+
+def test_persisted_high_risk_floor_wins_over_documentation_scope():
+    policy = classify_execution_policy(
+        {
+            "title": "Document deploy service",
+            "allowed_paths": ["docs/runbook.md"],
+            "execution_policy": {
+                "declared_profile": "docs_only",
+                "effective_profile": "high_risk",
+            },
+        }
+    )
+
+    assert policy.effective_profile is ExecutionProfile.HIGH_RISK
+    assert policy.execution_mode is ExecutionMode.ISOLATED_CHILD
+    assert policy.review_policy is ReviewPolicy.PER_UNIT
 
 
 def test_failure_retry_matrix_and_duplicate_fingerprint():

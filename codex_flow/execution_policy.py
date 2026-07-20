@@ -168,11 +168,13 @@ def infer_profile_lower_bound(unit: Mapping) -> tuple[ExecutionProfile, str]:
     title = str(unit.get("title") or "")
     content = str(unit.get("content") or unit.get("excerpt") or "")
     paths = tuple(str(path) for path in unit.get("allowed_paths", ()) if isinstance(path, str))
+    if paths and all(is_documentation_path(path) for path in paths):
+        return ExecutionProfile.DOCS_ONLY, "documentation-only absence oracle passed before textual risk scan"
+    if paths and all(is_test_scope_path(path) for path in paths):
+        return ExecutionProfile.CONTRACT, "test-only absence oracle passed before textual risk scan"
     searchable = " ".join((title, content, *paths))
     if _HIGH_RISK_TEXT.search(searchable) or any(_HIGH_RISK_PATH.search(path) for path in paths):
         return ExecutionProfile.HIGH_RISK, "high-risk auth/security/migration/native/publish/deploy signal"
-    if paths and all(is_documentation_path(path) for path in paths):
-        return ExecutionProfile.DOCS_ONLY, "documentation-only absence oracle passed"
     return ExecutionProfile.CONTRACT, "documentation-only absence oracle did not prove safety"
 
 
@@ -190,6 +192,16 @@ def is_documentation_path(value: str) -> bool:
     if leaf.suffix.lower() not in _DOC_EXTENSIONS and stem not in _DOC_BASENAMES:
         return False
     return len(parts) == 1 or parts[0].lower() in _DOC_DIRECTORIES
+
+
+def is_test_scope_path(value: str) -> bool:
+    normalized = value.replace("\\", "/").strip()
+    if not normalized or normalized.startswith("/"):
+        return False
+    parts = tuple(part for part in normalized.split("/") if part and part != ".")
+    if not parts or ".." in parts:
+        return False
+    return parts[0].lower() in {"test", "tests"}
 
 
 @dataclass(frozen=True)
