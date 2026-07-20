@@ -1,9 +1,12 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
+import fnmatch
+import hashlib
 import json
 import subprocess
+from collections.abc import Mapping
 
 
 FLOW_PREFIX = ".codex-flow/"
@@ -30,7 +33,24 @@ class GitStatusSnapshot:
     entries: list[GitStatusEntry]
 
 
-def run_process(args: list[str], cwd: str | Path, input_text: str | None = None) -> ProcessResult:
+@dataclass(frozen=True)
+class ExecutionWorktreeContext:
+    source_repo: Path
+    execution_repo: Path
+    worktree_path: Path
+    plan_id: str
+    branch: str
+    source_plan_sha256: str = ""
+    cleanup_state: str = "active"
+
+
+def run_process(
+    args: list[str],
+    cwd: str | Path,
+    input_text: str | None = None,
+    env: Mapping[str, str] | None = None,
+    timeout_seconds: int | None = None,
+) -> ProcessResult:
     result = subprocess.run(
         args,
         cwd=Path(cwd),
@@ -38,6 +58,8 @@ def run_process(args: list[str], cwd: str | Path, input_text: str | None = None)
         text=True,
         capture_output=True,
         check=False,
+        env=env,
+        timeout=timeout_seconds,
     )
     return ProcessResult(args=args, status=result.returncode, stdout=result.stdout, stderr=result.stderr)
 
@@ -54,6 +76,8 @@ def require_git_repo(repo: str | Path) -> Path:
 
 
 def parse_status(raw: str) -> GitStatusSnapshot:
+    if "\0" in raw:
+        return parse_status_z(raw)
     entries = []
     for line in raw.splitlines():
         if not line.strip():
@@ -64,6 +88,24 @@ def parse_status(raw: str) -> GitStatusSnapshot:
             raw_path = raw_path.rsplit(" -> ", 1)[1]
         entries.append(GitStatusEntry(status=status, path=unquote_status_path(raw_path), raw=line))
     return GitStatusSnapshot(raw=raw, entries=entries)
+
+
+def parse_status_z(raw: str) -> GitStatusSnapshot:
+    entries: list[GitStatusEntry] = []
+    records = raw.split("\0")
+    index = 0
+    while index < len(records):
+        record = records[index]
+        index += 1
+        if not record:
+            continue
+        status = record[:2]
+        raw_path = record[3:] if len(record) > 3 else ""
+        if "R" in status or "C" in status:
+            index += 1
+        entries.append(GitStatusEntry(status=status, path=raw_path, raw=f"{status} {raw_path}"))
+    normalized = "\n".join(entry.raw for entry in entries)
+    return GitStatusSnapshot(raw=normalized, entries=entries)
 
 
 def unquote_status_path(value: str) -> str:
@@ -77,7 +119,7 @@ def unquote_status_path(value: str) -> str:
 
 def status(repo: str | Path) -> GitStatusSnapshot:
     repo_path = require_git_repo(repo)
-    result = run_process(["git", "status", "--porcelain", "--untracked-files=all"], cwd=repo_path)
+    result = run_process(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"], cwd=repo_path)
     if result.status != 0:
         raise SystemExit(command_failure("git status failed", result))
     return parse_status(result.stdout)
@@ -88,6 +130,13 @@ def head_summary(repo: str | Path) -> str | None:
     if result.status != 0:
         return None
     return result.stdout.strip() or None
+
+
+def head_sha(repo: str | Path) -> str:
+    result = run_process(["git", "rev-parse", "HEAD"], cwd=require_git_repo(repo))
+    if result.status != 0:
+        raise SystemExit(command_failure("git rev-parse HEAD failed", result))
+    return result.stdout.strip()
 
 
 def current_branch(repo: str | Path) -> str:
@@ -111,11 +160,207 @@ def prepare_branch(repo: str | Path, branch_name: str) -> None:
         raise SystemExit(command_failure(f"failed to prepare branch {trimmed}", result))
 
 
+def prepare_execution_worktree(
+    source_repo: str | Path,
+    plan_id: str,
+    branch: str,
+    worktree_root: str | Path | None = None,
+    *,
+    source_plan_sha256: str = "",
+) -> ExecutionWorktreeContext:
+    source_path = require_git_repo(source_repo)
+    normalized_plan_id = plan_id.strip()
+    normalized_branch = branch.strip()
+    if not normalized_plan_id:
+        raise SystemExit("plan id is required")
+    if not normalized_branch:
+        raise SystemExit("branch name is required")
+    root = (
+        Path(worktree_root).expanduser().resolve()
+        if worktree_root
+        else source_path.parent / f".{source_path.name}-codex-flow-worktrees"
+    )
+    target = (root / normalized_plan_id).resolve()
+    if target == source_path or source_path in target.parents:
+        raise SystemExit(f"execution worktree must be outside the source repository: {target}")
+
+    if target.exists():
+        if not is_git_repo(target):
+            raise SystemExit(f"worktree path exists but is not a git worktree: {target}")
+        if current_branch(target) != normalized_branch:
+            raise SystemExit(
+                f"worktree path uses branch {current_branch(target)}, expected {normalized_branch}: {target}"
+            )
+        if git_common_dir(target) != git_common_dir(source_path):
+            raise SystemExit(f"worktree path belongs to a different git repository: {target}")
+    else:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        existing = run_process(
+            ["git", "rev-parse", "--verify", "--quiet", f"refs/heads/{normalized_branch}"],
+            cwd=source_path,
+        )
+        args = ["git", "worktree", "add", str(target), normalized_branch]
+        if existing.status != 0:
+            args = ["git", "worktree", "add", "-b", normalized_branch, str(target), "HEAD"]
+        result = run_process(args, cwd=source_path)
+        if result.status != 0:
+            raise SystemExit(command_failure(f"failed to create worktree {target}", result))
+
+    return ExecutionWorktreeContext(
+        source_repo=source_path,
+        execution_repo=target,
+        worktree_path=target,
+        plan_id=normalized_plan_id,
+        branch=normalized_branch,
+        source_plan_sha256=source_plan_sha256,
+    )
+
+
+def git_common_dir(repo: str | Path) -> Path:
+    repo_path = require_git_repo(repo)
+    result = run_process(["git", "rev-parse", "--git-common-dir"], cwd=repo_path)
+    if result.status != 0:
+        raise SystemExit(command_failure("git common-dir failed", result))
+    common = Path(result.stdout.strip())
+    return (repo_path / common).resolve() if not common.is_absolute() else common.resolve()
+
+
+def cleanup_execution_worktree(
+    context: ExecutionWorktreeContext,
+    *,
+    target_branch: str,
+) -> ExecutionWorktreeContext:
+    if context.cleanup_state == "removed":
+        return context
+    source_repo = require_git_repo(context.source_repo)
+    execution_repo = require_git_repo(context.execution_repo)
+    if execution_repo == source_repo:
+        raise SystemExit("refusing to remove the source repository as an execution worktree")
+    dirty = dirty_paths(status(execution_repo), ignore_flow=False)
+    if dirty:
+        raise SystemExit(f"refusing to remove dirty execution worktree: {', '.join(dirty)}")
+    target = target_branch.strip()
+    if not target:
+        raise SystemExit("cleanup target branch is required")
+    if context.branch == target:
+        raise SystemExit("refusing to remove an execution worktree for the cleanup target branch")
+    branch_head = run_process(["git", "rev-parse", f"refs/heads/{context.branch}"], cwd=source_repo)
+    if branch_head.status != 0:
+        raise SystemExit(command_failure(f"failed to resolve branch {context.branch}", branch_head))
+    merged = run_process(
+        ["git", "merge-base", "--is-ancestor", context.branch, target],
+        cwd=source_repo,
+    )
+    if merged.status != 0:
+        raise SystemExit(f"refusing to remove execution worktree: branch {context.branch} is not merged into {target}")
+    removed = run_process(["git", "worktree", "remove", str(execution_repo)], cwd=source_repo)
+    if removed.status != 0:
+        raise SystemExit(command_failure(f"failed to remove worktree {execution_repo}", removed))
+    deleted = run_process(
+        ["git", "update-ref", "-d", f"refs/heads/{context.branch}", branch_head.stdout.strip()],
+        cwd=source_repo,
+    )
+    if deleted.status != 0:
+        raise SystemExit(command_failure(f"failed to delete merged branch {context.branch}", deleted))
+    return replace(context, cleanup_state="removed")
+
+
 def dirty_paths(snapshot: GitStatusSnapshot, ignore_flow: bool = True) -> list[str]:
     paths = [entry.path for entry in snapshot.entries]
     if ignore_flow:
         paths = [path for path in paths if not path.startswith(FLOW_PREFIX)]
     return paths
+
+
+def path_allowed(path: str, allowed_paths: list[str]) -> bool:
+    normalized = path.replace("\\", "/")
+    for raw_pattern in allowed_paths:
+        pattern = raw_pattern.replace("\\", "/").strip()
+        if not pattern:
+            continue
+        if pattern in {"*", "**"}:
+            return True
+        if pattern.endswith("/**") and normalized.startswith(pattern[:-3].rstrip("/") + "/"):
+            return True
+        if fnmatch.fnmatch(normalized, pattern):
+            return True
+        if normalized == pattern or normalized.startswith(pattern.rstrip("/") + "/"):
+            return True
+    return False
+
+
+def scoped_status_summary(snapshot: GitStatusSnapshot, allowed_paths: list[str]) -> str:
+    if not snapshot.entries:
+        return ""
+    if not allowed_paths:
+        return snapshot.raw
+    visible = [entry.raw for entry in snapshot.entries if path_allowed(entry.path, allowed_paths)]
+    hidden_count = len(snapshot.entries) - len(visible)
+    lines = visible or ["Clean within allowed paths"]
+    if hidden_count:
+        lines.append(f"... {hidden_count} unrelated dirty path(s) hidden from implementer prompt")
+    return "\n".join(lines)
+
+
+def scoped_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
+    """Digest actual scoped bytes, not only porcelain path/status metadata."""
+    repo_path = require_git_repo(repo)
+    snapshot = status(repo_path)
+    paths = sorted(
+        entry.path
+        for entry in snapshot.entries
+        if not allowed_paths or path_allowed(entry.path, allowed_paths)
+    )
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        diff = run_process(["git", "diff", "--binary", "HEAD", "--", relative], cwd=repo_path)
+        digest.update(diff.stdout.encode("utf-8"))
+        path = repo_path / relative
+        if path.is_file() and not diff.stdout:
+            digest.update(path.read_bytes())
+    return digest.hexdigest() if paths else ""
+
+
+def candidate_diff_digest(repo: str | Path, excluded_paths: tuple[str, ...] = ()) -> str:
+    """Digest candidate bytes except exact parent-owned paths that change during the probe."""
+    repo_path = require_git_repo(repo)
+    snapshot = status(repo_path)
+    excluded = tuple(path.replace("\\", "/").strip("/") for path in excluded_paths if path.strip("/"))
+
+    def included(relative: str) -> bool:
+        normalized = relative.replace("\\", "/").strip("/")
+        return not any(normalized == path or normalized.startswith(path + "/") for path in excluded)
+
+    paths = sorted(entry.path for entry in snapshot.entries if included(entry.path))
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        diff = run_process(["git", "diff", "--binary", "HEAD", "--", relative], cwd=repo_path)
+        digest.update(diff.stdout.encode("utf-8"))
+        path = repo_path / relative
+        if path.is_file() and not diff.stdout:
+            digest.update(path.read_bytes())
+    return digest.hexdigest() if paths else ""
+
+
+def out_of_scope_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
+    repo_path = require_git_repo(repo)
+    snapshot = status(repo_path)
+    paths = sorted(
+        entry.path
+        for entry in snapshot.entries
+        if not entry.path.startswith(FLOW_PREFIX) and not path_allowed(entry.path, allowed_paths)
+    )
+    digest = hashlib.sha256()
+    for relative in paths:
+        digest.update(relative.encode("utf-8"))
+        diff = run_process(["git", "diff", "--binary", "HEAD", "--", relative], cwd=repo_path)
+        digest.update(diff.stdout.encode("utf-8"))
+        path = repo_path / relative
+        if path.is_file() and not diff.stdout:
+            digest.update(path.read_bytes())
+    return digest.hexdigest() if paths else ""
 
 
 def stash_paths(repo: str | Path, paths: list[str], message: str) -> str:
@@ -164,6 +409,10 @@ def merge_branch(repo: str | Path, source_branch: str, target_branch: str) -> Pr
     if switch_result.status != 0:
         return switch_result
     return run_process(["git", "merge", source_branch], cwd=repo_path)
+
+
+def delete_local_branch(repo: str | Path, branch_name: str) -> ProcessResult:
+    return run_process(["git", "branch", "-d", branch_name], cwd=require_git_repo(repo))
 
 
 def unmerged_paths(repo: str | Path) -> list[str]:

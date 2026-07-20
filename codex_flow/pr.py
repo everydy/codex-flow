@@ -6,7 +6,15 @@ import re
 
 from . import inbox, plan_readiness, plans, state
 from .git_ops import command_failure, merge_branch, push_branch, run_process
+from .final_gate import FinalizeGuard
 from .merge import MergeRunner
+
+
+class ActivePrLockError(RuntimeError):
+    def __init__(self, lock_path: str | Path) -> None:
+        self.lock_path = Path(lock_path)
+        self.lock = parse_pr_lock(self.lock_path)
+        super().__init__(format_active_pr_lock(self.lock_path, self.lock))
 
 
 def branch_from_queue(queue_data: dict) -> str:
@@ -23,6 +31,8 @@ def plan_is_complete(queue_data: dict, plan_path: str | Path | None = None) -> b
 def write_pr_dry_run(plan_path: str | Path) -> Path:
     plan_dir, queue = plans.load_queue(plan_path)
     queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+    plan_content = (plan_dir / "plan.md").read_text(encoding="utf-8")
+    skill_manifest = plan_readiness.parse_skill_routing_manifest(plan_content)
     branch = branch_from_queue(queue)
     ready = plan_is_complete(queue, plan_dir / "plan.md")
     pr_path = plan_dir / "pr-dry-run.md"
@@ -48,10 +58,24 @@ def write_pr_dry_run(plan_path: str | Path) -> Path:
     lines.extend(
         [
             "",
+            "## Skill Routing Manifest",
+            "",
+            "| Phase | Required skills | Optional skills |",
+            "| --- | --- | --- |",
+        ]
+    )
+    if skill_manifest:
+        for entry in skill_manifest:
+            lines.append(f"| {entry.phase} | {plan_readiness.format_skill_list(entry.required_skills)} | {plan_readiness.format_skill_list(entry.optional_skills)} |")
+    else:
+        lines.append("| - | - | - |")
+    lines.extend(
+        [
+            "",
             "## Merge Gate",
             "",
-            "- Real remote PR creation requires explicit command execution.",
-            "- Real merge requires explicit command execution.",
+            "- Remote PR creation is handled by `open-pr --remote` or `create-pr` after readiness.",
+            "- Local merge and branch close happen by default after completed `run-all`; remote PR/merge uses explicit finalize commands.",
             "",
         ]
     )
@@ -65,6 +89,10 @@ def create_remote_pr(plan_path: str | Path, draft: bool = True) -> tuple[str, Pa
     if not plan_is_complete(queue, plan_dir / "plan.md"):
         raise SystemExit("Plan is not complete; remote PR creation stopped.")
     repo = plan_dir.parents[2]
+    lock_path = read_pr_lock(repo)
+    if lock_path:
+        raise ActivePrLockError(lock_path)
+    require_adaptive_final_gate(plan_dir, queue)
     branch = branch_from_queue(queue)
     push_branch(repo, branch)
     args = [
@@ -136,6 +164,13 @@ def parse_pr_lock(lock_path: str | Path) -> dict[str, str]:
     return data
 
 
+def format_active_pr_lock(lock_path: str | Path, lock: dict[str, str] | None = None) -> str:
+    data = lock if lock is not None else parse_pr_lock(lock_path)
+    branch = data.get("branch", "unknown")
+    url = data.get("url", str(lock_path))
+    return f"pr_locked: active branch={branch} url={url} lock={lock_path}"
+
+
 def check_pr_lock(repo: str | Path, gh_command: str = "gh", auto_drain: bool = True) -> str:
     lock_path = read_pr_lock(repo)
     if not lock_path:
@@ -169,28 +204,31 @@ def append_lock_resolution(repo: str | Path, message: str) -> Path:
 
 
 def drain_inbox(repo: str | Path) -> str:
-    from . import tickets
+    from . import source_plan
 
     if read_pr_lock(repo):
         return "drain: locked"
     flow = state.ensure_initialized(repo)
 
+    class SourcePlanRequiredError(Exception):
+        pass
+
     def route_structured(request: inbox.QueuedRequest) -> str:
-        ticket = tickets.submit_ticket(request.prompt, repo=repo)
-        plan = plans.create_plan_from_ticket(ticket.path, repo=repo, reason=request.reason)
-        tickets.update_ticket_status(ticket.path, "planned")
+        try:
+            source = source_plan.resolve_source_plan(request.prompt, repo=repo)
+        except SystemExit:
+            raise SourcePlanRequiredError from None
+        plan = plans.create_plan_from_source(source, repo=repo)
         return str(plan.plan_path)
 
     structured = inbox.read_inbox_requests(flow.inbox)
     if structured:
-        result = inbox.drain_inbox_requests(flow.inbox, lambda: read_pr_lock(repo) is not None, route_structured)
+        try:
+            result = inbox.drain_inbox_requests(flow.inbox, lambda: read_pr_lock(repo) is not None, route_structured)
+        except SourcePlanRequiredError:
+            return "drain: source plan required; queued request left in inbox"
         return result.message
-    ticket = tickets.first_inbox_ticket(repo)
-    if not ticket:
-        return "drain: empty"
-    plan = plans.create_plan_from_ticket(ticket.path, repo=repo)
-    tickets.update_ticket_status(ticket.path, "planned")
-    return f"drain: planned {plan.plan_path}"
+    return "drain: empty"
 
 
 def merge_plan(plan_path: str | Path, target: str = "main", remote: bool = False, execute: bool = False) -> str:
@@ -199,14 +237,27 @@ def merge_plan(plan_path: str | Path, target: str = "main", remote: bool = False
     return result.message
 
 
+def require_adaptive_final_gate(plan_dir: Path, queue: dict) -> None:
+    FinalizeGuard.require(plan_dir / "plan.md")
+
+
 def build_pr_body(plan_dir: Path, queue: dict) -> str:
     unit_lines = "\n".join(f"- {unit['id']}: {unit['status']} - {unit['title']}" for unit in queue.get("units", []))
+    plan_path = plan_dir / "plan.md"
+    skill_manifest = plan_readiness.parse_skill_routing_manifest(plan_path.read_text(encoding="utf-8")) if plan_path.exists() else []
+    skill_lines = "\n".join(
+        f"- {entry.phase}: required {plan_readiness.format_skill_list(entry.required_skills)}"
+        for entry in skill_manifest
+    ) or "- Not specified"
     return "\n".join(
         [
             f"Plan: `{plan_dir}`",
             "",
             "Unit status:",
             unit_lines,
+            "",
+            "Skill routing:",
+            skill_lines,
             "",
             "Generated by Codex Flow.",
         ]

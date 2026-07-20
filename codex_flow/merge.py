@@ -9,6 +9,7 @@ from . import plan_readiness, state
 from .git_ops import (
     command_failure,
     commit_merge,
+    delete_local_branch,
     dirty_paths,
     fetch_branch,
     has_pending_merge_commit,
@@ -20,6 +21,7 @@ from .git_ops import (
     unmerged_paths,
 )
 from .merge_agent import CodexMergeAgent, MergeAgent, MergeAgentInput
+from .final_gate import FinalizeGuard, FinalGateError
 
 
 @dataclass(frozen=True)
@@ -44,6 +46,10 @@ class MergeRunner:
             return MergeResult("needs_work", "merge: needs_work plan is not complete", branch, target)
         if not execute:
             return MergeResult("hard_stop", "merge: hard-stop use --execute to run an actual merge", branch, target)
+        try:
+            FinalizeGuard.require(plan_dir / "plan.md")
+        except FinalGateError as exc:
+            return MergeResult("needs_work", f"final_gate: {exc}", branch, target)
         repo = plan_dir.parents[2]
         dirty = dirty_paths(status(repo))
         if dirty:
@@ -51,13 +57,17 @@ class MergeRunner:
         result = merge_branch(repo, branch, target)
         if result.status == 0:
             append_merge_log(plan_dir, f"Merged local branch `{branch}` into `{target}`.")
-            return MergeResult("merged_local", f"merge: local merged {branch} into {target}", branch, target)
+            close_message = self.close_source_branch(repo, plan_dir, branch, target)
+            suffix = f"; {close_message}" if close_message else ""
+            return MergeResult("merged_local", f"merge: local merged {branch} into {target}{suffix}", branch, target)
         resolved = self.resolve_conflict(repo, plan_dir / "plan.md", branch, target, "local", command_failure("git merge failed", result))
         if resolved.action == "merge_needs_work":
             append_merge_log(plan_dir, resolved.message)
             return resolved
         append_merge_log(plan_dir, resolved.message)
-        return MergeResult("merged_local", f"merge: local merged {branch} into {target}", branch, target)
+        close_message = self.close_source_branch(repo, plan_dir, branch, target)
+        suffix = f"; {close_message}" if close_message else ""
+        return MergeResult("merged_local", f"merge: local merged {branch} into {target}{suffix}", branch, target)
 
     def merge_remote(self, plan_path: str | Path, target: str = "main", execute: bool = False) -> MergeResult:
         plan_dir, plan_content, log_content = plan_readiness.read_plan_file(plan_path)
@@ -67,7 +77,14 @@ class MergeRunner:
             return MergeResult("needs_work", "merge: needs_work plan is not complete", branch, target)
         if not execute:
             return MergeResult("hard_stop", "merge: hard-stop use --execute to run an actual merge", branch, target)
+        try:
+            FinalizeGuard.require(plan_dir / "plan.md")
+        except FinalGateError as exc:
+            return MergeResult("needs_work", f"final_gate: {exc}", branch, target)
         repo = plan_dir.parents[2]
+        active_lock = read_active_pr_lock(repo)
+        if active_lock and active_lock[1] != branch:
+            return MergeResult("needs_work", f"merge: needs_work pr_locked active branch={active_lock[1]} lock={active_lock[0]}", branch, target)
         push_branch(repo, branch)
         pr_url = self.ensure_remote_pr(repo, branch, target, plan_content)
         merge_result = run_process([self.gh_command, "pr", "merge", pr_url, "--merge"], cwd=repo)
@@ -161,6 +178,17 @@ class MergeRunner:
                 return MergeResult("merge_needs_work", command_failure("git merge commit failed", commit), branch, target)
         return MergeResult("merge_ready", f"merge: conflicts resolved: {agent_result.summary}", branch, target)
 
+    def close_source_branch(self, repo: Path, plan_dir: Path, branch: str, target: str) -> str:
+        if branch == target or branch in {"main", "master", "develop", "production", "release"}:
+            return "branch_close: skipped protected_or_target"
+        result = delete_local_branch(repo, branch)
+        if result.status == 0:
+            append_merge_log(plan_dir, f"Closed local branch `{branch}` with `git branch -d`.")
+            return f"branch_closed: {branch}"
+        message = command_failure("git branch -d failed", result)
+        append_merge_log(plan_dir, f"Held local branch `{branch}` after merge: {message}.")
+        return f"branch_close_held: {message}"
+
 
 def append_merge_log(plan_dir: Path, message: str) -> None:
     log_path = plan_dir / "log.md"
@@ -209,3 +237,14 @@ def clear_matching_pr_lock(repo: str | Path, branch: str) -> bool:
         return False
     lock_path.unlink()
     return True
+
+
+def read_active_pr_lock(repo: str | Path) -> tuple[Path, str] | None:
+    flow = state.ensure_initialized(repo)
+    lock_path = flow.locks / "pr-lock.md"
+    if not lock_path.exists():
+        return None
+    text = lock_path.read_text(encoding="utf-8")
+    match = re.search(r"^(?:- )?Branch:\s*(.+)$", text, flags=re.MULTILINE)
+    branch = match.group(1).strip() if match else "unknown"
+    return lock_path, branch

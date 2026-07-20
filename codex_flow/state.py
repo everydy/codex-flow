@@ -95,8 +95,8 @@ def ensure_initialized(repo: str | Path | None = None) -> FlowPaths:
             [
                 "# Codex Flow Config",
                 "",
-                "- remote_pr: disabled",
-                "- remote_merge: disabled",
+                "- remote_pr: finalize_command",
+                "- remote_merge: finalize_command",
                 "- recursive_codex_exec: disabled",
                 "- execute_run_all_limit: none",
                 "- prompt_preview_max_units: 4",

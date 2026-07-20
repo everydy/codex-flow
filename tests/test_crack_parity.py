@@ -1,43 +1,54 @@
 from __future__ import annotations
 
-import json
 import subprocess
+
+import pytest
 
 from codex_flow import cli, plans, pr, tickets
 from codex_flow.dashboard import render_dashboard
+from codex_flow.final_gate import produce_final_gate
 
 
-def test_route_reuses_single_active_plan(tmp_path, capsys):
+def test_route_short_request_fails_instead_of_reusing_active_plan(tmp_path, capsys):
     first = tickets.submit_ticket("Improve dashboard", repo=tmp_path)
-    plan = plans.create_plan_from_ticket(first.path, repo=tmp_path)
+    plans.create_plan_from_ticket(first.path, repo=tmp_path)
 
-    status = cli.main(["--repo", str(tmp_path), "route", "Improve dashboard copy", "--router", "heuristic", "--planner", "template"])
+    status = cli.main(["--repo", str(tmp_path), "route", "Improve dashboard copy", "--auto-resolve"])
 
     output = capsys.readouterr().out
-    assert status == 0
-    assert "route_to_existing_plan:" in output
-    assert "Improve dashboard copy" in (plan.directory / "requests.md").read_text(encoding="utf-8")
+    assert status == 1
+    assert "route requires a plan-first Markdown file path" in output
 
 
-def test_route_defaults_to_codex_router_and_planner():
-    args = cli.build_parser().parse_args(["route", "Improve dashboard"])
+def test_route_no_longer_accepts_router_or_planner_flags():
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["route", "docs/plans/example.md", "--router", "codex"])
 
-    assert args.router == "codex"
-    assert args.planner == "codex"
+    with pytest.raises(SystemExit):
+        cli.build_parser().parse_args(["route", "docs/plans/example.md", "--planner", "codex"])
 
 
-def test_route_explicit_plan_appends_request(tmp_path, capsys):
+def test_pr_draft_and_pr_create_commands_are_distinct():
+    draft_args = cli.build_parser().parse_args(["open-pr", "--plan", "plan.md"])
+    create_args = cli.build_parser().parse_args(["create-pr", "--plan", "plan.md"])
+
+    assert draft_args.command == "open-pr"
+    assert draft_args.remote is False
+    assert create_args.command == "create-pr"
+    assert not hasattr(create_args, "remote")
+
+
+def test_route_explicit_plan_no_longer_appends_request(tmp_path, capsys):
     first = tickets.submit_ticket("Plan target", repo=tmp_path)
     plan = plans.create_plan_from_ticket(first.path, repo=tmp_path)
 
-    status = cli.main(["--repo", str(tmp_path), "route", "Attach this", "--plan", str(plan.plan_path), "--reason", "Manual attach"])
+    status = cli.main(["--repo", str(tmp_path), "route", "Attach this", "--auto-resolve"])
 
     output = capsys.readouterr().out
-    assert status == 0
-    assert "route_to_existing_plan:" in output
+    assert status == 1
+    assert "route requires a plan-first Markdown file path" in output
     requests = (plan.directory / "requests.md").read_text(encoding="utf-8")
-    assert "Attach this" in requests
-    assert "Manual attach" in requests
+    assert "Attach this" not in requests
 
 
 def test_dashboard_renders_plan_progress_and_suggested_command(tmp_path):
@@ -91,9 +102,9 @@ def test_pr_check_merged_clears_lock_and_drains_inbox(tmp_path, capsys):
     output = capsys.readouterr().out
     assert status == 0
     assert "cleared" in output
-    assert "drain: planned" in output
+    assert "drain: empty" in output
     assert not pr.read_pr_lock(tmp_path)
-    assert tickets.load_ticket(ticket.path).status == "planned"
+    assert tickets.load_ticket(ticket.path).status == "inbox"
 
 
 def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
@@ -101,10 +112,22 @@ def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
     from codex_flow.git_ops import ProcessResult
     from codex_flow.merge import MergeRunner
 
+    subprocess.run(["git", "init"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "switch", "-c", "codex/demo"], cwd=tmp_path, check=True, capture_output=True)
+    subprocess.run(["git", "config", "user.email", "codex-flow@example.com"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "config", "user.name", "Codex Flow"], cwd=tmp_path, check=True)
+    (tmp_path / "README.md").write_text("# Test\n", encoding="utf-8")
+    subprocess.run(["git", "add", "README.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "initial"], cwd=tmp_path, check=True, capture_output=True)
     plan_dir = tmp_path / ".codex-flow" / "plans" / "demo"
     plan_dir.mkdir(parents=True)
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Done\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    produce_final_gate(
+        plan_dir / "plan.md",
+        review_evidence={"status": "pass"},
+        test_evidence={"status": "pass"},
+    )
     pr.write_pr_lock(tmp_path, "codex/demo", "https://github.com/example/repo/pull/7", "reviewing")
 
     monkeypatch.setattr(merge, "push_branch", lambda repo, branch: None)
@@ -139,3 +162,58 @@ def test_run_all_open_pr_writes_dry_run_after_units_done(tmp_path, capsys):
     assert status == 0
     assert "pr_dry_run:" in output
     assert (plan.directory / "pr-dry-run.md").exists()
+
+
+def test_remote_pr_creation_refuses_active_pr_lock(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Remote PR lock test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    (plan.directory / "log.md").write_text(
+        "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n- Completed commit unit 3.\n",
+        encoding="utf-8",
+    )
+    pr.write_pr_lock(tmp_path, "codex/other", "https://github.com/example/repo/pull/8", "reviewing")
+
+    status = cli.main(["--repo", str(tmp_path), "create-pr", "--plan", str(plan.plan_path)])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "pr_locked: active" in output
+    assert "codex/other" in output
+
+
+def test_run_all_remote_returns_nonzero_when_pr_lock_active(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Run all remote lock test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    (plan.directory / "log.md").write_text(
+        "# Log\n\n- Completed commit unit 1.\n- Completed commit unit 2.\n- Completed commit unit 3.\n",
+        encoding="utf-8",
+    )
+    pr.write_pr_lock(tmp_path, "codex/other", "https://github.com/example/repo/pull/8", "reviewing")
+
+    status = cli.main(["--repo", str(tmp_path), "run-all", "--plan", str(plan.plan_path), "--remote"])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "pr_locked: active" in output
+
+
+def test_run_all_failure_state_returns_nonzero(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Run all exit code test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+
+    status = cli.main(["--repo", str(tmp_path), "run-all", "--plan", str(plan.plan_path), "--max-units", "0"])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "max_units_reached" in output
+
+
+def test_create_pr_incomplete_plan_returns_nonzero(tmp_path, capsys):
+    ticket = tickets.submit_ticket("Incomplete remote PR test", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+
+    status = cli.main(["--repo", str(tmp_path), "create-pr", "--plan", str(plan.plan_path)])
+
+    output = capsys.readouterr().out
+    assert status == 1
+    assert "Plan is not complete" in output

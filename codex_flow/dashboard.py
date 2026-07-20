@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from . import inbox, plan_readiness, plans, pr, state
+from . import inbox, plan_readiness, plans, pr, source_plan, state
 from .git_ops import dirty_paths, status
 from .tickets import list_tickets
 
@@ -46,6 +46,7 @@ def render_dashboard(repo: str | Path | None = None) -> str:
             branch = plan_readiness.branch_name_from_plan(plan_content, active.queue_data.get("branch", "-"))
             title = plan_readiness.title_from_plan(plan_content, active.queue_data.get("plan_title") or active.queue_data.get("ticket_title") or active.directory.name)
             rel_plan = state.relative_to_repo(flow, active.plan_path)
+            drift = source_plan.check_source_drift(active.directory)
             lines.extend(
                 [
                     f"### {title}",
@@ -54,7 +55,13 @@ def render_dashboard(repo: str | Path | None = None) -> str:
                     f"- Branch: `{branch}`",
                     f"- Progress: {done}/{len(units)} done, {ready} ready, {needs_work} needs_work",
                     f"- Next: {format_next(readiness.next_unit)}",
-                    f"- Suggested command: `python3 scripts/codex_flow.py run-all --plan {rel_plan} --auto-resolve --execute --commit`",
+                ]
+            )
+            if drift.reason != "no source metadata":
+                lines.append(f"- Source drift: {drift.reason}")
+            lines.extend(
+                [
+                    f"- Suggested command: `python3 scripts/codex_flow.py run-all --plan {rel_plan} --auto-resolve`",
                     "",
                 ]
             )

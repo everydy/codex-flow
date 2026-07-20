@@ -50,3 +50,41 @@ def test_sync_queue_cache_from_plan_without_existing_json(tmp_path):
     assert queue["branch"] == "codex/demo"
     assert queue["units"][0]["status"] == "done"
     assert json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))["units"][0]["id"] == "unit-001"
+
+
+def test_parse_skill_routing_manifest_and_syncs_to_queue(tmp_path):
+    plan_dir = tmp_path / ".codex-flow" / "plans" / "skills"
+    plan_dir.mkdir(parents=True)
+    plan_text = "\n".join(
+        [
+            "Branch: codex/skills",
+            "Title: Skills",
+            "",
+            "## Skill Routing Manifest",
+            "",
+            "| Phase | Required skills | Optional skills | Evidence |",
+            "| --- | --- | --- | --- |",
+            "| Commit 1: First | `요청개선`, `mission-completion-harness` | `community-research` | 요청 정리 |",
+            "| Final Gate | `review-all-in-one`, `qa-gate` | `checkpoint` | 최종 검토 |",
+            "",
+            "## Commit Units",
+            "",
+            "### Commit 1: First",
+            "",
+            "A",
+        ]
+    )
+    (plan_dir / "plan.md").write_text(plan_text, encoding="utf-8")
+    (plan_dir / "log.md").write_text("", encoding="utf-8")
+
+    entries = plan_readiness.parse_skill_routing_manifest(plan_text)
+    commit_entry = plan_readiness.skill_routing_for_commit(plan_text, 1)
+    final_entry = plan_readiness.final_gate_skill_routing(plan_text)
+    queue = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+
+    assert [entry.phase for entry in entries] == ["Commit 1: First", "Final Gate"]
+    assert commit_entry
+    assert commit_entry.required_skills == ("요청개선", "mission-completion-harness")
+    assert final_entry
+    assert final_entry.required_skills == ("review-all-in-one", "qa-gate")
+    assert queue["units"][0]["required_skills"] == ["요청개선", "mission-completion-harness"]
