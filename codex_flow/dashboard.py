@@ -12,7 +12,7 @@ from .tickets import list_tickets
 
 
 def render_dashboard(repo: str | Path | None = None) -> str:
-    flow = state.ensure_initialized(repo)
+    flow = state.paths(repo)
     summary = state.dashboard_summary(flow.repo)
     pr_lock = pr.read_pr_lock(flow.repo)
     dirty = dirty_paths(status(flow.repo)) if (flow.repo / ".git").exists() else []

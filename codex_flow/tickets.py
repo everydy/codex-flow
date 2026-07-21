@@ -164,7 +164,7 @@ def append_inbox(flow: state.FlowPaths, ticket_id: str, title: str, created: str
 
 
 def list_tickets(repo: str | Path | None = None) -> list[Ticket]:
-    flow = state.ensure_initialized(repo)
+    flow = state.paths(repo)
     return [load_ticket(path) for path in sorted(flow.tickets.glob("*.md"))]
 
 

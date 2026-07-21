@@ -72,7 +72,7 @@ def test_high_risk_inference_cannot_be_lowered_by_metadata(title, path):
     assert policy.effective_profile is ExecutionProfile.HIGH_RISK
     assert policy.execution_mode is ExecutionMode.ISOLATED_CHILD
     assert policy.unit_gate is UnitGate.FULL
-    assert policy.review_policy is ReviewPolicy.PER_UNIT
+    assert policy.review_policy is ReviewPolicy.FINAL_ONLY
 
 
 @pytest.mark.parametrize(
@@ -156,6 +156,18 @@ def test_persisted_high_risk_floor_wins_over_documentation_scope():
 
     assert policy.effective_profile is ExecutionProfile.HIGH_RISK
     assert policy.execution_mode is ExecutionMode.ISOLATED_CHILD
+    assert policy.review_policy is ReviewPolicy.FINAL_ONLY
+
+
+def test_high_risk_uses_per_unit_review_only_when_explicitly_requested():
+    value = unit("src/security.py", title="Security hardening", declared="high_risk")
+    value["execution_policy"]["review_policy"] = "per_unit"
+
+    policy = classify_execution_policy(value)
+
+    assert policy.effective_profile is ExecutionProfile.HIGH_RISK
+    assert policy.execution_mode is ExecutionMode.ISOLATED_CHILD
+    assert policy.unit_gate is UnitGate.FULL
     assert policy.review_policy is ReviewPolicy.PER_UNIT
 
 

@@ -154,9 +154,7 @@ def classify_execution_policy(unit: Mapping) -> ExecutionPolicy:
     if requested_adapter == "isolated-child":
         mode = ExecutionMode.ISOLATED_CHILD
         reasons.append("explicit isolated-child adapter")
-    if effective is ExecutionProfile.HIGH_RISK:
-        review_policy = ReviewPolicy.PER_UNIT
-    elif requested_review == ReviewPolicy.PER_UNIT.value:
+    if requested_review == ReviewPolicy.PER_UNIT.value:
         review_policy = ReviewPolicy.PER_UNIT
         reasons.append("explicit per-unit review")
     else:

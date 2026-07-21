@@ -6,7 +6,7 @@ import subprocess
 
 import pytest
 
-from codex_flow import cli, plans, pr, tickets
+from codex_flow import cli, dashboard as dashboard_view, plans, pr, tickets
 from codex_flow.dashboard import render_dashboard
 from codex_flow.final_gate import final_evidence_identity, produce_final_gate
 
@@ -63,6 +63,69 @@ def test_dashboard_renders_plan_progress_and_suggested_command(tmp_path):
     assert "Active Plans" in output
     assert "Suggested command:" in output
     assert "run-all" in output
+
+
+def test_dashboard_on_fresh_repo_is_read_only(tmp_path):
+    output = render_dashboard(tmp_path)
+
+    assert "Plans: 0" in output
+    assert not (tmp_path / ".codex-flow").exists()
+
+    assert cli.main(["--repo", str(tmp_path), "status"]) == 0
+    assert not (tmp_path / ".codex-flow").exists()
+
+
+def test_repeated_dashboard_projection_does_not_change_state_tree(tmp_path):
+    ticket = tickets.submit_ticket("Read-only dashboard", repo=tmp_path)
+    plan = plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    plan.queue_json.unlink()
+
+    def snapshot():
+        return {
+            str(path.relative_to(tmp_path)): path.read_bytes()
+            for path in sorted((tmp_path / ".codex-flow").rglob("*"))
+            if path.is_file()
+        }
+
+    before = snapshot()
+    first = render_dashboard(tmp_path)
+    middle = snapshot()
+    second = render_dashboard(tmp_path)
+
+    assert first == second
+    assert before == middle == snapshot()
+    assert not plan.queue_json.exists()
+
+
+def test_dashboard_watch_does_not_change_state_tree(tmp_path, monkeypatch):
+    ticket = tickets.submit_ticket("Watch dashboard", repo=tmp_path)
+    plans.create_plan_from_ticket(ticket.path, repo=tmp_path)
+    before = {
+        str(path.relative_to(tmp_path)): path.read_bytes()
+        for path in sorted((tmp_path / ".codex-flow").rglob("*"))
+        if path.is_file()
+    }
+    calls = 0
+    real_render = dashboard_view.render_dashboard
+
+    def bounded_render(repo):
+        nonlocal calls
+        calls += 1
+        if calls > 2:
+            raise KeyboardInterrupt
+        return real_render(repo)
+
+    monkeypatch.setattr(dashboard_view, "render_dashboard", bounded_render)
+    monkeypatch.setattr("codex_flow.cli.time.sleep", lambda _seconds: None)
+
+    assert cli.main(["--repo", str(tmp_path), "dashboard", "--watch", "--interval", "0"]) == 0
+    after = {
+        str(path.relative_to(tmp_path)): path.read_bytes()
+        for path in sorted((tmp_path / ".codex-flow").rglob("*"))
+        if path.is_file()
+    }
+    assert calls == 3
+    assert before == after
 
 
 def test_dashboard_projects_main_unit_status_from_queue_without_mutation(tmp_path):

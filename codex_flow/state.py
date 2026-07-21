@@ -147,17 +147,27 @@ def count_plan_units(flow: FlowPaths) -> dict[str, int]:
     counts = {status: 0 for status in UNIT_STATUSES}
     for plan_path in flow.plans.glob("*/plan.md"):
         queue_path = plan_path.parent / "queue.json"
-        if not queue_path.exists():
-            try:
-                from . import plan_readiness
-
-                plan_readiness.sync_queue_cache_from_plan(plan_path)
-            except (OSError, ValueError):
-                continue
         try:
             import json
 
-            data = json.loads(queue_path.read_text(encoding="utf-8"))
+            if queue_path.exists():
+                data = json.loads(queue_path.read_text(encoding="utf-8"))
+            else:
+                from . import plan_readiness
+
+                content = plan_path.read_text(encoding="utf-8")
+                log_path = plan_path.parent / "log.md"
+                log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+                readiness = plan_readiness.check_plan_ready(content, log)
+                data = {
+                    "units": [
+                        {
+                            "id": unit.unit_id,
+                            "status": "done" if unit.number in readiness.completed else "ready",
+                        }
+                        for unit in plan_readiness.parse_commit_units(content)
+                    ]
+                }
         except (OSError, ValueError):
             continue
         for unit in data.get("units", []):
@@ -168,11 +178,11 @@ def count_plan_units(flow: FlowPaths) -> dict[str, int]:
 
 
 def dashboard_summary(repo: str | Path | None = None) -> dict[str, int]:
-    flow = ensure_initialized(repo)
+    flow = paths(repo)
     unit_counts = count_plan_units(flow)
     return {
         "tickets": len(list(flow.tickets.glob("*.md"))),
-        "plans": len([path for path in flow.plans.iterdir() if path.is_dir()]),
+        "plans": len([path for path in flow.plans.glob("*") if path.is_dir()]),
         "ready_units": unit_counts["ready"],
         "prompted_units": unit_counts["prompted"],
         "done_units": unit_counts["done"],

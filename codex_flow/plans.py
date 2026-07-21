@@ -888,14 +888,12 @@ def append_plan_request(plan_path: str | Path, request: str, reason: str = "Rout
 
 
 def list_active_plans(repo: str | Path | None = None) -> list[ActivePlan]:
-    flow = state.ensure_initialized(repo)
+    flow = state.paths(repo)
     active: list[ActivePlan] = []
     for plan_path in sorted(flow.plans.glob("*/plan.md")):
         queue_json = plan_path.parent / "queue.json"
-        if not queue_json.exists():
-            plan_readiness.sync_queue_cache_from_plan(plan_path)
         try:
-            queue_data = json.loads(queue_json.read_text(encoding="utf-8"))
+            queue_data = _read_queue_projection(plan_path, queue_json)
         except (OSError, ValueError):
             continue
         if any(unit.get("status") != "done" for unit in queue_data.get("units", [])):
@@ -911,18 +909,38 @@ def list_active_plans(repo: str | Path | None = None) -> list[ActivePlan]:
 
 
 def latest_plan(repo: str | Path | None = None) -> ActivePlan | None:
-    flow = state.ensure_initialized(repo)
+    flow = state.paths(repo)
     plan_paths = sorted(flow.plans.glob("*/plan.md"), key=lambda path: path.stat().st_mtime, reverse=True)
     for plan_path in plan_paths:
         queue_json = plan_path.parent / "queue.json"
-        if not queue_json.exists():
-            plan_readiness.sync_queue_cache_from_plan(plan_path)
         try:
-            queue_data = json.loads(queue_json.read_text(encoding="utf-8"))
+            queue_data = _read_queue_projection(plan_path, queue_json)
         except (OSError, ValueError):
             continue
         return ActivePlan(queue_json.parent, queue_json.parent / "plan.md", queue_json, queue_data)
     return None
+
+
+def _read_queue_projection(plan_path: Path, queue_json: Path) -> dict:
+    if queue_json.exists():
+        return json.loads(queue_json.read_text(encoding="utf-8"))
+    content = plan_path.read_text(encoding="utf-8")
+    log_path = plan_path.parent / "log.md"
+    log = log_path.read_text(encoding="utf-8") if log_path.exists() else ""
+    readiness = plan_readiness.check_plan_ready(content, log)
+    return {
+        "plan_title": plan_readiness.title_from_plan(content, plan_path.parent.name),
+        "branch": plan_readiness.branch_name_from_plan(content, f"codex/{plan_path.parent.name}"),
+        "units": [
+            {
+                "id": unit.unit_id,
+                "number": unit.number,
+                "title": unit.title,
+                "status": "done" if unit.number in readiness.completed else "ready",
+            }
+            for unit in plan_readiness.parse_commit_units(content)
+        ],
+    }
 
 
 def choose_active_plan(request: str, repo: str | Path | None = None) -> ActivePlan | None:
