@@ -18,7 +18,7 @@ from .codex_cli import (
     verify_child_attestation,
 )
 from .child_runtime import ensure_prepared_child_runtime
-from .git_ops import candidate_diff_digest, changed_paths_since, commit_paths, dirty_paths, head_summary, out_of_scope_diff_digest, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
+from .git_ops import candidate_diff_digest, changed_paths_since, commit_paths, dirty_paths, head_sha, head_summary, out_of_scope_diff_digest, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
 from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput
 from .reviewer_agent import (
     CommitUnitReview,
@@ -868,12 +868,25 @@ def execute_unit(
         commit_hash = commit_paths(repo, changed, commit_message(unit, review_result.review.title))
         action = "committed"
     elif not changed:
+        commit_hash = head_sha(repo)
         action = "skipped"
 
     unit["status"] = "done"
     unit["updated_at"] = state.timestamp()
     unit["changed_paths"] = changed
     unit["commit"] = commit_hash
+    unit["verification_evidence_sha256"] = hashlib.sha256(
+        json.dumps(
+            {
+                "attempt_ledger_revision": unit.get("attempt_ledger_revision", 0),
+                "review_status": review_result.review.status,
+                "review_gate": review_gate_payload(review_result.review),
+                "verification": [str(item) for item in unit.get("verification", [])],
+            },
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
+    ).hexdigest()
     unit["repair_attempts"] = used_repair_attempts
     if review_result.review.gate:
         unit["review_gate"] = review_result.review.gate.to_dict()

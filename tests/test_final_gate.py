@@ -51,6 +51,15 @@ def terminal_plan(path):
         encoding="utf-8",
     )
     plans.load_queue(plan.plan_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    for unit in queue["units"]:
+        unit["commit"] = commit
+        unit["verification_evidence_sha256"] = "a" * 64
+        unit["main_unit_ledger_revision"] = 1
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return plan
 
 
@@ -149,6 +158,32 @@ def test_producer_rejects_missing_and_stale_evidence_identity(tmp_path, field):
             test_evidence=stale,
         )
 
+
+@pytest.mark.parametrize(
+    ("field", "value", "message"),
+    [
+        ("commit", "", "full commit SHA"),
+        ("commit", "abcdef0", "full commit SHA"),
+        ("commit", "0" * 40, "commit is unavailable"),
+        ("verification_evidence_sha256", "", "verification evidence"),
+        ("verification_evidence_sha256", "a" * 7, "verification evidence"),
+        ("main_unit_ledger_revision", 0, "final attempt revision"),
+    ],
+)
+def test_producer_rejects_incomplete_terminal_unit_provenance(tmp_path, field, value, message):
+    init_repo(tmp_path)
+    plan = terminal_plan(tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0][field] = value
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    identity = final_evidence_identity(plan.plan_path)
+
+    with pytest.raises(FinalGateError, match=message):
+        produce_final_gate(
+            plan.plan_path,
+            review_evidence={**identity, "status": "pass"},
+            test_evidence={**identity, "status": "pass"},
+        )
 
 @pytest.mark.parametrize(
     ("unit_field", "value"),

@@ -22,6 +22,7 @@ from .git_ops import (
     scoped_diff_digest,
     stage_paths,
     status,
+    worktree_patch_digest,
 )
 
 
@@ -69,16 +70,24 @@ def begin_main_unit(
     plan_dir, queue = plans.load_queue(plan_path)
     unit = _select_unit(queue, unit_id)
     ledger_path = _current_ledger_path(plan_dir, unit)
-    if unit.get("status") in {"in_progress", "done"}:
-        snapshot = AttemptLedger(ledger_path).load()
-        if snapshot.record.get("owner") == "main" and snapshot.record.get("status") in {
+    snapshot = AttemptLedger(ledger_path).load()
+    if snapshot.record.get("owner") == "main":
+        ledger_status = snapshot.record.get("status")
+        if ledger_status in {
             "open",
             "committing",
             "completed",
         }:
-            if snapshot.record.get("status") == "completed":
-                _reconcile_completed(plan_dir, queue, unit, ledger_path, snapshot)
+            if ledger_status == "completed":
+                reconciled = _reconcile_completed(plan_dir, queue, unit, ledger_path, snapshot)
+            else:
+                reconciled = _reconcile_active(plan_dir, queue, unit, ledger_path, snapshot)
+            if reconciled:
+                _append_reconciled_event(AttemptLedger(ledger_path), unit, snapshot, ledger_status)
             return _contract_from_snapshot(ledger_path, snapshot)
+        if ledger_status == "held":
+            if _reconcile_held(plan_dir, queue, unit, ledger_path, snapshot):
+                _append_reconciled_event(AttemptLedger(ledger_path), unit, snapshot, "held")
     if unit.get("status") not in {"ready", "prompted", "needs_work"}:
         raise MainUnitError(f"unit {unit['id']} is already {unit.get('status')}")
     if unit.get("status") == "needs_work" and not retry_held:
@@ -153,7 +162,7 @@ def begin_main_unit(
         {
             "unit_id": unit["id"],
             "phase": "main",
-            "event": "main_unit_opened",
+            "event": "main_unit_retry_opened" if attempt > 1 else "main_unit_opened",
             "ledger_revision": opened.revision,
             "queue_revision": queue_revision,
             "expected_head": expected_head,
@@ -215,8 +224,7 @@ def complete_main_unit(
         json.dumps(dict(evidence), sort_keys=True, separators=(",", ":")).encode("utf-8")
     ).hexdigest()
     try:
-        stage_paths(repo, list(changed))
-        candidate_diff = binary_patch_digest(repo, expected_head, list(changed), cached=True)
+        candidate_diff = worktree_patch_digest(repo, expected_head, list(changed))
         committing = ledger.compare_and_set(
             expected_revision,
             {
@@ -233,11 +241,13 @@ def complete_main_unit(
         )
     except SystemExit as exc:
         raise MainUnitError(str(exc)) from exc
+    except LedgerConflict as exc:
+        raise MainUnitError(str(exc)) from exc
     ledger.append_event(
         {
             "unit_id": unit_id,
             "phase": "main",
-            "event": "main_unit_committing",
+            "event": "main_unit_commit_prepared",
             "ledger_revision": committing.revision,
             "queue_revision": record.get("queue_revision"),
             "expected_head": expected_head,
@@ -489,22 +499,77 @@ def _hold_committing_protocol(
     raise MainUnitError(f"ambiguous commit state held for recovery: {reason}")
 
 
-def _reconcile_completed(plan_dir: Path, queue: dict, unit: dict, ledger_path: Path, snapshot) -> None:
+def _reconcile_active(plan_dir: Path, queue: dict, unit: dict, ledger_path: Path, snapshot) -> bool:
     record = snapshot.record
-    unit.update(
-        {
-            "status": "done",
-            "execution_owner": "main",
-            "commit": str(record.get("commit") or record.get("observed_head") or ""),
-            "changed_paths": [str(path) for path in record.get("changed_paths", [])],
-            "verification_evidence_sha256": str(record.get("evidence_sha256") or ""),
-            "main_unit_ledger": str(ledger_path.relative_to(plan_dir)),
-            "main_unit_ledger_revision": snapshot.revision,
-            "main_unit_attempt": int(record.get("attempt") or unit.get("main_unit_attempt") or 1),
-            "updated_at": state.timestamp(),
-        }
+    expected = {
+        "status": "in_progress",
+        "execution_owner": "main",
+        "main_unit_ledger": str(ledger_path.relative_to(plan_dir)),
+        "main_unit_ledger_revision": snapshot.revision,
+        "main_unit_queue_revision": int(record.get("queue_revision") or 0),
+        "main_unit_attempt": int(record.get("attempt") or 1),
+    }
+    if all(unit.get(key) == value for key, value in expected.items()):
+        return False
+    unit.update({**expected, "updated_at": state.timestamp()})
+    queue["main_unit_revision"] = max(
+        int(queue.get("main_unit_revision") or 0), expected["main_unit_queue_revision"]
     )
     plans.save_queue(plan_dir, queue)
+    return True
+
+
+def _reconcile_held(plan_dir: Path, queue: dict, unit: dict, ledger_path: Path, snapshot) -> bool:
+    record = snapshot.record
+    expected = {
+        "status": "needs_work",
+        "execution_owner": "main",
+        "recovery_owner": "main",
+        "failure_class": str(record.get("failure_class") or "protocol"),
+        "main_unit_ledger": str(ledger_path.relative_to(plan_dir)),
+        "main_unit_ledger_revision": snapshot.revision,
+        "main_unit_attempt": int(record.get("attempt") or unit.get("main_unit_attempt") or 1),
+    }
+    if all(unit.get(key) == value for key, value in expected.items()):
+        return False
+    unit.update({**expected, "updated_at": state.timestamp()})
+    plans.save_queue(plan_dir, queue)
+    return True
+
+
+def _reconcile_completed(plan_dir: Path, queue: dict, unit: dict, ledger_path: Path, snapshot) -> bool:
+    record = snapshot.record
+    expected = {
+        "status": "done",
+        "execution_owner": "main",
+        "commit": str(record.get("commit") or record.get("observed_head") or ""),
+        "changed_paths": [str(path) for path in record.get("changed_paths", [])],
+        "verification_evidence_sha256": str(record.get("evidence_sha256") or ""),
+        "main_unit_ledger": str(ledger_path.relative_to(plan_dir)),
+        "main_unit_ledger_revision": snapshot.revision,
+        "main_unit_attempt": int(record.get("attempt") or unit.get("main_unit_attempt") or 1),
+    }
+    if all(unit.get(key) == value for key, value in expected.items()):
+        return False
+    unit.update({**expected, "updated_at": state.timestamp()})
+    plans.save_queue(plan_dir, queue)
+    return True
+
+
+def _append_reconciled_event(ledger: AttemptLedger, unit: Mapping, snapshot, ledger_status: str) -> None:
+    ledger.append_event(
+        {
+            "unit_id": unit["id"],
+            "phase": "recovery",
+            "event": "main_unit_reconciled",
+            "ledger_revision": snapshot.revision,
+            "queue_revision": snapshot.record.get("queue_revision"),
+            "reason": ledger_status,
+            "expected_head": snapshot.record.get("expected_head"),
+            "observed_head": snapshot.record.get("observed_head"),
+            "attempt": snapshot.record.get("attempt"),
+        }
+    )
 
 
 def _result_from_completed(ledger_path: Path, snapshot) -> MainUnitResult:

@@ -294,6 +294,17 @@ def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
     plan_dir.mkdir(parents=True)
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Done\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    _, queue = plans.load_queue(plan_dir / "plan.md")
+    queue["units"][0].update(
+        {
+            "commit": subprocess.run(
+                ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+            ).stdout.strip(),
+            "verification_evidence_sha256": "a" * 64,
+            "main_unit_ledger_revision": 1,
+        }
+    )
+    plans.save_queue(plan_dir, queue)
     identity = final_evidence_identity(plan_dir / "plan.md")
     produce_final_gate(
         plan_dir / "plan.md",

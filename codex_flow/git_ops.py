@@ -5,7 +5,9 @@ from pathlib import Path
 import fnmatch
 import hashlib
 import json
+import os
 import subprocess
+import tempfile
 from collections.abc import Mapping
 
 
@@ -352,6 +354,28 @@ def binary_patch_digest(
     if result.status != 0:
         raise SystemExit(command_failure("git binary diff failed", result))
     return hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+
+
+def worktree_patch_digest(repo: str | Path, base: str, paths: list[str]) -> str:
+    """Hash exact working-tree paths through an isolated temporary Git index."""
+    repo_path = require_git_repo(repo)
+    with tempfile.TemporaryDirectory(prefix="codex-flow-index-") as temporary:
+        index = Path(temporary) / "index"
+        env = {**os.environ, "GIT_INDEX_FILE": str(index)}
+        read_tree = run_process(["git", "read-tree", base], cwd=repo_path, env=env)
+        if read_tree.status != 0:
+            raise SystemExit(command_failure("git temporary index initialization failed", read_tree))
+        add = run_process(["git", "add", "-A", "--", *paths], cwd=repo_path, env=env)
+        if add.status != 0:
+            raise SystemExit(command_failure("git temporary index staging failed", add))
+        diff = run_process(
+            ["git", "diff", "--cached", "--binary", base, "--", *paths],
+            cwd=repo_path,
+            env=env,
+        )
+        if diff.status != 0:
+            raise SystemExit(command_failure("git temporary index diff failed", diff))
+    return hashlib.sha256(diff.stdout.encode("utf-8")).hexdigest()
 
 
 def changed_paths_between(repo: str | Path, base: str, head: str) -> tuple[str, ...]:

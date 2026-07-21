@@ -6,12 +6,13 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import tempfile
 from typing import Mapping
 
 from . import plans
 from .execution_policy import ExecutionMode, ExecutionProfile, POLICY_VERSION
-from .git_ops import head_sha
+from .git_ops import head_sha, run_process
 
 
 class FinalGateError(RuntimeError):
@@ -70,6 +71,7 @@ def produce_final_gate(
         raise FinalGateError(f"final gate requires terminal queue; unfinished: {', '.join(map(str, unfinished))}")
     context = plans.execution_context_for_plan(plan_dir, queue)
     repo = context.execution_repo
+    _require_terminal_provenance(queue, repo)
     identity = {
         "head": head_sha(repo),
         "plan_digest": plan_file_digest(plan_dir / "plan.md"),
@@ -211,6 +213,7 @@ def _terminal_unit_state(unit: Mapping) -> dict:
             "main_unit_attempt": unit.get("main_unit_attempt", 0),
             "main_unit_ledger": unit.get("main_unit_ledger", ""),
             "main_unit_ledger_revision": unit.get("main_unit_ledger_revision", 0),
+            "attempt_ledger_revision": unit.get("attempt_ledger_revision", 0),
             "repair_attempts": unit.get("repair_attempts", 0),
             "diagnostic_path": unit.get("diagnostic_path", ""),
         },
@@ -219,6 +222,27 @@ def _terminal_unit_state(unit: Mapping) -> dict:
             for key in ("effective_profile", "executor_adapter", "review_policy", "unit_gate")
         },
     }
+
+
+def _require_terminal_provenance(queue: Mapping, repo: Path) -> None:
+    for unit in queue.get("units", []):
+        if not isinstance(unit, Mapping):
+            raise FinalGateError("terminal queue contains an invalid unit record")
+        unit_id = str(unit.get("id") or "unknown")
+        commit = str(unit.get("commit") or "")
+        evidence = str(unit.get("verification_evidence_sha256") or "")
+        attempt_revision = int(
+            unit.get("main_unit_ledger_revision") or unit.get("attempt_ledger_revision") or 0
+        )
+        if re.fullmatch(r"[0-9a-f]{40}", commit) is None:
+            raise FinalGateError(f"terminal unit {unit_id} is missing a full commit SHA")
+        if re.fullmatch(r"[0-9a-f]{64}", evidence) is None:
+            raise FinalGateError(f"terminal unit {unit_id} is missing verification evidence")
+        if attempt_revision < 1:
+            raise FinalGateError(f"terminal unit {unit_id} is missing final attempt revision")
+        exists = run_process(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=repo)
+        if exists.status != 0:
+            raise FinalGateError(f"terminal unit {unit_id} commit is unavailable")
 
 
 def _load_stable_queue(plan_path: str | Path) -> tuple[Path, dict]:

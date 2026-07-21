@@ -6,7 +6,7 @@ import subprocess
 import pytest
 
 from codex_flow import plans, tickets
-from codex_flow.attempt_ledger import AttemptLedger
+from codex_flow.attempt_ledger import AttemptLedger, LedgerConflict
 from codex_flow.main_unit import MainUnitError, begin_main_unit, complete_main_unit, hold_main_unit
 
 
@@ -171,6 +171,8 @@ def test_held_candidate_requires_explicit_retry_and_uses_new_attempt(tmp_path):
     assert retried.ledger_revision == 1
     assert "attempt-2" in str(retried.ledger_path)
     assert (tmp_path / "work.txt").read_text(encoding="utf-8") == "candidate\n"
+    events, _ = AttemptLedger(retried.ledger_path).recover_events()
+    assert events[-1]["event"] == "main_unit_retry_opened"
 
 
 def test_retry_refuses_changed_held_candidate(tmp_path):
@@ -251,6 +253,34 @@ def test_complete_resumes_commit_after_ledger_finalize_crash(tmp_path, monkeypat
     ).stdout.strip() == "2"
 
 
+def test_committing_cas_conflict_does_not_mutate_real_index(tmp_path, monkeypatch):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    opened = begin_main_unit(plan.plan_path)
+    (tmp_path / "work.txt").write_text("candidate\n", encoding="utf-8")
+    original = AttemptLedger.compare_and_set
+
+    def conflict_on_prepare(self, expected_revision, record):
+        if record.get("status") == "committing":
+            raise LedgerConflict("simulated CAS loss")
+        return original(self, expected_revision, record)
+
+    monkeypatch.setattr(AttemptLedger, "compare_and_set", conflict_on_prepare)
+    with pytest.raises(MainUnitError, match="simulated CAS loss"):
+        complete_main_unit(
+            plan.plan_path,
+            unit_id=opened.unit_id,
+            expected_revision=opened.ledger_revision,
+            evidence={"status": "pass"},
+            message="feat: no index mutation",
+        )
+
+    assert subprocess.run(
+        ["git", "diff", "--cached", "--name-only"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout == ""
+    assert AttemptLedger(opened.ledger_path).load().record["status"] == "open"
+
+
 def test_completed_ledger_reconciles_missing_queue_save(tmp_path, monkeypatch):
     init_repo(tmp_path)
     plan = make_plan(tmp_path)
@@ -280,6 +310,66 @@ def test_completed_ledger_reconciles_missing_queue_save(tmp_path, monkeypatch):
     assert resumed.status == "completed"
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["units"][0]["status"] == "done"
+    events, _ = AttemptLedger(resumed.ledger_path).recover_events()
+    assert any(event["event"] == "main_unit_reconciled" for event in events)
+
+
+def test_open_ledger_reconciles_begin_queue_save_failure(tmp_path, monkeypatch):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    original = plans.save_queue
+    failed = False
+
+    def fail_once(plan_dir, queue):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("simulated begin queue save crash")
+        return original(plan_dir, queue)
+
+    monkeypatch.setattr(plans, "save_queue", fail_once)
+    with pytest.raises(OSError, match="begin queue save crash"):
+        begin_main_unit(plan.plan_path)
+
+    resumed = begin_main_unit(plan.plan_path)
+    assert resumed.status == "open"
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert queue["units"][0]["status"] == "in_progress"
+    events, _ = AttemptLedger(resumed.ledger_path).recover_events()
+    assert events[-1]["event"] == "main_unit_reconciled"
+
+
+def test_held_ledger_reconciles_hold_queue_save_failure(tmp_path, monkeypatch):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    opened = begin_main_unit(plan.plan_path)
+    (tmp_path / "work.txt").write_text("candidate\n", encoding="utf-8")
+    original = plans.save_queue
+    failed = False
+
+    def fail_once(plan_dir, queue):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("simulated hold queue save crash")
+        return original(plan_dir, queue)
+
+    monkeypatch.setattr(plans, "save_queue", fail_once)
+    with pytest.raises(OSError, match="hold queue save crash"):
+        hold_main_unit(
+            plan.plan_path,
+            unit_id=opened.unit_id,
+            expected_revision=opened.ledger_revision,
+            failure_class="environment",
+            reason="service unavailable",
+        )
+
+    with pytest.raises(MainUnitError, match="--retry-held"):
+        begin_main_unit(plan.plan_path, unit_id=opened.unit_id)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert queue["units"][0]["status"] == "needs_work"
+    events, _ = AttemptLedger(opened.ledger_path).recover_events()
+    assert events[-1]["event"] == "main_unit_reconciled"
 
 
 def test_same_parent_paths_and_message_with_different_content_is_held(tmp_path, monkeypatch):
