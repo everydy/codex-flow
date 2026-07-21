@@ -30,6 +30,14 @@ EVENT_FIELDS = {
     "queue_revision",
     "expected_head",
     "observed_head",
+    "attempt",
+    "candidate_diff_sha256",
+    "changed_paths_sha256",
+    "changed_path_count",
+    "evidence_sha256",
+    "message_sha256",
+    "commit_sha",
+    "commit_tree",
 }
 _THREAD_LOCKS: dict[str, threading.Lock] = {}
 _THREAD_LOCKS_GUARD = threading.Lock()

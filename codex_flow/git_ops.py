@@ -322,6 +322,69 @@ def scoped_diff_digest(repo: str | Path, allowed_paths: list[str]) -> str:
     return digest.hexdigest() if paths else ""
 
 
+def stage_paths(repo: str | Path, paths: list[str]) -> None:
+    repo_path = require_git_repo(repo)
+    if not paths:
+        raise SystemExit("No paths to stage")
+    result = run_process(["git", "add", "--", *paths], cwd=repo_path)
+    if result.status != 0:
+        raise SystemExit(command_failure("git add failed", result))
+
+
+def binary_patch_digest(
+    repo: str | Path,
+    base: str,
+    paths: list[str],
+    *,
+    head: str | None = None,
+    cached: bool = False,
+) -> str:
+    """Hash the canonical binary patch for an exact path set."""
+    repo_path = require_git_repo(repo)
+    args = ["git", "diff", "--binary"]
+    if cached:
+        args.append("--cached")
+    args.append(base)
+    if head is not None:
+        args.append(head)
+    args.extend(["--", *paths])
+    result = run_process(args, cwd=repo_path)
+    if result.status != 0:
+        raise SystemExit(command_failure("git binary diff failed", result))
+    return hashlib.sha256(result.stdout.encode("utf-8")).hexdigest()
+
+
+def changed_paths_between(repo: str | Path, base: str, head: str) -> tuple[str, ...]:
+    result = run_process(
+        ["git", "diff", "--name-only", "-z", base, head, "--"],
+        cwd=require_git_repo(repo),
+    )
+    if result.status != 0:
+        raise SystemExit(command_failure("git changed-path query failed", result))
+    return tuple(sorted(path for path in result.stdout.split("\0") if path))
+
+
+def commit_parent(repo: str | Path, commit: str) -> str:
+    result = run_process(["git", "rev-parse", f"{commit}^"], cwd=require_git_repo(repo))
+    if result.status != 0:
+        raise SystemExit(command_failure("git commit parent query failed", result))
+    return result.stdout.strip()
+
+
+def commit_tree(repo: str | Path, commit: str) -> str:
+    result = run_process(["git", "rev-parse", f"{commit}^{{tree}}"], cwd=require_git_repo(repo))
+    if result.status != 0:
+        raise SystemExit(command_failure("git commit tree query failed", result))
+    return result.stdout.strip()
+
+
+def commit_message(repo: str | Path, commit: str) -> str:
+    result = run_process(["git", "show", "-s", "--format=%B", commit], cwd=require_git_repo(repo))
+    if result.status != 0:
+        raise SystemExit(command_failure("git commit message query failed", result))
+    return result.stdout.rstrip("\n")
+
+
 def candidate_diff_digest(repo: str | Path, excluded_paths: tuple[str, ...] = ()) -> str:
     """Digest candidate bytes except exact parent-owned paths that change during the probe."""
     repo_path = require_git_repo(repo)
@@ -385,13 +448,11 @@ def commit_paths(repo: str | Path, paths: list[str], message: str) -> str:
     repo_path = require_git_repo(repo)
     if not paths:
         raise SystemExit("No paths to commit")
-    add_result = run_process(["git", "add", "--", *paths], cwd=repo_path)
-    if add_result.status != 0:
-        raise SystemExit(command_failure("git add failed", add_result))
-    commit_result = run_process(["git", "commit", "-m", message], cwd=repo_path)
+    stage_paths(repo_path, paths)
+    commit_result = run_process(["git", "commit", "--only", "-m", message, "--", *paths], cwd=repo_path)
     if commit_result.status != 0:
         raise SystemExit(command_failure("git commit failed", commit_result))
-    hash_result = run_process(["git", "rev-parse", "--short", "HEAD"], cwd=repo_path)
+    hash_result = run_process(["git", "rev-parse", "HEAD"], cwd=repo_path)
     if hash_result.status != 0:
         raise SystemExit(command_failure("git rev-parse failed", hash_result))
     return hash_result.stdout.strip()

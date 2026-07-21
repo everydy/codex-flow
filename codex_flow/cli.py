@@ -141,6 +141,11 @@ def build_parser() -> argparse.ArgumentParser:
     begin_main = subparsers.add_parser("begin-main-unit", help="Lock the next unit for direct main-agent implementation.")
     begin_main.add_argument("--plan", type=Path, required=True)
     begin_main.add_argument("--unit")
+    begin_main.add_argument(
+        "--retry-held",
+        action="store_true",
+        help="Explicitly open a new main attempt for an unchanged held candidate.",
+    )
 
     complete_main = subparsers.add_parser("complete-main-unit", help="Verify and exact-commit an open main-agent unit.")
     complete_main.add_argument("--plan", type=Path, required=True)
@@ -352,7 +357,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "begin-main-unit":
         try:
-            contract = begin_main_unit(args.plan, unit_id=args.unit)
+            contract = begin_main_unit(args.plan, unit_id=args.unit, retry_held=args.retry_held)
         except MainUnitError as exc:
             print(f"main_unit_rejected: {exc}")
             return 1
@@ -364,6 +369,8 @@ def main(argv: list[str] | None = None) -> int:
             "expected_head": contract.expected_head,
             "allowed_paths": list(contract.allowed_paths),
             "queue_revision": contract.queue_revision,
+            "status": contract.status,
+            "attempt": contract.attempt,
         }, ensure_ascii=False, sort_keys=True))
         return 0
 
