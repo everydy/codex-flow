@@ -41,12 +41,13 @@ class FinalizeGuard:
     @classmethod
     def require(cls, plan_path: str | Path) -> "FinalizeGuard":
         plan_dir, queue = _load_stable_queue(plan_path)
-        repo = plans.execution_context_for_plan(plan_dir, queue).execution_repo
+        context = plans.execution_context_for_plan(plan_dir, queue)
+        repo = context.execution_repo
         record = require_final_gate(
             plan_dir / "final-gate.json",
             expected_head=head_sha(repo),
             expected_plan_digest=plan_file_digest(plan_dir / "plan.md"),
-            expected_queue_revision=terminal_queue_revision(queue),
+            expected_queue_revision=terminal_queue_revision(queue, context=context),
         )
         return cls(record)
 
@@ -67,11 +68,17 @@ def produce_final_gate(
     unfinished = [unit.get("id") for unit in queue.get("units", []) if unit.get("status") != "done"]
     if unfinished:
         raise FinalGateError(f"final gate requires terminal queue; unfinished: {', '.join(map(str, unfinished))}")
-    review_status = str(review_evidence.get("status") or "")
-    test_status = str(test_evidence.get("status") or "")
+    context = plans.execution_context_for_plan(plan_dir, queue)
+    repo = context.execution_repo
+    identity = {
+        "head": head_sha(repo),
+        "plan_digest": plan_file_digest(plan_dir / "plan.md"),
+        "terminal_queue_revision": terminal_queue_revision(queue, context=context),
+    }
+    review_status = _require_evidence_identity("review", review_evidence, identity)
+    test_status = _require_evidence_identity("tests", test_evidence, identity)
     if review_status != "pass" or test_status != "pass":
         raise FinalGateError("final gate review and canonical tests must both pass")
-    repo = plans.execution_context_for_plan(plan_dir, queue).execution_repo
     evidence_hash = hashlib.sha256(
         json.dumps(
             {"review": dict(review_evidence), "tests": dict(test_evidence)},
@@ -80,9 +87,9 @@ def produce_final_gate(
         ).encode("utf-8")
     ).hexdigest()
     record = FinalGateRecord(
-        reviewed_head=head_sha(repo),
-        plan_digest=plan_file_digest(plan_dir / "plan.md"),
-        terminal_queue_revision=terminal_queue_revision(queue),
+        reviewed_head=identity["head"],
+        plan_digest=identity["plan_digest"],
+        terminal_queue_revision=identity["terminal_queue_revision"],
         cumulative_review_status=review_status,
         canonical_test_status=test_status,
         evidence_hash=evidence_hash,
@@ -150,20 +157,68 @@ def plan_file_digest(path: str | Path) -> str:
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
 
 
-def terminal_queue_revision(queue: Mapping) -> str:
-    units = [
-        {
-            "id": unit.get("id"),
-            "status": unit.get("status"),
-            "commit": unit.get("commit", ""),
-            "changed_paths": sorted(str(path) for path in unit.get("changed_paths", [])),
+def final_evidence_identity(plan_path: str | Path) -> dict[str, str]:
+    plan_dir, queue = _load_stable_queue(plan_path)
+    context = plans.execution_context_for_plan(plan_dir, queue)
+    return {
+        "head": head_sha(context.execution_repo),
+        "plan_digest": plan_file_digest(plan_dir / "plan.md"),
+        "terminal_queue_revision": terminal_queue_revision(queue, context=context),
+    }
+
+
+def terminal_queue_revision(queue: Mapping, *, context=None) -> str:
+    execution_context = {}
+    if context is not None:
+        execution_context = {
+            "execution_repo": str(Path(context.execution_repo).resolve()),
+            "worktree_path": str(Path(context.worktree_path).resolve()),
+            "branch": str(context.branch),
+            "source_plan_sha256": str(context.source_plan_sha256),
         }
-        for unit in queue.get("units", [])
-        if isinstance(unit, Mapping)
-    ]
+    units = [_terminal_unit_state(unit) for unit in queue.get("units", []) if isinstance(unit, Mapping)]
     return hashlib.sha256(
-        json.dumps(units, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        json.dumps(
+            {"execution_context": execution_context, "units": units},
+            sort_keys=True,
+            separators=(",", ":"),
+        ).encode("utf-8")
     ).hexdigest()
+
+
+def _require_evidence_identity(label: str, evidence: Mapping, expected: Mapping[str, str]) -> str:
+    for field, expected_value in expected.items():
+        observed = str(evidence.get(field) or "")
+        if not observed:
+            raise FinalGateError(f"{label} evidence is missing {field}")
+        if observed != expected_value:
+            raise FinalGateError(f"{label} evidence {field} is stale")
+    return str(evidence.get("status") or "")
+
+
+def _terminal_unit_state(unit: Mapping) -> dict:
+    raw_policy = unit.get("execution_policy")
+    policy = raw_policy if isinstance(raw_policy, Mapping) else {}
+    return {
+        "id": unit.get("id"),
+        "status": unit.get("status"),
+        "commit": unit.get("commit", ""),
+        "changed_paths": sorted(str(path) for path in unit.get("changed_paths", [])),
+        "verification_evidence_sha256": unit.get("verification_evidence_sha256", ""),
+        "verification": [str(item) for item in unit.get("verification", [])],
+        "execution_owner": unit.get("execution_owner", ""),
+        "attempt": {
+            "main_unit_attempt": unit.get("main_unit_attempt", 0),
+            "main_unit_ledger": unit.get("main_unit_ledger", ""),
+            "main_unit_ledger_revision": unit.get("main_unit_ledger_revision", 0),
+            "repair_attempts": unit.get("repair_attempts", 0),
+            "diagnostic_path": unit.get("diagnostic_path", ""),
+        },
+        "execution_policy": {
+            key: policy.get(key)
+            for key in ("effective_profile", "executor_adapter", "review_policy", "unit_gate")
+        },
+    }
 
 
 def _load_stable_queue(plan_path: str | Path) -> tuple[Path, dict]:

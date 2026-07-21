@@ -9,7 +9,7 @@ import pytest
 
 from codex_flow import cli, git_ops, plans, runner
 from codex_flow.codex_cli import CHILD_MANIFEST_ENV
-from codex_flow.final_gate import produce_final_gate
+from codex_flow.final_gate import final_evidence_identity, produce_final_gate
 from codex_flow.merge import MergeRunner
 from codex_flow.run_all import RunAllRunner
 
@@ -338,10 +338,11 @@ def test_disposable_two_unit_graph_resumes_without_merge_then_cleans_up_safely(t
     assert execution_repo.exists()
     assert persisted["cleanup_state"] == "active"
 
+    identity = final_evidence_identity(plan_dir / "plan.md")
     produce_final_gate(
         plan_dir / "plan.md",
-        review_evidence={"status": "pass"},
-        test_evidence={"status": "pass"},
+        review_evidence={**identity, "status": "pass"},
+        test_evidence={**identity, "status": "pass"},
     )
     merge_result = MergeRunner().merge_local(plan_dir / "plan.md", target="main", execute=True)
 

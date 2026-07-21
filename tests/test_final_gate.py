@@ -1,5 +1,6 @@
 import json
 import subprocess
+from dataclasses import replace
 
 import pytest
 
@@ -9,6 +10,7 @@ from codex_flow.final_gate import (
     FinalGateError,
     FinalGateRecord,
     FinalizeGuard,
+    final_evidence_identity,
     plan_file_digest,
     produce_final_gate,
     require_final_gate,
@@ -109,18 +111,100 @@ def test_atomic_write_failure_preserves_previous_gate(tmp_path, monkeypatch):
 def test_producer_binds_terminal_exact_state_and_stores_only_evidence_hash(tmp_path):
     init_repo(tmp_path)
     plan = terminal_plan(tmp_path)
+    identity = final_evidence_identity(plan.plan_path)
     produced = produce_final_gate(
         plan.plan_path,
-        review_evidence={"status": "pass", "summary": "clean"},
-        test_evidence={"status": "pass", "secret": "not-written-verbatim"},
+        review_evidence={**identity, "status": "pass", "summary": "clean"},
+        test_evidence={**identity, "status": "pass", "secret": "not-written-verbatim"},
     )
 
     queue = plans.load_queue(plan.plan_path)[1]
     payload = json.loads((plan.directory / "final-gate.json").read_text(encoding="utf-8"))
     assert produced.plan_digest == plan_file_digest(plan.plan_path)
-    assert produced.terminal_queue_revision == terminal_queue_revision(queue)
+    assert produced.terminal_queue_revision == identity["terminal_queue_revision"]
     assert "not-written-verbatim" not in json.dumps(payload)
     assert FinalizeGuard.require(plan.plan_path).record == produced
+
+
+@pytest.mark.parametrize("field", ["head", "plan_digest", "terminal_queue_revision"])
+def test_producer_rejects_missing_and_stale_evidence_identity(tmp_path, field):
+    init_repo(tmp_path)
+    plan = terminal_plan(tmp_path)
+    identity = final_evidence_identity(plan.plan_path)
+    missing = {**identity, "status": "pass"}
+    missing.pop(field)
+
+    with pytest.raises(FinalGateError, match=field):
+        produce_final_gate(
+            plan.plan_path,
+            review_evidence=missing,
+            test_evidence={**identity, "status": "pass"},
+        )
+
+    stale = {**identity, field: "stale", "status": "pass"}
+    with pytest.raises(FinalGateError, match=field):
+        produce_final_gate(
+            plan.plan_path,
+            review_evidence={**identity, "status": "pass"},
+            test_evidence=stale,
+        )
+
+
+@pytest.mark.parametrize(
+    ("unit_field", "value"),
+    [
+        ("verification_evidence_sha256", "changed"),
+        ("main_unit_ledger_revision", 99),
+        ("repair_attempts", 3),
+        ("verification", ["different verification"]),
+    ],
+)
+def test_terminal_queue_identity_covers_release_critical_unit_state(tmp_path, unit_field, value):
+    init_repo(tmp_path)
+    plan = terminal_plan(tmp_path)
+    before = final_evidence_identity(plan.plan_path)["terminal_queue_revision"]
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0][unit_field] = value
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    after = final_evidence_identity(plan.plan_path)["terminal_queue_revision"]
+    assert after != before
+
+
+@pytest.mark.parametrize(
+    ("context_field", "value"),
+    [
+        ("branch", "codex/different-release"),
+        ("worktree_path", "/tmp/different-worktree"),
+        ("source_plan_sha256", "different-source-plan"),
+    ],
+)
+def test_terminal_queue_identity_covers_execution_context(tmp_path, context_field, value):
+    init_repo(tmp_path)
+    plan = terminal_plan(tmp_path)
+    _, queue = plans.load_queue(plan.plan_path)
+    context = plans.execution_context_for_plan(plan.plan_path, queue)
+    before = terminal_queue_revision(queue, context=context)
+
+    after = terminal_queue_revision(queue, context=replace(context, **{context_field: value}))
+    assert after != before
+
+
+def test_terminal_queue_identity_covers_execution_policy(tmp_path):
+    init_repo(tmp_path)
+    plan = terminal_plan(tmp_path)
+    before = final_evidence_identity(plan.plan_path)["terminal_queue_revision"]
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0]["execution_policy"] = {
+        "effective_profile": "high_risk",
+        "executor_adapter": "isolated_child",
+        "review_policy": "per_unit",
+        "unit_gate": "full",
+    }
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    after = final_evidence_identity(plan.plan_path)["terminal_queue_revision"]
+    assert after != before
 
 
 def test_direct_merge_effect_is_blocked_without_final_gate(tmp_path, monkeypatch):

@@ -8,7 +8,7 @@ import pytest
 
 from codex_flow import cli, plans, pr, tickets
 from codex_flow.dashboard import render_dashboard
-from codex_flow.final_gate import produce_final_gate
+from codex_flow.final_gate import final_evidence_identity, produce_final_gate
 
 
 def test_route_short_request_fails_instead_of_reusing_active_plan(tmp_path, capsys):
@@ -231,10 +231,11 @@ def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
     plan_dir.mkdir(parents=True)
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Done\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    identity = final_evidence_identity(plan_dir / "plan.md")
     produce_final_gate(
         plan_dir / "plan.md",
-        review_evidence={"status": "pass"},
-        test_evidence={"status": "pass"},
+        review_evidence={**identity, "status": "pass"},
+        test_evidence={**identity, "status": "pass"},
     )
     pr.write_pr_lock(tmp_path, "codex/demo", "https://github.com/example/repo/pull/7", "reviewing")
 

@@ -5,7 +5,7 @@ import subprocess
 from codex_flow import cli, inbox
 from codex_flow.git_ops import ProcessResult
 from codex_flow.merge import MergeResult, MergeRunner
-from codex_flow.final_gate import produce_final_gate
+from codex_flow.final_gate import final_evidence_identity, produce_final_gate
 
 
 def test_drain_inbox_requests_routes_all_until_lock(tmp_path):
@@ -36,10 +36,11 @@ def test_merge_runner_local_merge_success(tmp_path):
     plan_dir.mkdir(parents=True)
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Feature\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    identity = final_evidence_identity(plan_dir / "plan.md")
     produce_final_gate(
         plan_dir / "plan.md",
-        review_evidence={"status": "pass"},
-        test_evidence={"status": "pass"},
+        review_evidence={**identity, "status": "pass"},
+        test_evidence={**identity, "status": "pass"},
     )
 
     result = MergeRunner().merge_local(plan_dir / "plan.md", target="main", execute=True)
@@ -59,10 +60,11 @@ def test_merge_runner_reports_branch_finalization_blocked_when_safe_delete_fails
     plan_dir.mkdir(parents=True)
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Feature\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
+    identity = final_evidence_identity(plan_dir / "plan.md")
     produce_final_gate(
         plan_dir / "plan.md",
-        review_evidence={"status": "pass"},
-        test_evidence={"status": "pass"},
+        review_evidence={**identity, "status": "pass"},
+        test_evidence={**identity, "status": "pass"},
     )
     monkeypatch.setattr(
         "codex_flow.merge.delete_local_branch",
