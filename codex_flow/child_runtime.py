@@ -35,6 +35,7 @@ from .codex_cli import (
 
 MANIFEST_NAME = "child-closure-manifest.json"
 MANIFEST_SCHEMA_VERSION = 1
+REQUIRE_EXPLICIT_CHILD_ENV = "CODEX_FLOW_REQUIRE_EXPLICIT_CHILD"
 _LOCKS_GUARD = threading.Lock()
 _LOCKS: dict[str, threading.Lock] = {}
 
@@ -67,6 +68,16 @@ def ensure_prepared_child_runtime(
     if explicit_home:
         return _validate_explicit_runtime(
             repo_path, required, Path(explicit_home), Path(explicit_manifest)
+        )
+    if os.environ.get(REQUIRE_EXPLICIT_CHILD_ENV, "").strip().lower() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        raise ChildRuntimeConfigError(
+            "isolated execution requires explicit prepared child evidence; "
+            f"set both {CHILD_HOME_ENV} and {CHILD_MANIFEST_ENV}"
         )
     if has_explicit_profile_arg(extra_args or []):
         raise ChildRuntimeConfigError(

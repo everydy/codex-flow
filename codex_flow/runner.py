@@ -17,7 +17,7 @@ from .codex_cli import (
     generate_child_attestation,
     verify_child_attestation,
 )
-from .child_runtime import ensure_prepared_child_runtime
+from .child_runtime import REQUIRE_EXPLICIT_CHILD_ENV, ensure_prepared_child_runtime
 from .git_ops import candidate_diff_digest, changed_paths_since, commit_paths, dirty_paths, head_sha, head_summary, out_of_scope_diff_digest, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
 from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput
 from .reviewer_agent import (
@@ -201,10 +201,12 @@ def run_next(
     accept_source_drift: bool = False,
     codex_timeout_seconds: int | None = None,
 ) -> dict | None:
-    plan_dir, queue_data = plans.load_queue(plan_path)
-    queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+    plan_dir, queue_data = (
+        plans.load_queue_read_only(plan_path) if execute else plans.load_queue(plan_path)
+    )
     plan_content = (plan_dir / "plan.md").read_text(encoding="utf-8")
     commit_units = {item.unit_id: item for item in plan_readiness.parse_commit_units(plan_content)}
+    prepared_runtime = None
     if execute:
         _, plan_content, log_content = plan_readiness.read_plan_file(plan_dir / "plan.md")
         readiness = plan_readiness.check_plan_ready(plan_content, log_content)
@@ -237,6 +239,33 @@ def run_next(
             "source_path": str(drift.source_path) if drift.source_path else "",
             "changed": False,
         }
+    if execute:
+        policy = classify_execution_policy(unit)
+        unit["execution_policy"] = policy.to_dict()
+        require_explicit_child = os.environ.get(
+            REQUIRE_EXPLICIT_CHILD_ENV, ""
+        ).strip().lower() in {"1", "true", "yes", "on"}
+        if policy.execution_mode is ExecutionMode.ISOLATED_CHILD and require_explicit_child:
+            selected_unit = commit_unit or commit_units.get(str(unit.get("id")))
+            if selected_unit is None:
+                raise ChildRuntimeConfigError("isolated preflight could not resolve the selected unit")
+            skill_entry = plan_readiness.skill_routing_for_commit(plan_content, selected_unit.number)
+            required_skills = required_review_skills(
+                tuple(skill_entry.required_skills if skill_entry else unit.get("required_skills", []))
+            )
+            prepared_runtime = ensure_prepared_child_runtime(
+                repo=plans.execution_repo_for_plan(plan_dir, queue_data),
+                required_skills=required_skills,
+                command=codex_command,
+                extra_args=codex_args or [],
+                timeout_seconds=codex_timeout_seconds,
+            )
+        plan_dir, queue_data = plans.load_queue(plan_dir / "plan.md")
+        synced_unit = unit_for_commit(queue_data, commit_unit)
+        if synced_unit.get("id") != unit.get("id"):
+            raise ChildRuntimeConfigError("selected unit changed during isolated preflight")
+        unit = synced_unit
+        unit["execution_policy"] = policy.to_dict()
     prompt_text = render_prompt(queue_data, unit, plan_dir, commit_unit)
     if dry_run:
         return {"unit": unit, "prompt_path": prompt_path, "prompt": prompt_text, "changed": False}
@@ -244,8 +273,6 @@ def run_next(
     prompt_path.parent.mkdir(parents=True, exist_ok=True)
     prompt_path.write_text(prompt_text, encoding="utf-8")
     if execute:
-        policy = classify_execution_policy(unit)
-        unit["execution_policy"] = policy.to_dict()
         if policy.execution_mode is ExecutionMode.PARENT_DIRECT:
             contract = begin_main_unit(plan_dir / "plan.md", unit_id=unit["id"])
             append_log(plan_dir, f"Main handoff opened for {unit['id']} at ledger revision {contract.ledger_revision}.")
@@ -279,6 +306,7 @@ def run_next(
             auto_resolve=auto_resolve,
             repair_attempts=repair_attempts,
             codex_timeout_seconds=codex_timeout_seconds,
+            prepared_runtime=prepared_runtime,
         )
 
     unit["status"] = "prompted"
@@ -305,6 +333,7 @@ def execute_unit(
     auto_resolve: bool,
     repair_attempts: int,
     codex_timeout_seconds: int | None,
+    prepared_runtime=None,
 ) -> dict:
     execution_context = plans.execution_context_for_plan(plan_dir, queue_data)
     repo = execution_context.execution_repo
@@ -323,7 +352,7 @@ def execute_unit(
     if not attested_plan.exists():
         attested_plan = plan_dir / "plan.md"
     try:
-        runtime = ensure_prepared_child_runtime(
+        runtime = prepared_runtime or ensure_prepared_child_runtime(
             repo=repo,
             required_skills=required_skills,
             command=codex_command,

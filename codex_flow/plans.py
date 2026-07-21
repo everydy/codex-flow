@@ -808,6 +808,16 @@ def load_queue(plan_path: str | Path) -> tuple[Path, dict]:
     return plan_dir, queue_data
 
 
+def load_queue_read_only(plan_path: str | Path) -> tuple[Path, dict]:
+    """Read an existing queue without initialization, cache repair, or writes."""
+    plan = Path(plan_path).expanduser().resolve()
+    plan_dir = plan.parent if plan.name == "plan.md" else plan
+    queue_json = plan_dir / "queue.json"
+    if not queue_json.exists():
+        raise SystemExit(f"Missing queue: {queue_json}")
+    return plan_dir, json.loads(queue_json.read_text(encoding="utf-8"))
+
+
 def save_queue(plan_dir: Path, queue_data: dict) -> None:
     queue_data["updated_at"] = state.timestamp()
     (plan_dir / "queue.json").write_text(json.dumps(queue_data, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")

@@ -6,7 +6,11 @@ from pathlib import Path
 
 import pytest
 
-from codex_flow.child_runtime import PreparedChildRuntime, ensure_prepared_child_runtime
+from codex_flow.child_runtime import (
+    REQUIRE_EXPLICIT_CHILD_ENV,
+    PreparedChildRuntime,
+    ensure_prepared_child_runtime,
+)
 from codex_flow.codex_cli import (
     CHILD_HOME_ENV,
     CHILD_MANIFEST_ENV,
@@ -189,6 +193,13 @@ def test_half_explicit_pair_is_rejected(tmp_path, monkeypatch):
     monkeypatch.setenv(CHILD_HOME_ENV, str(tmp_path / "home"))
 
     with pytest.raises(ChildRuntimeConfigError, match="both"):
+        ensure_prepared_child_runtime(repo=tmp_path, required_skills=("alpha",))
+
+
+def test_portable_policy_requires_explicit_prepared_child(tmp_path, monkeypatch):
+    monkeypatch.setenv(REQUIRE_EXPLICIT_CHILD_ENV, "1")
+
+    with pytest.raises(ChildRuntimeConfigError, match="explicit prepared child evidence"):
         ensure_prepared_child_runtime(repo=tmp_path, required_skills=("alpha",))
 
 

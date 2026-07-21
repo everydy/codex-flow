@@ -9,6 +9,7 @@ import pytest
 
 from codex_flow import briefs, cli, plans, pr, runner, source_plan, tickets
 from codex_flow.codex_cli import CHILD_MANIFEST_ENV
+from codex_flow.child_runtime import REQUIRE_EXPLICIT_CHILD_ENV
 
 
 def test_attempt_derived_views_regenerate_from_ledger_revision(tmp_path):
@@ -97,6 +98,53 @@ def test_run_next_default_main_path_does_not_construct_child(tmp_path, monkeypat
     assert result["action"] == "main_handoff"
     assert result["contract"]["owner"] == "main"
     assert result["contract"]["ledger_revision"] == 1
+
+
+def test_portable_isolated_preflight_denies_before_plan_or_repo_write(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    plan = make_plan(tmp_path, isolated=True)
+    monkeypatch.setenv(REQUIRE_EXPLICIT_CHILD_ENV, "1")
+    monkeypatch.delenv("CODEX_FLOW_CHILD_HOME", raising=False)
+    monkeypatch.delenv(CHILD_MANIFEST_ENV, raising=False)
+    monkeypatch.setattr(
+        runner,
+        "ensure_prepared_child_runtime",
+        lambda **_kwargs: (_ for _ in ()).throw(
+            runner.ChildRuntimeConfigError(
+                "isolated execution requires explicit prepared child evidence"
+            )
+        ),
+    )
+    before_files = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and ".git" not in path.parts
+    }
+    before_status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    with pytest.raises(runner.ChildRuntimeConfigError, match="explicit prepared child evidence"):
+        runner.run_next(plan.plan_path, execute=True, commit=True)
+
+    after_files = {
+        path.relative_to(tmp_path): path.read_bytes()
+        for path in tmp_path.rglob("*")
+        if path.is_file() and ".git" not in path.parts
+    }
+    after_status = subprocess.run(
+        ["git", "status", "--porcelain=v1", "--untracked-files=all"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    assert after_files == before_files
+    assert after_status == before_status
 
 
 def test_isolated_final_only_runs_deterministic_gate_without_reviewer(tmp_path, monkeypatch):
