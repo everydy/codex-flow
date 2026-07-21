@@ -6,7 +6,7 @@ import os
 from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
-from .attempt_ledger import AttemptLedger
+from .attempt_ledger import AttemptLedger, LedgerConflict
 from .execution_policy import ExecutionMode, FailureKind, FailureRecord, ReviewPolicy, classify_execution_policy, retry_eligible
 from .main_unit import begin_main_unit
 from .codex_cli import (
@@ -18,7 +18,26 @@ from .codex_cli import (
     verify_child_attestation,
 )
 from .child_runtime import REQUIRE_EXPLICIT_CHILD_ENV, ensure_prepared_child_runtime
-from .git_ops import candidate_diff_digest, changed_paths_since, commit_paths, dirty_paths, head_sha, head_summary, out_of_scope_diff_digest, prepare_branch, scoped_diff_digest, scoped_status_summary, stash_paths, status
+from .git_ops import (
+    binary_patch_digest,
+    candidate_diff_digest,
+    changed_paths_between,
+    changed_paths_since,
+    commit_message as git_commit_message,
+    commit_parent,
+    commit_paths,
+    commit_tree,
+    dirty_paths,
+    head_sha,
+    head_summary,
+    out_of_scope_diff_digest,
+    prepare_branch,
+    scoped_diff_digest,
+    scoped_status_summary,
+    stash_paths,
+    status,
+    worktree_patch_digest,
+)
 from .implementer_agent import CodexImplementerAgent, ImplementerAgentInput
 from .reviewer_agent import (
     CommitUnitReview,
@@ -239,6 +258,16 @@ def run_next(
             "source_path": str(drift.source_path) if drift.source_path else "",
             "changed": False,
         }
+    if execute:
+        recovered = recover_isolated_release(
+            plan_dir=plan_dir,
+            queue_data=queue_data,
+            unit=unit,
+            prompt_path=prompt_path,
+            commit_number=commit_unit.number,
+        )
+        if recovered is not None:
+            return recovered
     if execute:
         policy = classify_execution_policy(unit)
         unit["execution_policy"] = policy.to_dict()
@@ -891,72 +920,266 @@ def execute_unit(
             "repair_reason": reason,
             "review_gate": review_gate_payload(review_result.review),
         }
-    commit_hash = ""
-    action = "done"
-    if commit and changed:
-        commit_hash = commit_paths(repo, changed, commit_message(unit, review_result.review.title))
-        action = "committed"
-    elif not changed:
-        commit_hash = head_sha(repo)
-        action = "skipped"
+    return prepare_and_finish_isolated_release(
+        plan_dir=plan_dir,
+        queue_data=queue_data,
+        unit=unit,
+        prompt_path=prompt_path,
+        attempt_ledger=attempt_ledger,
+        review_path=review_path,
+        commit_number=selected_unit.number,
+        changed=changed,
+        commit_enabled=commit,
+        commit_title=review_result.review.title,
+        review_status=review_result.review.status,
+        review_gate=review_gate_payload(review_result.review),
+        review_summary=review_result.review.summary,
+        used_repair_attempts=used_repair_attempts,
+        last_repair_reason=last_repair_reason,
+        auto_resolved_dirty=auto_resolved_dirty,
+    )
 
-    release_revision = attempt_ledger.load().revision + 1
-    verification_evidence_sha256 = hashlib.sha256(
+
+def prepare_and_finish_isolated_release(
+    *,
+    plan_dir: Path,
+    queue_data: dict,
+    unit: dict,
+    prompt_path: Path,
+    attempt_ledger: AttemptLedger,
+    review_path: Path,
+    commit_number: int,
+    changed: list[str],
+    commit_enabled: bool,
+    commit_title: str,
+    review_status: str,
+    review_gate: dict | None,
+    review_summary: str,
+    used_repair_attempts: int,
+    last_repair_reason: str,
+    auto_resolved_dirty: list[str],
+) -> dict:
+    repo = plans.execution_context_for_plan(plan_dir, queue_data).execution_repo
+    snapshot = attempt_ledger.load()
+    expected_parent = head_sha(repo)
+    release_kind = "committed" if commit_enabled and changed else (
+        "skipped" if not changed else "uncommitted"
+    )
+    message = commit_message(unit, commit_title)
+    candidate_digest = worktree_patch_digest(repo, expected_parent, changed) if changed else ""
+    final_revision = snapshot.revision + 2
+    verification_digest = hashlib.sha256(
         json.dumps(
             {
-                "attempt_ledger_revision": release_revision,
-                "review_status": review_result.review.status,
-                "review_gate": review_gate_payload(review_result.review),
+                "attempt_ledger_revision": final_revision,
+                "review_status": review_status,
+                "review_gate": review_gate,
                 "verification": [str(item) for item in unit.get("verification", [])],
             },
             sort_keys=True,
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
-    release_snapshot = attempt_ledger.compare_and_set(
-        release_revision - 1,
+    prepared = attempt_ledger.compare_and_set(
+        snapshot.revision,
         {
-            **attempt_ledger.load().record,
-            "release_commit": commit_hash,
-            "verification_evidence_sha256": verification_evidence_sha256,
+            **snapshot.record,
+            "release_state": "committing",
+            "release_kind": release_kind,
+            "release_action": "done" if release_kind == "uncommitted" else release_kind,
+            "expected_parent": expected_parent,
+            "changed_paths": list(changed),
+            "changed_paths_sha256": _path_list_digest(changed),
+            "changed_path_count": len(changed),
+            "candidate_diff_sha256": candidate_digest,
+            "message_sha256": _text_digest(message),
+            "release_message": message,
+            "release_out_of_scope_diff_sha256": out_of_scope_diff_digest(
+                repo, [str(path) for path in unit.get("allowed_paths", [])]
+            ),
+            "verification_evidence_sha256": verification_digest,
+            "release_review_gate": review_gate,
+            "release_review_summary": review_summary,
+            "release_repair_attempts": used_repair_attempts,
+            "release_repair_reason": last_repair_reason,
         },
     )
-    unit["status"] = "done"
-    unit["updated_at"] = state.timestamp()
-    unit["changed_paths"] = changed
-    unit["commit"] = commit_hash
-    unit["attempt_ledger_revision"] = release_snapshot.revision
-    unit["verification_evidence_sha256"] = verification_evidence_sha256
+    attempt_ledger.append_event(
+        {
+            "unit_id": unit["id"],
+            "phase": "release",
+            "event": "isolated_release_prepared",
+            "ledger_revision": prepared.revision,
+            "expected_head": expected_parent,
+            "candidate_diff_sha256": candidate_digest,
+            "changed_paths_sha256": _path_list_digest(changed),
+            "changed_path_count": len(changed),
+            "evidence_sha256": verification_digest,
+            "message_sha256": _text_digest(message),
+        }
+    )
+    return _finish_isolated_release(
+        plan_dir=plan_dir,
+        queue_data=queue_data,
+        unit=unit,
+        prompt_path=prompt_path,
+        attempt_ledger=attempt_ledger,
+        snapshot=prepared,
+        review_path=review_path,
+        commit_number=commit_number,
+        auto_resolved_dirty=auto_resolved_dirty,
+    )
+
+
+def recover_isolated_release(
+    *,
+    plan_dir: Path,
+    queue_data: dict,
+    unit: dict,
+    prompt_path: Path,
+    commit_number: int,
+) -> dict | None:
+    ledger_path = _isolated_release_ledger_path(plan_dir, unit)
+    if ledger_path is None:
+        return None
+    ledger = AttemptLedger(ledger_path)
+    snapshot = ledger.load()
+    record = snapshot.record
+    if record.get("status") != "finalized":
+        return None
+    if not record.get("release_state") and record.get("release_commit"):
+        snapshot = _upgrade_legacy_isolated_release(
+            plan_dir=plan_dir,
+            queue_data=queue_data,
+            unit=unit,
+            ledger=ledger,
+            snapshot=snapshot,
+        )
+        record = snapshot.record
+    if record.get("release_state") not in {"committing", "completed"}:
+        return None
+    attempt = int(unit.get("repair_attempts") or record.get("release_repair_attempts") or 0)
+    review_path = plan_dir / "attempts" / unit["id"] / f"attempt-{attempt}-review.json"
+    return _finish_isolated_release(
+        plan_dir=plan_dir,
+        queue_data=queue_data,
+        unit=unit,
+        prompt_path=prompt_path,
+        attempt_ledger=ledger,
+        snapshot=snapshot,
+        review_path=review_path,
+        commit_number=commit_number,
+        auto_resolved_dirty=[],
+    )
+
+
+def _finish_isolated_release(
+    *,
+    plan_dir: Path,
+    queue_data: dict,
+    unit: dict,
+    prompt_path: Path,
+    attempt_ledger: AttemptLedger,
+    snapshot,
+    review_path: Path,
+    commit_number: int,
+    auto_resolved_dirty: list[str],
+) -> dict:
+    repo = plans.execution_context_for_plan(plan_dir, queue_data).execution_repo
+    record = snapshot.record
+    if record.get("release_state") == "committing":
+        expected_parent = str(record.get("expected_parent") or "")
+        changed = [str(path) for path in record.get("changed_paths", [])]
+        observed_head = head_sha(repo)
+        release_kind = str(record.get("release_kind") or "committed")
+        if release_kind == "committed" and observed_head == expected_parent:
+            if out_of_scope_diff_digest(
+                repo, [str(path) for path in record.get("allowed_paths", [])]
+            ) != record.get("release_out_of_scope_diff_sha256"):
+                raise RuntimeError("isolated release out-of-scope baseline changed")
+            if worktree_patch_digest(repo, expected_parent, changed) != record.get(
+                "candidate_diff_sha256"
+            ):
+                raise RuntimeError("isolated release candidate changed before commit")
+            commit_paths(repo, changed, str(record.get("release_message") or ""))
+            observed_head = head_sha(repo)
+        mismatch = _isolated_release_mismatch(repo, observed_head, record)
+        if mismatch:
+            raise RuntimeError(f"isolated release commit state is ambiguous: {mismatch}")
+        try:
+            snapshot = attempt_ledger.compare_and_set(
+                snapshot.revision,
+                {
+                    **record,
+                    "release_state": "completed",
+                    "release_commit": observed_head if release_kind != "uncommitted" else "",
+                    "release_observed_head": observed_head,
+                    "release_tree": commit_tree(repo, observed_head),
+                },
+            )
+        except LedgerConflict as exc:
+            raise RuntimeError(str(exc)) from exc
+        record = snapshot.record
+    else:
+        mismatch = _isolated_release_mismatch(repo, head_sha(repo), record)
+        if mismatch:
+            raise RuntimeError(f"completed isolated release proof is stale: {mismatch}")
+
+    changed = [str(path) for path in record.get("changed_paths", [])]
+    action = str(record.get("release_action") or record.get("release_kind") or "committed")
+    commit_hash = str(record.get("release_commit") or "")
+    unit.update(
+        {
+            "status": "done",
+            "updated_at": state.timestamp(),
+            "changed_paths": changed,
+            "commit": commit_hash,
+            "attempt_ledger_revision": snapshot.revision,
+            "verification_evidence_sha256": str(
+                record.get("verification_evidence_sha256") or ""
+            ),
+            "repair_attempts": int(record.get("release_repair_attempts") or 0),
+        }
+    )
+    if record.get("release_review_gate"):
+        unit["review_gate"] = record["release_review_gate"]
+    if record.get("release_repair_reason"):
+        unit["last_repair_reason"] = record["release_repair_reason"]
     ensure_attempt_view_revision(
-        release_snapshot.revision,
+        snapshot.revision,
         queue_unit=unit,
         review_path=review_path,
         handoff_path=attempt_ledger.path.parent / "handoff.json",
     )
-    unit["repair_attempts"] = used_repair_attempts
-    if review_result.review.gate:
-        unit["review_gate"] = review_result.review.gate.to_dict()
-    if last_repair_reason:
-        unit["last_repair_reason"] = last_repair_reason
     plans.save_queue(plan_dir, queue_data)
-    log_parts = [f"{action} {unit['id']}"]
-    if changed:
-        log_parts.append(f"changed: {', '.join(changed)}")
-    if commit_hash:
-        log_parts.append(f"commit: {commit_hash}")
-    if review_result.review.summary:
-        log_parts.append(f"summary: {review_result.review.summary}")
-    if review_result.review.gate:
-        log_parts.append(review_gate_summary(review_result.review))
-    if used_repair_attempts:
-        log_parts.append(f"repair_attempts: {used_repair_attempts}")
-    log_parts.append(f"ledger_revision={unit.get('attempt_ledger_revision', 0)}")
-    append_log(plan_dir, " | ".join(log_parts))
-    if used_repair_attempts:
-        append_log(plan_dir, f"Repair succeeded for commit unit {selected_unit.number} after {used_repair_attempts} attempt(s).")
-    append_log(plan_dir, f"Completed commit unit {selected_unit.number}.")
-    queue_data = plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
-    state.refresh_dashboard(source_repo)
+    completion = f"Completed commit unit {commit_number}."
+    log_content = read_optional(plan_dir / "log.md")
+    if completion not in log_content:
+        details = [f"{action} {unit['id']}"]
+        if changed:
+            details.append(f"changed: {', '.join(changed)}")
+        if commit_hash:
+            details.append(f"commit: {commit_hash}")
+        if record.get("release_review_summary"):
+            details.append(f"summary: {record['release_review_summary']}")
+        details.append(f"ledger_revision={snapshot.revision}")
+        append_log(plan_dir, " | ".join(details))
+        append_log(plan_dir, completion)
+    attempt_ledger.append_event(
+        {
+            "unit_id": unit["id"],
+            "phase": "recovery",
+            "event": "isolated_release_reconciled",
+            "ledger_revision": snapshot.revision,
+            "expected_head": record.get("expected_parent"),
+            "observed_head": head_sha(repo),
+            "commit_sha": commit_hash,
+            "commit_tree": record.get("release_tree"),
+            "reason": str(record.get("release_state") or "legacy"),
+        }
+    )
+    plan_readiness.sync_queue_cache_from_plan(plan_dir / "plan.md")
+    state.refresh_dashboard(plans.execution_context_for_plan(plan_dir, queue_data).source_repo)
     return {
         "unit": unit,
         "prompt_path": prompt_path,
@@ -964,10 +1187,105 @@ def execute_unit(
         "commit": commit_hash,
         "changed_paths": changed,
         "auto_resolved_dirty": auto_resolved_dirty,
-        "repair_attempts": used_repair_attempts,
-        "repair_reason": last_repair_reason,
-        "review_gate": review_gate_payload(review_result.review),
+        "repair_attempts": int(record.get("release_repair_attempts") or 0),
+        "repair_reason": str(record.get("release_repair_reason") or ""),
+        "review_gate": record.get("release_review_gate"),
+        "reconciled_release": True,
     }
+
+
+def _isolated_release_mismatch(repo: Path, observed_head: str, record: dict) -> str:
+    release_kind = str(record.get("release_kind") or "committed")
+    expected_parent = str(record.get("expected_parent") or "")
+    changed = tuple(str(path) for path in record.get("changed_paths", []))
+    if release_kind == "uncommitted":
+        if observed_head != expected_parent:
+            return "uncommitted_head"
+        if worktree_patch_digest(repo, expected_parent, list(changed)) != record.get(
+            "candidate_diff_sha256"
+        ):
+            return "uncommitted_candidate"
+        return ""
+    if release_kind == "skipped":
+        if observed_head != expected_parent or changed:
+            return "skipped_state"
+        return ""
+    if commit_parent(repo, observed_head) != expected_parent:
+        return "parent"
+    observed_paths = changed_paths_between(repo, expected_parent, observed_head)
+    if observed_paths != changed or _path_list_digest(observed_paths) != record.get(
+        "changed_paths_sha256"
+    ):
+        return "paths"
+    if binary_patch_digest(repo, expected_parent, list(changed), head=observed_head) != record.get(
+        "candidate_diff_sha256"
+    ):
+        return "content"
+    if _text_digest(git_commit_message(repo, observed_head)) != record.get("message_sha256"):
+        return "message"
+    if record.get("release_state") == "completed" and commit_tree(repo, observed_head) != record.get(
+        "release_tree"
+    ):
+        return "tree"
+    return ""
+
+
+def _upgrade_legacy_isolated_release(
+    *, plan_dir: Path, queue_data: dict, unit: dict, ledger: AttemptLedger, snapshot
+):
+    repo = plans.execution_context_for_plan(plan_dir, queue_data).execution_repo
+    record = snapshot.record
+    release_commit = str(record.get("release_commit") or "")
+    if not release_commit or head_sha(repo) != release_commit:
+        raise RuntimeError("legacy isolated release commit is not the exact current HEAD")
+    expected_parent = str(record.get("expected_head") or "")
+    if commit_parent(repo, release_commit) != expected_parent:
+        raise RuntimeError("legacy isolated release parent is ambiguous")
+    changed = list(changed_paths_between(repo, expected_parent, release_commit))
+    outside = out_of_scope_paths(changed, [str(path) for path in record.get("allowed_paths", [])])
+    if outside:
+        raise RuntimeError("legacy isolated release contains out-of-scope paths")
+    message = git_commit_message(repo, release_commit)
+    return ledger.compare_and_set(
+        snapshot.revision,
+        {
+            **record,
+            "release_state": "completed",
+            "release_kind": "committed",
+            "release_action": "committed",
+            "expected_parent": expected_parent,
+            "changed_paths": changed,
+            "changed_paths_sha256": _path_list_digest(changed),
+            "changed_path_count": len(changed),
+            "candidate_diff_sha256": binary_patch_digest(
+                repo, expected_parent, changed, head=release_commit
+            ),
+            "message_sha256": _text_digest(message),
+            "release_message": message,
+            "release_observed_head": release_commit,
+            "release_tree": commit_tree(repo, release_commit),
+        },
+    )
+
+
+def _isolated_release_ledger_path(plan_dir: Path, unit: dict) -> Path | None:
+    unit_id = str(unit.get("id") or "")
+    if not unit_id:
+        return None
+    attempt = int(unit.get("repair_attempts") or 0)
+    candidate = execution_attempt_dir(plan_dir, unit_id, attempt) / "attempt-ledger.json"
+    if candidate.exists():
+        return candidate
+    attempts = sorted((plan_dir / "attempts" / unit_id).glob("attempt-*/attempt-ledger.json"))
+    return attempts[-1] if attempts else None
+
+
+def _path_list_digest(paths) -> str:
+    return hashlib.sha256("\0".join(str(path) for path in paths).encode("utf-8")).hexdigest()
+
+
+def _text_digest(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
 
 def commit_message(unit: dict, title: str) -> str:

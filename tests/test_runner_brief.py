@@ -172,6 +172,123 @@ def test_isolated_final_only_runs_deterministic_gate_without_reviewer(tmp_path, 
     assert evidence["sessions_distinct"] is False
 
 
+def test_isolated_release_recovers_after_prepare_before_commit_fault(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    plan = make_final_only_isolated_plan(tmp_path)
+    fake_codex = write_fake_codex(tmp_path)
+    original_commit = runner.commit_paths
+    calls = 0
+
+    def fail_once(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OSError("simulated release commit fault")
+        return original_commit(*args, **kwargs)
+
+    monkeypatch.setattr(runner, "commit_paths", fail_once)
+    with pytest.raises(OSError, match="simulated release commit fault"):
+        runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    monkeypatch.setattr(runner, "commit_paths", original_commit)
+    deny_child_on_recovery(monkeypatch)
+    result = runner.run_next(plan.plan_path, execute=True, commit=True)
+
+    assert result["action"] == "committed"
+    assert result["reconciled_release"] is True
+    assert git_commit_count(tmp_path) == 2
+
+
+def test_isolated_release_adopts_commit_after_completed_cas_fault(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    plan = make_final_only_isolated_plan(tmp_path)
+    fake_codex = write_fake_codex(tmp_path)
+    original_cas = runner.AttemptLedger.compare_and_set
+    failed = False
+
+    def fail_completed_once(self, revision, record):
+        nonlocal failed
+        if record.get("release_state") == "completed" and not failed:
+            failed = True
+            raise OSError("simulated release completion CAS fault")
+        return original_cas(self, revision, record)
+
+    monkeypatch.setattr(runner.AttemptLedger, "compare_and_set", fail_completed_once)
+    with pytest.raises(OSError, match="simulated release completion CAS fault"):
+        runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+    committed_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    monkeypatch.setattr(runner.AttemptLedger, "compare_and_set", original_cas)
+    deny_child_on_recovery(monkeypatch)
+    result = runner.run_next(plan.plan_path, execute=True, commit=True)
+
+    assert result["commit"] == committed_head
+    assert result["reconciled_release"] is True
+    assert git_commit_count(tmp_path) == 2
+
+
+def test_isolated_release_reconciles_completed_ledger_after_queue_fault(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    plan = make_final_only_isolated_plan(tmp_path)
+    fake_codex = write_fake_codex(tmp_path)
+    original_save = runner.plans.save_queue
+    failed = False
+
+    def fail_terminal_save(plan_dir, queue):
+        nonlocal failed
+        if any(unit.get("status") == "done" for unit in queue.get("units", [])) and not failed:
+            failed = True
+            raise OSError("simulated isolated final queue crash")
+        return original_save(plan_dir, queue)
+
+    monkeypatch.setattr(runner.plans, "save_queue", fail_terminal_save)
+    with pytest.raises(OSError, match="simulated isolated final queue crash"):
+        runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+    committed_head = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+
+    deny_child_on_recovery(monkeypatch)
+    result = runner.run_next(plan.plan_path, execute=True, commit=True)
+
+    assert result["commit"] == committed_head
+    assert result["reconciled_release"] is True
+    assert git_commit_count(tmp_path) == 2
+    assert "Completed commit unit 1." in (plan.directory / "log.md").read_text(encoding="utf-8")
+
+
+def make_final_only_isolated_plan(tmp_path):
+    plan = make_plan(tmp_path, isolated=False)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0].setdefault("execution_policy", {}).update(
+        {"executor_adapter": "isolated-child", "review_policy": "final_only"}
+    )
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    return plan
+
+
+def deny_child_on_recovery(monkeypatch):
+    monkeypatch.setattr(
+        runner,
+        "ensure_prepared_child_runtime",
+        lambda **_kwargs: (_ for _ in ()).throw(AssertionError("recovery must not start a child")),
+    )
+
+
+def git_commit_count(repo):
+    return int(
+        subprocess.run(
+            ["git", "rev-list", "--count", "HEAD"],
+            cwd=repo,
+            check=True,
+            capture_output=True,
+            text=True,
+        ).stdout
+    )
+
+
 def test_queue_policy_inference_reads_commit_body_high_risk_signals(tmp_path):
     plan = make_plan(tmp_path)
     content = plan.plan_path.read_text(encoding="utf-8")

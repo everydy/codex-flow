@@ -275,6 +275,8 @@ def _require_terminal_provenance(plan_dir: Path, queue: Mapping, repo: Path) -> 
             raise FinalGateError(f"terminal unit {unit_id} main ledger identity is invalid")
         if not main_ledger and record.get("status") != "finalized":
             raise FinalGateError(f"terminal unit {unit_id} isolated ledger is not finalized")
+        if not main_ledger and record.get("release_state") not in {None, "completed"}:
+            raise FinalGateError(f"terminal unit {unit_id} isolated release is not completed")
         if str(record.get(expected_commit_field) or "") != commit:
             raise FinalGateError(f"terminal unit {unit_id} ledger commit does not match")
         if str(record.get(expected_evidence_field) or "") != evidence:
