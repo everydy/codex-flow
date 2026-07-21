@@ -18,6 +18,7 @@ from .codex_cli import (
     verify_child_attestation,
 )
 from .child_runtime import REQUIRE_EXPLICIT_CHILD_ENV, ensure_prepared_child_runtime
+from .cancellation import cancellation_requested
 from .git_ops import (
     binary_patch_digest,
     candidate_diff_digest,
@@ -525,8 +526,25 @@ def execute_unit(
             append_log(plan_dir, f"Repair attempt {attempt}/{repair_attempt_limit} for commit unit {selected_unit.number}: {last_repair_reason}")
         attempt_dir = execution_attempt_dir(plan_dir, unit["id"], attempt)
         attempt_ledger_path = attempt_dir / "attempt-ledger.json"
+        cancel_observed = False
         def scoped_diff_probe() -> str:
             return scoped_diff_digest(repo, [str(path) for path in unit.get("allowed_paths", [])])
+        def cancel_probe() -> bool:
+            nonlocal cancel_observed
+            requested = cancellation_requested(attempt_dir, unit_id=unit["id"], attempt=attempt)
+            if requested and not cancel_observed:
+                cancel_observed = True
+                attempt_ledger.append_event(
+                    {
+                        "unit_id": unit["id"],
+                        "phase": "operator",
+                        "event": "operator_cancel_observed",
+                        "ledger_revision": attempt_ledger.load().revision,
+                        "attempt": attempt,
+                        "reason": "preserve_changes",
+                    }
+                )
+            return requested
         attempt_ledger = AttemptLedger(attempt_ledger_path)
         allowed_paths = [str(path) for path in unit.get("allowed_paths", [])]
         if attempt_ledger.load().revision == 0:
@@ -581,6 +599,7 @@ def execute_unit(
                 timeout_seconds=codex_timeout_seconds,
                 attempt_ledger_path=attempt_ledger_path,
                 diff_probe=scoped_diff_probe,
+                cancel_probe=cancel_probe,
             )
         except (CodexExecTimeout, CodexExecFailure) as exc:
             partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
@@ -670,6 +689,7 @@ def execute_unit(
                 timeout_seconds=codex_timeout_seconds,
                 attempt_ledger_path=attempt_ledger_path,
                 diff_probe=scoped_diff_probe,
+                cancel_probe=cancel_probe,
                 )
         except ReviewerProcessFailure as exc:
             partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))

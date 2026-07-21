@@ -38,6 +38,7 @@ class ImplementerAgent(Protocol):
         attempt_ledger_path: Path | None = None,
         diff_probe=None,
         liveness_probe=None,
+        cancel_probe=None,
     ) -> ImplementerAgentResult:
         ...
 
@@ -61,6 +62,7 @@ class CodexImplementerAgent:
         attempt_ledger_path: Path | None = None,
         diff_probe=None,
         liveness_probe=None,
+        cancel_probe=None,
     ) -> ImplementerAgentResult:
         policy = execution_policy.classify_execution_policy(
             {
@@ -84,6 +86,7 @@ class CodexImplementerAgent:
             attempt_ledger_path=attempt_ledger_path,
             diff_probe=diff_probe,
             liveness_probe=liveness_probe,
+            cancel_probe=cancel_probe,
         )
         session_id = parse_session_id(implementation.stdout) or ""
         if not session_id:

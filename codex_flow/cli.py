@@ -9,6 +9,7 @@ import time
 from . import briefs, dashboard as dashboard_view, inbox, plan_readiness, plans, pr, runner, source_plan, state, tickets
 from .run_all import RunAllRunner
 from .attempt_ledger import AttemptLedger, LedgerConflict
+from .cancellation import CancellationError, request_cancel
 from .git_ops import head_summary, scoped_diff_digest
 from .main_unit import MainUnitError, begin_main_unit, complete_main_unit, hold_main_unit
 from .final_gate import FinalGateError, produce_final_gate
@@ -137,6 +138,13 @@ def build_parser() -> argparse.ArgumentParser:
     adopt.add_argument("--attempt", type=Path, required=True, help="Attempt directory or attempt-ledger.json path.")
     adopt.add_argument("--expected-revision", type=int, required=True)
     adopt.add_argument("--evidence", type=Path, required=True)
+
+    cancel = subparsers.add_parser(
+        "request-cancel", help="Request candidate-preserving cancellation of one isolated attempt."
+    )
+    cancel.add_argument("--plan", type=Path, required=True)
+    cancel.add_argument("--unit", required=True)
+    cancel.add_argument("--attempt", type=int, required=True)
 
     begin_main = subparsers.add_parser("begin-main-unit", help="Lock the next unit for direct main-agent implementation.")
     begin_main.add_argument("--plan", type=Path, required=True)
@@ -372,6 +380,15 @@ def main(argv: list[str] | None = None) -> int:
             "status": contract.status,
             "attempt": contract.attempt,
         }, ensure_ascii=False, sort_keys=True))
+        return 0
+
+    if args.command == "request-cancel":
+        try:
+            marker = request_cancel(args.plan, unit_id=args.unit, attempt=args.attempt)
+        except CancellationError as exc:
+            print(f"cancel_rejected: {exc}")
+            return 1
+        print(f"cancel_requested: {marker}")
         return 0
 
     if args.command == "complete-main-unit":

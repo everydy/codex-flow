@@ -4,6 +4,7 @@ from datetime import datetime
 import json
 import os
 from pathlib import Path
+import shlex
 
 from . import inbox, plan_readiness, plans, pr, source_plan, state
 from .attempt_supervisor import DiagnosticRedactionError, redact_diagnostic
@@ -33,7 +34,11 @@ def render_dashboard(repo: str | Path | None = None) -> str:
         "",
     ]
     if dirty:
-        lines.extend(["## Dirty Files", "", *[f"- {path}" for path in dirty], ""])
+        visible_dirty = dirty[:20]
+        lines.extend(["## Dirty Files", "", *[f"- {path}" for path in visible_dirty]])
+        if len(dirty) > len(visible_dirty):
+            lines.append(f"- +{len(dirty) - len(visible_dirty)} more")
+        lines.append("")
     if not active_plans:
         lines.extend(["## Active Plans", "", "- None", ""])
     else:
@@ -66,12 +71,15 @@ def render_dashboard(repo: str | Path | None = None) -> str:
                 lines.extend(format_current_unit(active.directory, current))
             if drift.reason != "no source metadata":
                 lines.append(f"- Source drift: {drift.reason}")
-            lines.extend(
-                [
-                    f"- Suggested command: `python3 scripts/codex_flow.py run-all --plan {rel_plan} --auto-resolve`",
-                    "",
-                ]
-            )
+            if current is None:
+                lines.extend(
+                    [
+                        f"- Suggested command: `python3 scripts/codex_flow.py run-all --plan {rel_plan} --auto-resolve`",
+                        "",
+                    ]
+                )
+            else:
+                lines.append("")
             recent_log = recent_log_lines(active.directory / "log.md")
             if recent_log:
                 lines.extend(["Recent log:", *[f"- {line}" for line in recent_log], ""])
@@ -114,6 +122,15 @@ def format_current_unit(plan_dir: Path, unit: dict) -> list[str]:
     ) or "not recorded"
     revision = ledger.get("_revision")
     source_label = source + (f" r{revision}" if revision is not None else "")
+    changed = [str(path) for path in unit.get("changed_paths", ledger.get("changed_paths", []))]
+    visible_changed = changed[:10]
+    changed_label = ", ".join(visible_changed) if visible_changed else "none recorded"
+    if len(changed) > len(visible_changed):
+        changed_label += f" (+{len(changed) - len(visible_changed)} more)"
+    agent_calls = count_agent_calls(plan_dir, str(unit.get("id") or ""))
+    operator_action = format_operator_action(
+        plan_dir, unit, ledger, owner=owner, ledger_status=ledger_status, revision=revision
+    )
     return [
         f"- Current owner: `{owner}`",
         f"- Current phase/status: `{phase}` / `{ledger_status if source.startswith('attempt ledger') else unit_status}`",
@@ -121,8 +138,60 @@ def format_current_unit(plan_dir: Path, unit: dict) -> list[str]:
         f"- Last progress: {last_progress}",
         f"- Waiting: {waiting}",
         f"- Current verification: {verification}",
+        f"- Current changed files: {safe_operator_text(changed_label, limit=480)}",
+        f"- Agent calls: {agent_calls}",
+        "- Token usage: not recorded",
         f"- Status source: {source_label}",
+        f"- Operator action: {operator_action}",
     ]
+
+
+def count_agent_calls(plan_dir: Path, unit_id: str) -> int:
+    if not unit_id:
+        return 0
+    root = plan_dir / "attempts" / unit_id
+    return len(list(root.glob("attempt-*/implementation/metadata.json"))) + len(
+        list(root.glob("attempt-*/review/metadata.json"))
+    )
+
+
+def format_operator_action(
+    plan_dir: Path,
+    unit: dict,
+    ledger: dict,
+    *,
+    owner: str,
+    ledger_status: str,
+    revision,
+) -> str:
+    plan = shlex.quote(str(plan_dir / "plan.md"))
+    unit_id = shlex.quote(str(unit.get("id") or ""))
+    if owner == "main" and revision is not None and unit.get("status") == "in_progress":
+        return (
+            "preserve and stop with `python3 scripts/codex_flow.py hold-main-unit "
+            f"--plan {plan} --unit {unit_id} --expected-revision {revision} "
+            "--failure-class operator --reason preserve_changes`; complete uses the same identity "
+            "with `complete-main-unit` and pass evidence"
+        )
+    try:
+        attempt = max(0, int(unit.get("repair_attempts") or 0))
+    except (TypeError, ValueError):
+        attempt = 0
+    if owner == "isolated-child" and ledger_status in {"starting", "running", "implementation", "review"}:
+        return (
+            "cancel and preserve changes with `python3 scripts/codex_flow.py request-cancel "
+            f"--plan {plan} --unit {unit_id} --attempt {attempt}`"
+        )
+    if ledger.get("release_state") in {"committing", "completed"} and unit.get("status") != "done":
+        return (
+            "release proof is recoverable; run `python3 scripts/codex_flow.py run-next "
+            f"--plan {plan}` (no child or duplicate commit)"
+        )
+    if unit.get("status") == "needs_work":
+        return "inspect held evidence; automatic retry and main-policy downgrade are disabled"
+    if owner == "isolated-child":
+        return "main handoff is unavailable because the effective safety policy requires isolation"
+    return f"run `python3 scripts/codex_flow.py run-next --plan {plan}`"
 
 
 def read_current_ledger(plan_dir: Path, unit: dict) -> tuple[dict, str]:

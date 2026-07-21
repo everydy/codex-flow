@@ -130,6 +130,7 @@ class ReviewerAgent(Protocol):
         attempt_ledger_path: Path | None = None,
         diff_probe=None,
         liveness_probe=None,
+        cancel_probe=None,
     ) -> ReviewerAgentResult:
         ...
 
@@ -153,6 +154,7 @@ class CodexReadOnlyReviewer:
         attempt_ledger_path: Path | None = None,
         diff_probe=None,
         liveness_probe=None,
+        cancel_probe=None,
     ) -> ReviewerAgentResult:
         before_head = head_summary(input_data.repo) or ""
         before_digest = candidate_diff_digest(input_data.repo, input_data.excluded_candidate_paths)
@@ -187,6 +189,7 @@ class CodexReadOnlyReviewer:
                 attempt_ledger_path=attempt_ledger_path,
                 diff_probe=diff_probe,
                 liveness_probe=liveness_probe,
+                cancel_probe=cancel_probe,
             )
         except (CodexExecTimeout, CodexExecFailure) as exc:
             observed_head = head_summary(input_data.repo) or ""
