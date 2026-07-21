@@ -101,7 +101,11 @@ def format_next(unit: plan_readiness.CommitUnit | None) -> str:
 
 def current_queue_unit(queue_data: dict) -> dict | None:
     return next(
-        (unit for unit in queue_data.get("units", []) if isinstance(unit, dict) and unit.get("status") != "done"),
+        (
+            unit
+            for unit in queue_data.get("units", [])
+            if isinstance(unit, dict) and unit.get("status") in {"in_progress", "needs_work"}
+        ),
         None,
     )
 
