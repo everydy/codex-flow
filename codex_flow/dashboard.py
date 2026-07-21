@@ -74,7 +74,7 @@ def render_dashboard(repo: str | Path | None = None) -> str:
             if current is None:
                 lines.extend(
                     [
-                        f"- Suggested command: `python3 scripts/codex_flow.py run-all --plan {rel_plan} --auto-resolve`",
+                        f"- Suggested command: `{operator_command_prefix()} run-all --plan {rel_plan} --auto-resolve`",
                         "",
                     ]
                 )
@@ -168,11 +168,12 @@ def format_operator_action(
     ledger_status: str,
     revision,
 ) -> str:
+    command = operator_command_prefix()
     plan = shlex.quote(str(plan_dir / "plan.md"))
     unit_id = shlex.quote(str(unit.get("id") or ""))
     if owner == "main" and revision is not None and unit.get("status") == "in_progress":
         return (
-            "preserve and stop with `python3 scripts/codex_flow.py hold-main-unit "
+            f"preserve and stop with `{command} hold-main-unit "
             f"--plan {plan} --unit {unit_id} --expected-revision {revision} "
             "--failure-class operator --reason preserve_changes`; complete uses the same identity "
             "with `complete-main-unit` and pass evidence"
@@ -183,19 +184,26 @@ def format_operator_action(
         attempt = 0
     if owner == "isolated-child" and ledger_status in {"starting", "running", "implementation", "review"}:
         return (
-            "cancel and preserve changes with `python3 scripts/codex_flow.py request-cancel "
+            f"cancel and preserve changes with `{command} request-cancel "
             f"--plan {plan} --unit {unit_id} --attempt {attempt}`"
         )
     if ledger.get("release_state") in {"committing", "completed"} and unit.get("status") != "done":
         return (
-            "release proof is recoverable; run `python3 scripts/codex_flow.py run-next "
+            f"release proof is recoverable; run `{command} run-next "
             f"--plan {plan}` (no child or duplicate commit)"
         )
     if unit.get("status") == "needs_work":
         return "inspect held evidence; automatic retry and main-policy downgrade are disabled"
     if owner == "isolated-child":
         return "main handoff is unavailable because the effective safety policy requires isolation"
-    return f"run `python3 scripts/codex_flow.py run-next --plan {plan}`"
+    return f"run `{command} run-next --plan {plan}`"
+
+
+def operator_command_prefix() -> str:
+    configured = os.environ.get("CODEX_FLOW_OPERATOR_COMMAND_PREFIX", "").strip()
+    if configured and "\n" not in configured and "\r" not in configured and len(configured) <= 2048:
+        return configured
+    return "python3 scripts/codex_flow.py"
 
 
 def read_current_ledger(plan_dir: Path, unit: dict) -> tuple[dict, str]:

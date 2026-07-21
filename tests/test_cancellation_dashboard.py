@@ -45,8 +45,12 @@ def test_cancel_request_is_attempt_bound_and_stale_marker_is_ignored(tmp_path):
     assert cancellation_requested(attempt_dir, unit_id="other-unit", attempt=0) is False
 
 
-def test_dashboard_shows_bounded_files_cost_truth_and_real_cancel_command(tmp_path):
+def test_dashboard_shows_bounded_files_cost_truth_and_real_cancel_command(tmp_path, monkeypatch):
     plan, unit, attempt_dir = make_running_attempt(tmp_path)
+    monkeypatch.setenv(
+        "CODEX_FLOW_OPERATOR_COMMAND_PREFIX",
+        "python3 /plugin/implementation_commit.py --repo /target --action",
+    )
     implementation = attempt_dir / "implementation"
     review = attempt_dir / "review"
     implementation.mkdir()
@@ -61,6 +65,8 @@ def test_dashboard_shows_bounded_files_cost_truth_and_real_cancel_command(tmp_pa
     assert "Token usage: not recorded" in rendered
     assert "request-cancel" in rendered
     assert "--attempt 0" in rendered
+    assert "python3 /plugin/implementation_commit.py --repo /target --action request-cancel" in rendered
+    assert "scripts/codex_flow.py" not in rendered
 
 
 def test_request_cancel_cli_contract_is_explicit():
