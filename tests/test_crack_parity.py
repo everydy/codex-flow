@@ -7,6 +7,7 @@ import subprocess
 import pytest
 
 from codex_flow import cli, dashboard as dashboard_view, plans, pr, tickets
+from codex_flow.attempt_ledger import AttemptLedger
 from codex_flow.dashboard import render_dashboard
 from codex_flow.final_gate import final_evidence_identity, produce_final_gate
 
@@ -295,12 +296,22 @@ def test_remote_merge_success_clears_matching_pr_lock(tmp_path, monkeypatch):
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Done\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
     _, queue = plans.load_queue(plan_dir / "plan.md")
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    ledger_path = plan_dir / "attempts" / queue["units"][0]["id"] / "main" / "attempt-ledger.json"
+    AttemptLedger(ledger_path).compare_and_set(
+        0,
+        {
+            "owner": "main", "status": "completed", "unit_id": queue["units"][0]["id"],
+            "attempt": 1, "commit": commit, "evidence_sha256": "a" * 64,
+        },
+    )
     queue["units"][0].update(
         {
-            "commit": subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
-            ).stdout.strip(),
+            "commit": commit,
             "verification_evidence_sha256": "a" * 64,
+            "main_unit_ledger": str(ledger_path.relative_to(plan_dir)),
             "main_unit_ledger_revision": 1,
         }
     )

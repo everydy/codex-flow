@@ -3,6 +3,7 @@ from __future__ import annotations
 import subprocess
 
 from codex_flow import cli, inbox, plans
+from codex_flow.attempt_ledger import AttemptLedger
 from codex_flow.git_ops import ProcessResult
 from codex_flow.merge import MergeResult, MergeRunner
 from codex_flow.final_gate import final_evidence_identity, produce_final_gate
@@ -37,15 +38,7 @@ def test_merge_runner_local_merge_success(tmp_path):
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Feature\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
     _, queue = plans.load_queue(plan_dir / "plan.md")
-    queue["units"][0].update(
-        {
-            "commit": subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
-            ).stdout.strip(),
-            "verification_evidence_sha256": "a" * 64,
-            "main_unit_ledger_revision": 1,
-        }
-    )
+    _attach_main_provenance(plan_dir, queue, tmp_path)
     plans.save_queue(plan_dir, queue)
     identity = final_evidence_identity(plan_dir / "plan.md")
     produce_final_gate(
@@ -72,15 +65,7 @@ def test_merge_runner_reports_branch_finalization_blocked_when_safe_delete_fails
     (plan_dir / "plan.md").write_text("Branch: codex/demo\nTitle: Demo\n\n### Commit 1: Feature\n\nDone\n", encoding="utf-8")
     (plan_dir / "log.md").write_text("- Completed commit unit 1.\n", encoding="utf-8")
     _, queue = plans.load_queue(plan_dir / "plan.md")
-    queue["units"][0].update(
-        {
-            "commit": subprocess.run(
-                ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
-            ).stdout.strip(),
-            "verification_evidence_sha256": "a" * 64,
-            "main_unit_ledger_revision": 1,
-        }
-    )
+    _attach_main_provenance(plan_dir, queue, tmp_path)
     plans.save_queue(plan_dir, queue)
     identity = final_evidence_identity(plan_dir / "plan.md")
     produce_final_gate(
@@ -117,6 +102,29 @@ def test_merge_cli_returns_failure_when_branch_finalization_is_blocked(tmp_path,
 
     assert status == 1
     assert "branch_finalization_blocked: held" in capsys.readouterr().out
+
+
+def _attach_main_provenance(plan_dir, queue, repo):
+    unit = queue["units"][0]
+    commit = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    ledger_path = plan_dir / "attempts" / unit["id"] / "main" / "attempt-ledger.json"
+    AttemptLedger(ledger_path).compare_and_set(
+        0,
+        {
+            "owner": "main", "status": "completed", "unit_id": unit["id"],
+            "attempt": 1, "commit": commit, "evidence_sha256": "a" * 64,
+        },
+    )
+    unit.update(
+        {
+            "commit": commit,
+            "verification_evidence_sha256": "a" * 64,
+            "main_unit_ledger": str(ledger_path.relative_to(plan_dir)),
+            "main_unit_ledger_revision": 1,
+        }
+    )
 
 
 def init_git_repo(tmp_path):

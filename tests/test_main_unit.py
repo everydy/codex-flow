@@ -175,6 +175,42 @@ def test_held_candidate_requires_explicit_retry_and_uses_new_attempt(tmp_path):
     assert events[-1]["event"] == "main_unit_retry_opened"
 
 
+def test_retry_open_ledger_reconciles_queue_save_failure(tmp_path, monkeypatch):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    opened = begin_main_unit(plan.plan_path)
+    (tmp_path / "work.txt").write_text("candidate\n", encoding="utf-8")
+    hold_main_unit(
+        plan.plan_path,
+        unit_id=opened.unit_id,
+        expected_revision=opened.ledger_revision,
+        failure_class="environment",
+        reason="service unavailable",
+    )
+    original = plans.save_queue
+    failed = False
+
+    def fail_once(plan_dir, queue):
+        nonlocal failed
+        if not failed:
+            failed = True
+            raise OSError("simulated retry queue save crash")
+        return original(plan_dir, queue)
+
+    monkeypatch.setattr(plans, "save_queue", fail_once)
+    with pytest.raises(OSError, match="retry queue save crash"):
+        begin_main_unit(plan.plan_path, unit_id=opened.unit_id, retry_held=True)
+
+    resumed = begin_main_unit(plan.plan_path, unit_id=opened.unit_id, retry_held=True)
+    assert resumed.status == "open"
+    assert resumed.attempt == 2
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert queue["units"][0]["main_unit_attempt"] == 2
+    assert "attempt-2" in queue["units"][0]["main_unit_ledger"]
+    events, _ = AttemptLedger(resumed.ledger_path).recover_events()
+    assert events[-1]["event"] == "main_unit_reconciled"
+
+
 def test_retry_refuses_changed_held_candidate(tmp_path):
     init_repo(tmp_path)
     plan = make_plan(tmp_path)

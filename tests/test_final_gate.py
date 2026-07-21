@@ -5,6 +5,7 @@ from dataclasses import replace
 import pytest
 
 from codex_flow import plans, tickets
+from codex_flow.attempt_ledger import AttemptLedger
 from codex_flow.execution_policy import ExecutionMode, ExecutionProfile
 from codex_flow.final_gate import (
     FinalGateError,
@@ -56,8 +57,22 @@ def terminal_plan(path):
         ["git", "rev-parse", "HEAD"], cwd=path, check=True, capture_output=True, text=True
     ).stdout.strip()
     for unit in queue["units"]:
+        ledger_path = plan.directory / "attempts" / unit["id"] / "main" / "attempt-ledger.json"
+        relative_ledger = str(ledger_path.relative_to(plan.directory))
+        AttemptLedger(ledger_path).compare_and_set(
+            0,
+            {
+                "owner": "main",
+                "status": "completed",
+                "unit_id": unit["id"],
+                "attempt": 1,
+                "commit": commit,
+                "evidence_sha256": "a" * 64,
+            },
+        )
         unit["commit"] = commit
         unit["verification_evidence_sha256"] = "a" * 64
+        unit["main_unit_ledger"] = relative_ledger
         unit["main_unit_ledger_revision"] = 1
     plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     return plan
@@ -179,6 +194,56 @@ def test_producer_rejects_incomplete_terminal_unit_provenance(tmp_path, field, v
     identity = final_evidence_identity(plan.plan_path)
 
     with pytest.raises(FinalGateError, match=message):
+        produce_final_gate(
+            plan.plan_path,
+            review_evidence={**identity, "status": "pass"},
+            test_evidence={**identity, "status": "pass"},
+        )
+
+
+def test_producer_rejects_commit_outside_release_lineage(tmp_path):
+    init_repo(tmp_path)
+    plan = terminal_plan(tmp_path)
+    subprocess.run(["git", "switch", "--orphan", "unrelated"], cwd=tmp_path, check=True, capture_output=True)
+    (tmp_path / "UNRELATED.md").write_text("unrelated\n", encoding="utf-8")
+    subprocess.run(["git", "add", "UNRELATED.md"], cwd=tmp_path, check=True)
+    subprocess.run(["git", "commit", "-m", "unrelated"], cwd=tmp_path, check=True, capture_output=True)
+    unrelated = subprocess.run(
+        ["git", "rev-parse", "HEAD"], cwd=tmp_path, check=True, capture_output=True, text=True
+    ).stdout.strip()
+    subprocess.run(["git", "switch", "main"], cwd=tmp_path, check=True, capture_output=True)
+
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    unit = queue["units"][0]
+    unit["commit"] = unrelated
+    ledger = AttemptLedger(plan.directory / unit["main_unit_ledger"])
+    snapshot = ledger.load()
+    updated = ledger.compare_and_set(snapshot.revision, {**snapshot.record, "commit": unrelated})
+    unit["main_unit_ledger_revision"] = updated.revision
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    identity = final_evidence_identity(plan.plan_path)
+
+    with pytest.raises(FinalGateError, match="outside the release lineage"):
+        produce_final_gate(
+            plan.plan_path,
+            review_evidence={**identity, "status": "pass"},
+            test_evidence={**identity, "status": "pass"},
+        )
+
+
+def test_producer_rejects_terminal_ledger_commit_or_evidence_mismatch(tmp_path):
+    init_repo(tmp_path)
+    plan = terminal_plan(tmp_path)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    unit = queue["units"][0]
+    ledger = AttemptLedger(plan.directory / unit["main_unit_ledger"])
+    snapshot = ledger.load()
+    updated = ledger.compare_and_set(snapshot.revision, {**snapshot.record, "evidence_sha256": "b" * 64})
+    unit["main_unit_ledger_revision"] = updated.revision
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    identity = final_evidence_identity(plan.plan_path)
+
+    with pytest.raises(FinalGateError, match="ledger evidence does not match"):
         produce_final_gate(
             plan.plan_path,
             review_evidence={**identity, "status": "pass"},

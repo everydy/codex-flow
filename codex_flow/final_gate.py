@@ -11,6 +11,7 @@ import tempfile
 from typing import Mapping
 
 from . import plans
+from .attempt_ledger import AttemptLedger
 from .execution_policy import ExecutionMode, ExecutionProfile, POLICY_VERSION
 from .git_ops import head_sha, run_process
 
@@ -71,7 +72,7 @@ def produce_final_gate(
         raise FinalGateError(f"final gate requires terminal queue; unfinished: {', '.join(map(str, unfinished))}")
     context = plans.execution_context_for_plan(plan_dir, queue)
     repo = context.execution_repo
-    _require_terminal_provenance(queue, repo)
+    _require_terminal_provenance(plan_dir, queue, repo)
     identity = {
         "head": head_sha(repo),
         "plan_digest": plan_file_digest(plan_dir / "plan.md"),
@@ -224,7 +225,8 @@ def _terminal_unit_state(unit: Mapping) -> dict:
     }
 
 
-def _require_terminal_provenance(queue: Mapping, repo: Path) -> None:
+def _require_terminal_provenance(plan_dir: Path, queue: Mapping, repo: Path) -> None:
+    release_head = head_sha(repo)
     for unit in queue.get("units", []):
         if not isinstance(unit, Mapping):
             raise FinalGateError("terminal queue contains an invalid unit record")
@@ -243,6 +245,40 @@ def _require_terminal_provenance(queue: Mapping, repo: Path) -> None:
         exists = run_process(["git", "cat-file", "-e", f"{commit}^{{commit}}"], cwd=repo)
         if exists.status != 0:
             raise FinalGateError(f"terminal unit {unit_id} commit is unavailable")
+        ancestor = run_process(["git", "merge-base", "--is-ancestor", commit, release_head], cwd=repo)
+        if ancestor.status != 0:
+            raise FinalGateError(f"terminal unit {unit_id} commit is outside the release lineage")
+
+        main_ledger = str(unit.get("main_unit_ledger") or "")
+        if main_ledger:
+            ledger_path = plan_dir / main_ledger
+            expected_commit_field = "commit"
+            expected_evidence_field = "evidence_sha256"
+        else:
+            attempt = int(unit.get("repair_attempts") or 0)
+            ledger_path = plan_dir / "attempts" / unit_id / f"attempt-{attempt}" / "attempt-ledger.json"
+            expected_commit_field = "release_commit"
+            expected_evidence_field = "verification_evidence_sha256"
+        try:
+            ledger_path.resolve().relative_to(plan_dir.resolve())
+        except ValueError as exc:
+            raise FinalGateError(f"terminal unit {unit_id} ledger escapes the plan directory") from exc
+        snapshot = AttemptLedger(ledger_path).load()
+        if snapshot.revision != attempt_revision:
+            raise FinalGateError(f"terminal unit {unit_id} ledger revision is stale")
+        record = snapshot.record
+        if main_ledger and (
+            record.get("owner") != "main"
+            or record.get("unit_id") != unit_id
+            or record.get("status") != "completed"
+        ):
+            raise FinalGateError(f"terminal unit {unit_id} main ledger identity is invalid")
+        if not main_ledger and record.get("status") != "finalized":
+            raise FinalGateError(f"terminal unit {unit_id} isolated ledger is not finalized")
+        if str(record.get(expected_commit_field) or "") != commit:
+            raise FinalGateError(f"terminal unit {unit_id} ledger commit does not match")
+        if str(record.get(expected_evidence_field) or "") != evidence:
+            raise FinalGateError(f"terminal unit {unit_id} ledger evidence does not match")
 
 
 def _load_stable_queue(plan_path: str | Path) -> tuple[Path, dict]:

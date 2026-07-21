@@ -871,14 +871,11 @@ def execute_unit(
         commit_hash = head_sha(repo)
         action = "skipped"
 
-    unit["status"] = "done"
-    unit["updated_at"] = state.timestamp()
-    unit["changed_paths"] = changed
-    unit["commit"] = commit_hash
-    unit["verification_evidence_sha256"] = hashlib.sha256(
+    release_revision = attempt_ledger.load().revision + 1
+    verification_evidence_sha256 = hashlib.sha256(
         json.dumps(
             {
-                "attempt_ledger_revision": unit.get("attempt_ledger_revision", 0),
+                "attempt_ledger_revision": release_revision,
                 "review_status": review_result.review.status,
                 "review_gate": review_gate_payload(review_result.review),
                 "verification": [str(item) for item in unit.get("verification", [])],
@@ -887,6 +884,26 @@ def execute_unit(
             separators=(",", ":"),
         ).encode("utf-8")
     ).hexdigest()
+    release_snapshot = attempt_ledger.compare_and_set(
+        release_revision - 1,
+        {
+            **attempt_ledger.load().record,
+            "release_commit": commit_hash,
+            "verification_evidence_sha256": verification_evidence_sha256,
+        },
+    )
+    unit["status"] = "done"
+    unit["updated_at"] = state.timestamp()
+    unit["changed_paths"] = changed
+    unit["commit"] = commit_hash
+    unit["attempt_ledger_revision"] = release_snapshot.revision
+    unit["verification_evidence_sha256"] = verification_evidence_sha256
+    ensure_attempt_view_revision(
+        release_snapshot.revision,
+        queue_unit=unit,
+        review_path=review_path,
+        handoff_path=attempt_ledger.path.parent / "handoff.json",
+    )
     unit["repair_attempts"] = used_repair_attempts
     if review_result.review.gate:
         unit["review_gate"] = review_result.review.gate.to_dict()

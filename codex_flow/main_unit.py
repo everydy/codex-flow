@@ -4,6 +4,7 @@ from dataclasses import dataclass
 import hashlib
 import json
 from pathlib import Path
+import re
 from typing import Mapping
 
 from . import plans, state
@@ -69,7 +70,7 @@ def begin_main_unit(
 ) -> MainUnitContract:
     plan_dir, queue = plans.load_queue(plan_path)
     unit = _select_unit(queue, unit_id)
-    ledger_path = _current_ledger_path(plan_dir, unit)
+    ledger_path = _latest_main_ledger_path(plan_dir, unit)
     snapshot = AttemptLedger(ledger_path).load()
     if snapshot.record.get("owner") == "main":
         ledger_status = snapshot.record.get("status")
@@ -345,6 +346,36 @@ def _current_ledger_path(plan_dir: Path, unit: Mapping) -> Path:
     if relative:
         return plan_dir / relative
     return _ledger_path(plan_dir, str(unit["id"]), int(unit.get("main_unit_attempt") or 1))
+
+
+def _latest_main_ledger_path(plan_dir: Path, unit: Mapping) -> Path:
+    """Return the newest valid numbered main attempt, including orphaned opens.
+
+    The ledger is committed before the queue pointer.  If the queue write is
+    interrupted, a later retry ledger can therefore exist without being
+    referenced by queue.json.  Treat that ledger as the source of truth rather
+    than trying to create the same numbered attempt again.
+    """
+    current = _current_ledger_path(plan_dir, unit)
+    base = plan_dir / "attempts" / str(unit["id"]) / "main"
+    candidates: list[tuple[int, Path]] = [(1, base / "attempt-ledger.json")]
+    if base.is_dir():
+        for child in base.iterdir():
+            match = re.fullmatch(r"attempt-(\d+)", child.name)
+            if match and child.is_dir():
+                candidates.append((int(match.group(1)), child / "attempt-ledger.json"))
+    valid: list[tuple[int, Path]] = []
+    for attempt, path in candidates:
+        snapshot = AttemptLedger(path).load()
+        record = snapshot.record
+        if (
+            snapshot.revision > 0
+            and record.get("owner") == "main"
+            and record.get("unit_id") == unit.get("id")
+            and int(record.get("attempt") or 1) == attempt
+        ):
+            valid.append((attempt, path))
+    return max(valid, default=(0, current), key=lambda item: item[0])[1]
 
 
 def _require_open(ledger: AttemptLedger, expected_revision: int, unit_id: str):
