@@ -182,6 +182,24 @@ def test_route_requires_isolation_opt_in_for_worktree_root(tmp_path, capsys):
     assert not (repo / ".codex-flow").exists()
 
 
+def test_cleanup_worktree_is_noop_for_default_in_place_plan(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    source = write_source_plan(repo)
+    assert cli.main(["--repo", str(repo), "route", str(source)]) == 0
+    capsys.readouterr()
+    plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
+
+    status = cli.main(["cleanup-worktree", "--plan", str(plan_dir / "plan.md"), "--target", "main"])
+
+    assert status == 0
+    assert f"worktree_cleanup_not_applicable: {repo.resolve()}" in capsys.readouterr().out
+    assert repo.exists()
+    queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
+    assert queue["cleanup_state"] == "not_applicable"
+
+
 def test_route_persists_opt_in_external_execution_worktree_without_switching_dirty_source(tmp_path, capsys):
     repo = tmp_path / "repo"
     repo.mkdir()
@@ -446,6 +464,61 @@ def test_disposable_two_unit_graph_resumes_without_merge_then_cleans_up_safely(t
     cleaned = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
     assert cleaned["cleanup_state"] == "removed"
     assert not execution_repo.exists()
+    assert subprocess.run(
+        ["git", "branch", "--list", queue["branch"]],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == ""
+
+
+def test_in_place_two_unit_graph_merges_and_closes_branch_without_removing_source(tmp_path, monkeypatch):
+    monkeypatch.setenv("CODEX_FLOW_CHILD_ISOLATION", "0")
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    source = write_source_plan(repo)
+    subprocess.run(["git", "add", str(source.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add source plan"], cwd=repo, check=True, capture_output=True)
+    fake_codex = write_two_unit_fake_codex(tmp_path)
+    assert cli.main(["--repo", str(repo), "route", str(source)]) == 0
+    plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
+    queue_path = plan_dir / "queue.json"
+    queue = json.loads(queue_path.read_text(encoding="utf-8"))
+    queue["units"][0]["allowed_paths"] = ["unit-1.txt"]
+    queue["units"][1]["allowed_paths"] = ["unit-2.txt"]
+    for unit in queue["units"]:
+        unit.setdefault("execution_policy", {})["executor_adapter"] = "isolated-child"
+        unit["execution_policy"]["review_policy"] = "per_unit"
+    queue_path.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+
+    result = RunAllRunner().run_all(
+        plan_dir / "plan.md",
+        execute=True,
+        commit=True,
+        codex_command=str(fake_codex),
+        no_merge=True,
+    )
+
+    assert result.action == "local_branch"
+    assert repo.exists()
+    assert git_ops.current_branch(repo) == queue["branch"]
+    identity = final_evidence_identity(plan_dir / "plan.md")
+    produce_final_gate(
+        plan_dir / "plan.md",
+        review_evidence={**identity, "status": "pass"},
+        test_evidence={**identity, "status": "pass"},
+    )
+
+    merged = MergeRunner().merge_local(plan_dir / "plan.md", target="main", execute=True)
+
+    assert merged.action == "merged_local"
+    assert "branch_closed" in merged.message
+    assert repo.exists()
+    assert git_ops.current_branch(repo) == "main"
+    assert (repo / "unit-1.txt").read_text(encoding="utf-8") == "unit 1\n"
+    assert (repo / "unit-2.txt").read_text(encoding="utf-8") == "unit 2\n"
     assert subprocess.run(
         ["git", "branch", "--list", queue["branch"]],
         cwd=repo,

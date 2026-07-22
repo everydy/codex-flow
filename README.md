@@ -15,13 +15,14 @@ Each plan also carries a `Skill Routing Manifest`, so a fresh Codex session can 
 
 - Creates a local `.codex-flow/` workspace for tickets, plans, queues, briefs, and locks.
 - Routes a plan-first Markdown source into a source snapshot, extracted tickets, a macro plan, and a queue.
+- Uses the repository's existing working tree and a dedicated plan branch by default. Additional Git worktrees are explicit opt-in isolation.
 - Rejects short natural-language route input instead of creating an ad hoc plan.
 - Writes a `Skill Routing Manifest` into every plan, then feeds the selected entry into implementer prompts, review checklists, and PR draft artifacts.
 - Executes commit units by default, while still supporting prompt previews with `--preview` or `--dry-run`.
 - Can execute Codex CLI for one unit or a sequence of units with an implement-then-review agent loop.
 - Can commit changed files per completed unit after a mandatory post-unit `review-all-in-one` gate.
 - Writes morning briefs, review checklists, and PR dry-run artifacts.
-- Provides auto-resolve behavior for dirty worktrees, active PR locks, unfinished units, and local merge readiness.
+- Provides auto-resolve behavior for explicit isolated worktrees, active PR locks, unfinished units, and local merge readiness.
 - Provides a detailed dashboard with PR lock, inbox, dirty file, active plan, progress, and suggested command summaries.
 - Supports PR lock management, PR status checks, and source-plan-only inbox drain after merged PRs.
 
@@ -55,6 +56,15 @@ Route an approved plan-first document:
 
 ```bash
 python3 scripts/codex_flow.py --repo /path/to/your/repo route docs/plans/example-plan.md --auto-resolve
+```
+
+The default route does not create another Git worktree. It records `execution_mode=in_place`, then the first writable unit switches a clean repository to the dedicated `codex/<plan>` branch. If the repository is dirty or another in-place plan is actively running, execution fails without stashing or switching branches.
+
+Use an external worktree only when parallel work or physical checkout isolation is required:
+
+```bash
+python3 scripts/codex_flow.py --repo /path/to/your/repo route \
+  docs/plans/example-plan.md --isolated-worktree
 ```
 
 Inspect the dashboard:
@@ -183,7 +193,8 @@ When the review includes `REVIEW_GATE`, 구현커밋 stores the gate status, cou
 
 | Blocker | Auto-resolve behavior |
 | --- | --- |
-| Dirty worktree | Stashes non-`.codex-flow/` changes before execution. |
+| Dirty in-place repository | Stops before branch switching; automatic stash is disabled. |
+| Dirty isolated worktree | `--auto-resolve` can preserve non-`.codex-flow/` changes with Git stash. |
 | Active PR lock | Keeps the lock meaningful and queues new requests in inbox. |
 | Unfinished units before PR draft | Runs unfinished units before writing the PR artifact. |
 | Local merge readiness | Runs unfinished units before local merge. |
@@ -206,7 +217,7 @@ Remote PR creation and remote merge are normal 구현커밋 finalization steps w
 - optional `run-all --open-pr` and `run-all --merge` finalize paths
 - local-first default behavior with remote operations kept in finalize commands
 
-구현커밋 differs by keeping explicit `--preview` and `--dry-run` escape hatches, shipping a Korean Codex skill, and using `--auto-resolve` to preserve dirty worktree changes with `git stash` instead of deleting or reverting them.
+구현커밋 differs by keeping explicit `--preview` and `--dry-run` escape hatches and shipping a Korean Codex skill. In-place execution fails closed on dirty state; explicit isolated worktrees can still use `--auto-resolve` to preserve changes with `git stash` instead of deleting or reverting them.
 
 ## Agent Architecture
 
@@ -274,6 +285,6 @@ python3 scripts/codex_flow.py clear-pr-lock
 
 ## Safety Notes
 
-구현커밋 does not use `git reset --hard` to clean user work. Auto-resolve preserves dirty files with `git stash`.
+구현커밋 does not use `git reset --hard` to clean user work. The in-place default refuses dirty state; explicit isolated worktrees may preserve dirty files with `git stash` during auto-resolve.
 
 The `.codex-flow/` directory may contain local planning context. Review it before publishing project-specific work.

@@ -952,6 +952,8 @@ def conflicting_in_place_plan(plan_dir: Path, source_repo: Path) -> Path | None:
 def cleanup_plan_worktree(plan_path: str | Path, target_branch: str) -> ExecutionWorktreeContext:
     plan_dir, queue_data = load_queue(plan_path)
     context = execution_context_for_plan(plan_dir, queue_data)
+    if context.mode == EXECUTION_MODE_IN_PLACE:
+        return context
     cleaned = cleanup_execution_worktree(context, target_branch=target_branch)
     persist_execution_context(plan_dir, cleaned)
     return cleaned

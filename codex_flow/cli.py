@@ -290,7 +290,10 @@ def main(argv: list[str] | None = None) -> int:
         except SystemExit as exc:
             print(str(exc))
             return 1
-        print(f"worktree_cleaned: {context.worktree_path}")
+        if context.mode == "in_place":
+            print(f"worktree_cleanup_not_applicable: {context.source_repo}")
+        else:
+            print(f"worktree_cleaned: {context.worktree_path}")
         return 0
 
     if args.command == "status":
