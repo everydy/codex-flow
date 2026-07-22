@@ -1265,18 +1265,24 @@ def test_run_next_auto_resolve_resumes_failed_needs_work_with_partial_changes(tm
     assert "final-repair" in (tmp_path / "work.txt").read_text(encoding="utf-8")
 
 
-def test_run_next_auto_resolve_shelves_dirty_worktree_before_execution(tmp_path):
+def test_run_next_auto_resolve_refuses_dirty_in_place_repository_without_stash(tmp_path):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex(tmp_path)
     (tmp_path / "dirty-note.md").write_text("preserve me\n", encoding="utf-8")
 
     plan = make_plan(tmp_path)
-    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex), auto_resolve=True)
+    with pytest.raises(SystemExit, match="requires a clean repository"):
+        runner.run_next(
+            plan.plan_path,
+            execute=True,
+            commit=True,
+            codex_command=str(fake_codex),
+            auto_resolve=True,
+        )
 
-    assert result["action"] == "committed"
-    assert result["auto_resolved_dirty"] == ["dirty-note.md"]
+    assert (tmp_path / "dirty-note.md").read_text(encoding="utf-8") == "preserve me\n"
     stash_list = subprocess.run(["git", "stash", "list"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout
-    assert "codex-flow auto-shelve" in stash_list
+    assert stash_list == ""
 
 
 def test_run_next_timeout_marks_unit_needs_work_with_diagnostics(tmp_path, capsys):

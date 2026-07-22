@@ -456,25 +456,35 @@ def execute_unit(
     preserved_repair_dirty: list[str] = []
     if dirty and not allow_dirty:
         if execution_context.mode == "in_place":
-            raise SystemExit(
-                "in-place execution requires a clean repository; "
-                "automatic stash is disabled: " + ", ".join(dirty)
-            )
-        if not auto_resolve:
-            raise SystemExit(f"Working tree must be clean before execute, excluding .codex-flow: {', '.join(dirty)}")
-        if resume_changed_paths:
             resume_path_set = set(resume_changed_paths)
             preserved_repair_dirty = [path for path in dirty if path in resume_path_set]
-            dirty = [path for path in dirty if path not in resume_path_set]
-            if preserved_repair_dirty:
-                append_log(plan_dir, f"Preserved previous needs_work changes for {unit['id']}: {', '.join(preserved_repair_dirty)}")
-        if not dirty:
-            append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by preserving previous needs_work changes.")
+            unexpected_dirty = [path for path in dirty if path not in resume_path_set]
+            if not resume_needs_work or unexpected_dirty:
+                raise SystemExit(
+                    "in-place execution requires a clean repository; automatic stash is disabled: "
+                    + ", ".join(unexpected_dirty or dirty)
+                )
+            append_log(
+                plan_dir,
+                f"Preserved previous needs_work changes for {unit['id']}: "
+                + ", ".join(preserved_repair_dirty),
+            )
         else:
-            message = f"codex-flow auto-shelve before {unit['id']} {state.timestamp()}"
-            stash_paths(repo, dirty, message)
-            auto_resolved_dirty = dirty
-            append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by stash: {', '.join(dirty)}")
+            if not auto_resolve:
+                raise SystemExit(f"Working tree must be clean before execute, excluding .codex-flow: {', '.join(dirty)}")
+            if resume_changed_paths:
+                resume_path_set = set(resume_changed_paths)
+                preserved_repair_dirty = [path for path in dirty if path in resume_path_set]
+                dirty = [path for path in dirty if path not in resume_path_set]
+                if preserved_repair_dirty:
+                    append_log(plan_dir, f"Preserved previous needs_work changes for {unit['id']}: {', '.join(preserved_repair_dirty)}")
+            if not dirty:
+                append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by preserving previous needs_work changes.")
+            else:
+                message = f"codex-flow auto-shelve before {unit['id']} {state.timestamp()}"
+                stash_paths(repo, dirty, message)
+                auto_resolved_dirty = dirty
+                append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by stash: {', '.join(dirty)}")
     if not no_branch and execution_context.mode != "in_place":
         prepare_branch(repo, branch)
     before_head = head_summary(repo)
