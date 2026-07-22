@@ -167,7 +167,19 @@ External evidence breadth: `threshold intentionally narrowed`. 내부 런타임�
 
 ## Plan Implications
 
-권고 계획은 Option C를 기본으로 한다.
+### Operator decision update — 2026-07-23
+
+후속 대화에서 Operator는 Commit/Phase가 순차 실행되고 branch가 이미 이력을 분리한다는 점을 근거로 추가 worktree를 기본 생성하지 않는 방향을 선택했다. 따라서 채택안은 Option C에서 **guarded Option A**로 변경한다.
+
+- 기본값: source repo의 기존 working tree에서 전용 `codex/<plan>` branch를 사용하는 `in_place`.
+- 안전 조건: branch 전환 전 non-flow dirty 상태와 다른 in-place plan의 active transaction을 차단한다.
+- 금지 조건: in-place 기본 경로에서 자동 stash, reset, force cleanup을 하지 않는다.
+- opt-in: 병렬 실행이나 물리 격리가 필요한 경우에만 `--isolated-worktree`로 기존 external worktree 방식을 사용한다.
+- 보존 계약: explicit isolated mode의 dirty/held candidate 보호와 merge 후 cleanup은 그대로 유지한다.
+
+최신 계획은 [plan.md](plan.md)를 정본으로 사용한다. 아래 Option C 내용은 최초 조사 당시 권고안과 비교 근거로 보존한다.
+
+초기 조사 권고 계획은 Option C를 기본으로 했다.
 
 1. route가 extraction/queue ownership을 먼저 확정하고 `worktree_mode=managed`, lifecycle `not_created`로 시작하게 한다.
 2. 첫 unit transaction이 execution repo를 요구할 때 owner-validated `ensure_execution_worktree()`가 create/rehydrate한다.
