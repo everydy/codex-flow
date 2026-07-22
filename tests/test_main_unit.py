@@ -34,6 +34,14 @@ def test_main_unit_exact_commits_allowed_paths(tmp_path):
     plan = make_plan(tmp_path)
 
     opened = begin_main_unit(plan.plan_path)
+    queue_before = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == queue_before["branch"]
     (tmp_path / "work.txt").write_text("implemented\n", encoding="utf-8")
     completed = complete_main_unit(
         plan.plan_path,
@@ -55,6 +63,25 @@ def test_main_unit_exact_commits_allowed_paths(tmp_path):
     ).stdout.splitlines() == ["work.txt"]
     queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
     assert queue["units"][0]["status"] == "done"
+
+
+def test_main_unit_refuses_dirty_source_before_switching_branch(tmp_path):
+    init_repo(tmp_path)
+    plan = make_plan(tmp_path)
+    dirty = tmp_path / "operator-notes.txt"
+    dirty.write_text("preserve me\n", encoding="utf-8")
+
+    with pytest.raises(MainUnitError, match="requires a clean repository"):
+        begin_main_unit(plan.plan_path)
+
+    assert subprocess.run(
+        ["git", "branch", "--show-current"],
+        cwd=tmp_path,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip() == "main"
+    assert dirty.read_text(encoding="utf-8") == "preserve me\n"
 
 
 def test_main_unit_rejects_stale_revision_and_replay(tmp_path):
@@ -449,33 +476,18 @@ def test_same_parent_paths_and_message_with_different_content_is_held(tmp_path, 
     ).stdout.strip() == divergent_head
 
 
-def test_exact_commit_preserves_unrelated_staged_change(tmp_path):
+def test_main_unit_refuses_unrelated_staged_change_before_open(tmp_path):
     init_repo(tmp_path)
     (tmp_path / "outside.txt").write_text("base\n", encoding="utf-8")
     subprocess.run(["git", "add", "outside.txt"], cwd=tmp_path, check=True)
     subprocess.run(["git", "commit", "-m", "outside base"], cwd=tmp_path, check=True, capture_output=True)
+    plan = make_plan(tmp_path)
     (tmp_path / "outside.txt").write_text("staged unrelated\n", encoding="utf-8")
     subprocess.run(["git", "add", "outside.txt"], cwd=tmp_path, check=True)
-    plan = make_plan(tmp_path)
-    opened = begin_main_unit(plan.plan_path)
-    (tmp_path / "work.txt").write_text("implemented\n", encoding="utf-8")
 
-    complete_main_unit(
-        plan.plan_path,
-        unit_id=opened.unit_id,
-        expected_revision=opened.ledger_revision,
-        evidence={"status": "pass"},
-        message="feat: exact path only",
-    )
+    with pytest.raises(MainUnitError, match="requires a clean repository"):
+        begin_main_unit(plan.plan_path)
 
-    committed = subprocess.run(
-        ["git", "show", "--pretty=", "--name-only", "HEAD"],
-        cwd=tmp_path,
-        check=True,
-        capture_output=True,
-        text=True,
-    ).stdout.splitlines()
-    assert committed == ["work.txt"]
     assert "outside.txt" in subprocess.run(
         ["git", "diff", "--cached", "--name-only"], cwd=tmp_path, check=True, capture_output=True, text=True
     ).stdout.splitlines()

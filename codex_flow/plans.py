@@ -11,9 +11,12 @@ from .git_ops import (
     EXECUTION_MODE_ISOLATED_WORKTREE,
     ExecutionWorktreeContext,
     cleanup_execution_worktree,
+    current_branch,
+    dirty_paths,
     is_git_repo,
     prepare_branch,
     prepare_execution_worktree,
+    status,
 )
 from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
 from .tickets import Ticket, create_internal_ticket, load_ticket, update_ticket_status
@@ -891,6 +894,59 @@ def execution_context_for_plan(plan_path: str | Path, queue_data: dict | None = 
 
 def execution_repo_for_plan(plan_path: str | Path, queue_data: dict | None = None) -> Path:
     return execution_context_for_plan(plan_path, queue_data).execution_repo
+
+
+def prepare_execution_branch(
+    plan_path: str | Path,
+    queue_data: dict | None = None,
+) -> ExecutionWorktreeContext:
+    path = Path(plan_path).expanduser().resolve()
+    plan_dir = path.parent if path.name == "plan.md" else path
+    data = queue_data
+    if data is None:
+        _, data = load_queue(plan_dir)
+    context = execution_context_for_plan(plan_dir, data)
+    if context.mode != EXECUTION_MODE_IN_PLACE:
+        return context
+
+    conflict = conflicting_in_place_plan(plan_dir, context.source_repo)
+    if conflict is not None:
+        raise SystemExit(
+            f"in-place execution blocked by active plan: {conflict.name}"
+        )
+
+    observed_branch = current_branch(context.source_repo)
+    if observed_branch == context.branch:
+        return context
+    dirty = dirty_paths(status(context.source_repo))
+    if dirty:
+        raise SystemExit(
+            "in-place execution requires a clean repository before switching branches: "
+            + ", ".join(dirty)
+        )
+    prepare_branch(context.source_repo, context.branch)
+    return context
+
+
+def conflicting_in_place_plan(plan_dir: Path, source_repo: Path) -> Path | None:
+    plans_root = source_repo / ".codex-flow" / "plans"
+    for queue_path in sorted(plans_root.glob("*/queue.json")):
+        candidate_dir = queue_path.parent.resolve()
+        if candidate_dir == plan_dir.resolve():
+            continue
+        try:
+            candidate = json.loads(queue_path.read_text(encoding="utf-8"))
+            context = execution_context_for_plan(candidate_dir, candidate)
+        except (OSError, ValueError, SystemExit):
+            continue
+        if context.mode != EXECUTION_MODE_IN_PLACE or context.source_repo != source_repo.resolve():
+            continue
+        if any(
+            isinstance(unit, dict) and unit.get("status") == "in_progress"
+            for unit in candidate.get("units", [])
+        ):
+            return candidate_dir
+    return None
 
 
 def cleanup_plan_worktree(plan_path: str | Path, target_branch: str) -> ExecutionWorktreeContext:

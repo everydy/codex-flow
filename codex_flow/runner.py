@@ -366,6 +366,8 @@ def execute_unit(
     prepared_runtime=None,
 ) -> dict:
     execution_context = plans.execution_context_for_plan(plan_dir, queue_data)
+    if not no_branch:
+        execution_context = plans.prepare_execution_branch(plan_dir, queue_data)
     repo = execution_context.execution_repo
     source_repo = execution_context.source_repo
     policy = classify_execution_policy(unit)
@@ -453,6 +455,11 @@ def execute_unit(
     auto_resolved_dirty: list[str] = []
     preserved_repair_dirty: list[str] = []
     if dirty and not allow_dirty:
+        if execution_context.mode == "in_place":
+            raise SystemExit(
+                "in-place execution requires a clean repository; "
+                "automatic stash is disabled: " + ", ".join(dirty)
+            )
         if not auto_resolve:
             raise SystemExit(f"Working tree must be clean before execute, excluding .codex-flow: {', '.join(dirty)}")
         if resume_changed_paths:
@@ -468,7 +475,7 @@ def execute_unit(
             stash_paths(repo, dirty, message)
             auto_resolved_dirty = dirty
             append_log(plan_dir, f"auto_resolved dirty_worktree for {unit['id']} by stash: {', '.join(dirty)}")
-    if not no_branch:
+    if not no_branch and execution_context.mode != "in_place":
         prepare_branch(repo, branch)
     before_head = head_summary(repo)
     before = status(repo)

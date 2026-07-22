@@ -220,6 +220,51 @@ def test_route_persists_opt_in_external_execution_worktree_without_switching_dir
     assert plans.execution_repo_for_plan(plan_dir) == execution_repo.resolve()
 
 
+def test_in_place_branch_preflight_refuses_dirty_source_without_switching(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    source = write_source_plan(repo)
+    subprocess.run(["git", "add", str(source.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add plan"], cwd=repo, check=True, capture_output=True)
+    assert cli.main(["--repo", str(repo), "route", str(source)]) == 0
+    plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
+    queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
+    dirty = repo / "operator-notes.txt"
+    dirty.write_text("preserve me\n", encoding="utf-8")
+
+    with pytest.raises(SystemExit, match="requires a clean repository"):
+        plans.prepare_execution_branch(plan_dir, queue)
+
+    assert git_ops.current_branch(repo) == "main"
+    assert dirty.read_text(encoding="utf-8") == "preserve me\n"
+    assert subprocess.run(
+        ["git", "stash", "list"], cwd=repo, check=True, capture_output=True, text=True
+    ).stdout == ""
+
+
+def test_in_place_branch_preflight_refuses_another_active_plan(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    source = write_source_plan(repo)
+    subprocess.run(["git", "add", str(source.relative_to(repo))], cwd=repo, check=True)
+    subprocess.run(["git", "commit", "-m", "add plan"], cwd=repo, check=True, capture_output=True)
+    assert cli.main(["--repo", str(repo), "route", str(source)]) == 0
+    assert cli.main(["--repo", str(repo), "route", str(source)]) == 0
+    plan_dirs = sorted((repo / ".codex-flow" / "plans").glob("*"))
+    first_queue_path = plan_dirs[0] / "queue.json"
+    first_queue = json.loads(first_queue_path.read_text(encoding="utf-8"))
+    first_queue["units"][0]["status"] = "in_progress"
+    first_queue_path.write_text(json.dumps(first_queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    second_queue = json.loads((plan_dirs[1] / "queue.json").read_text(encoding="utf-8"))
+
+    with pytest.raises(SystemExit, match=plan_dirs[0].name):
+        plans.prepare_execution_branch(plan_dirs[1], second_queue)
+
+    assert git_ops.current_branch(repo) == "main"
+
+
 def test_cleanup_execution_worktree_refuses_dirty_and_unmerged_branches(tmp_path):
     repo = tmp_path / "repo"
     repo.mkdir()

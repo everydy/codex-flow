@@ -94,11 +94,21 @@ def begin_main_unit(
     if unit.get("status") == "needs_work" and not retry_held:
         raise MainUnitError("held main unit requires explicit --retry-held")
 
-    context = plans.execution_context_for_plan(plan_dir, queue)
+    try:
+        context = plans.prepare_execution_branch(plan_dir, queue)
+    except SystemExit as exc:
+        raise MainUnitError(str(exc)) from exc
     repo = context.execution_repo
     allowed_paths = tuple(str(path) for path in unit.get("allowed_paths", []) if str(path).strip())
     if not allowed_paths:
         raise MainUnitError("main unit requires explicit allowed_paths")
+    if context.mode == "in_place" and unit.get("status") != "needs_work":
+        dirty = dirty_paths(status(repo))
+        if dirty:
+            raise MainUnitError(
+                "in-place main unit requires a clean repository before opening: "
+                + ", ".join(dirty)
+            )
     initial_scoped = scoped_diff_digest(repo, list(allowed_paths))
     attempt = int(unit.get("main_unit_attempt") or 0) + 1
     if unit.get("status") != "needs_work" and initial_scoped:
