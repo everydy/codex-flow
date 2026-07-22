@@ -276,6 +276,7 @@ def test_terminal_queue_identity_covers_release_critical_unit_state(tmp_path, un
     [
         ("branch", "codex/different-release"),
         ("worktree_path", "/tmp/different-worktree"),
+        ("mode", "isolated_worktree"),
         ("source_plan_sha256", "different-source-plan"),
     ],
 )

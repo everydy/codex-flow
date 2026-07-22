@@ -134,7 +134,55 @@ else:
     return command
 
 
-def test_route_persists_external_execution_worktree_without_switching_dirty_source(tmp_path, capsys):
+def test_route_defaults_to_in_place_without_creating_additional_worktree(tmp_path):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    source = write_source_plan(repo)
+    before = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+
+    status = cli.main(["--repo", str(repo), "route", str(source)])
+
+    assert status == 0
+    after = subprocess.run(
+        ["git", "worktree", "list", "--porcelain"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout
+    plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
+    queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
+    assert after == before
+    assert queue["execution_mode"] == "in_place"
+    assert Path(queue["execution_repo"]) == repo.resolve()
+    assert Path(queue["worktree_path"]) == repo.resolve()
+    assert queue["cleanup_state"] == "not_applicable"
+    assert git_ops.current_branch(repo) == "main"
+
+
+def test_route_requires_isolation_opt_in_for_worktree_root(tmp_path, capsys):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    init_git_repo(repo)
+    source = write_source_plan(repo)
+
+    status = cli.main(
+        ["--repo", str(repo), "route", str(source), "--worktree-root", str(tmp_path / "worktrees")]
+    )
+
+    assert status == 1
+    assert "--worktree-root requires --isolated-worktree" in capsys.readouterr().out
+    assert not (repo / ".codex-flow").exists()
+
+
+def test_route_persists_opt_in_external_execution_worktree_without_switching_dirty_source(tmp_path, capsys):
     repo = tmp_path / "repo"
     repo.mkdir()
     init_git_repo(repo)
@@ -149,6 +197,7 @@ def test_route_persists_external_execution_worktree_without_switching_dirty_sour
             str(repo),
             "route",
             str(source),
+            "--isolated-worktree",
             "--worktree-root",
             str(worktree_root),
         ]
@@ -165,6 +214,7 @@ def test_route_persists_external_execution_worktree_without_switching_dirty_sour
     assert Path(queue["worktree_path"]) == execution_repo.resolve()
     assert queue["branch"] == f"codex/{queue['plan_slug']}"
     assert queue["source_plan_sha256"] == queue["source_plan"]["sha256"]
+    assert queue["execution_mode"] == "isolated_worktree"
     assert queue["cleanup_state"] == "active"
     assert git_ops.current_branch(execution_repo) == queue["branch"]
     assert plans.execution_repo_for_plan(plan_dir) == execution_repo.resolve()
@@ -198,7 +248,7 @@ def test_run_next_edits_and_commits_only_in_execution_worktree(tmp_path, capsys,
     source = write_source_plan(repo)
     worktree_root = tmp_path / "worktrees"
     fake_codex = write_fake_codex(tmp_path)
-    assert cli.main(["--repo", str(repo), "route", str(source), "--worktree-root", str(worktree_root)]) == 0
+    assert cli.main(["--repo", str(repo), "route", str(source), "--isolated-worktree", "--worktree-root", str(worktree_root)]) == 0
     capsys.readouterr()
     plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
     queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
@@ -236,7 +286,7 @@ def test_cleanup_worktree_cli_removes_clean_merged_worktree_and_updates_metadata
     init_git_repo(repo)
     source = write_source_plan(repo)
     worktree_root = tmp_path / "worktrees"
-    assert cli.main(["--repo", str(repo), "route", str(source), "--worktree-root", str(worktree_root)]) == 0
+    assert cli.main(["--repo", str(repo), "route", str(source), "--isolated-worktree", "--worktree-root", str(worktree_root)]) == 0
     capsys.readouterr()
     plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
     queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
@@ -273,7 +323,7 @@ def test_disposable_two_unit_graph_resumes_without_merge_then_cleans_up_safely(t
     ).stdout.strip()
     fake_codex = write_two_unit_fake_codex(tmp_path)
     worktree_root = tmp_path / "worktrees"
-    assert cli.main(["--repo", str(repo), "route", str(source), "--worktree-root", str(worktree_root)]) == 0
+    assert cli.main(["--repo", str(repo), "route", str(source), "--isolated-worktree", "--worktree-root", str(worktree_root)]) == 0
     plan_dir = next((repo / ".codex-flow" / "plans").glob("*"))
     queue = json.loads((plan_dir / "queue.json").read_text(encoding="utf-8"))
     execution_repo = Path(queue["execution_repo"])

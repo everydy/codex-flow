@@ -6,7 +6,15 @@ import json
 import re
 
 from . import execution_policy, plan_first_extract, plan_readiness, source_plan, state
-from .git_ops import ExecutionWorktreeContext, cleanup_execution_worktree, is_git_repo, prepare_branch, prepare_execution_worktree
+from .git_ops import (
+    EXECUTION_MODE_IN_PLACE,
+    EXECUTION_MODE_ISOLATED_WORKTREE,
+    ExecutionWorktreeContext,
+    cleanup_execution_worktree,
+    is_git_repo,
+    prepare_branch,
+    prepare_execution_worktree,
+)
 from .planner_agent import PlannerAgent, PlannerAgentInput, TemplatePlannerAgent
 from .tickets import Ticket, create_internal_ticket, load_ticket, update_ticket_status
 
@@ -139,6 +147,7 @@ def create_plan_from_ticket(
         "source_repo": str(flow.repo),
         "execution_repo": str(flow.repo),
         "worktree_path": str(flow.repo),
+        "execution_mode": EXECUTION_MODE_IN_PLACE,
         "source_plan_sha256": source_plan.sha256_text(ticket.path.read_text(encoding="utf-8")),
         "cleanup_state": "not_applicable",
         "units": units,
@@ -191,6 +200,7 @@ def create_plan_from_source(
         worktree_path=flow.repo,
         plan_id=slug,
         branch=branch,
+        mode=EXECUTION_MODE_IN_PLACE,
         source_plan_sha256=source.sha256,
         cleanup_state="not_applicable",
     )
@@ -304,6 +314,7 @@ def queue_from_source_tickets(
         worktree_path=source.repo,
         plan_id=slug,
         branch=branch,
+        mode=EXECUTION_MODE_IN_PLACE,
         source_plan_sha256=source.sha256,
         cleanup_state="not_applicable",
     )
@@ -830,6 +841,7 @@ def execution_context_metadata(context: ExecutionWorktreeContext) -> dict:
         "execution_repo": str(context.execution_repo),
         "worktree_path": str(context.worktree_path),
         "branch": context.branch,
+        "execution_mode": context.mode,
         "plan_id": context.plan_id,
         "source_plan_sha256": context.source_plan_sha256,
         "cleanup_state": context.cleanup_state,
@@ -856,12 +868,22 @@ def execution_context_for_plan(plan_path: str | Path, queue_data: dict | None = 
     fallback_repo = plan_dir.parents[2]
     source_repo = Path(data.get("source_repo") or fallback_repo).expanduser().resolve()
     execution_repo = Path(data.get("execution_repo") or fallback_repo).expanduser().resolve()
+    mode = str(data.get("execution_mode") or "").strip()
+    if not mode:
+        mode = (
+            EXECUTION_MODE_ISOLATED_WORKTREE
+            if execution_repo != source_repo
+            else EXECUTION_MODE_IN_PLACE
+        )
+    if mode not in {EXECUTION_MODE_IN_PLACE, EXECUTION_MODE_ISOLATED_WORKTREE}:
+        raise SystemExit(f"unknown execution mode: {mode}")
     return ExecutionWorktreeContext(
         source_repo=source_repo,
         execution_repo=execution_repo,
         worktree_path=Path(data.get("worktree_path") or execution_repo).expanduser().resolve(),
         plan_id=str(data.get("plan_id") or data.get("plan_slug") or plan_dir.name),
         branch=str(data.get("branch") or f"codex/{plan_dir.name}"),
+        mode=mode,
         source_plan_sha256=str(data.get("source_plan_sha256") or (data.get("source_plan") or {}).get("sha256") or ""),
         cleanup_state=str(data.get("cleanup_state") or "not_applicable"),
     )

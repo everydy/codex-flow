@@ -177,6 +177,7 @@ def terminal_queue_revision(queue: Mapping, *, context=None) -> str:
             "execution_repo": str(Path(context.execution_repo).resolve()),
             "worktree_path": str(Path(context.worktree_path).resolve()),
             "branch": str(context.branch),
+            "execution_mode": str(context.mode),
             "source_plan_sha256": str(context.source_plan_sha256),
         }
     units = [_terminal_unit_state(unit) for unit in queue.get("units", []) if isinstance(unit, Mapping)]

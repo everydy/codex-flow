@@ -12,6 +12,8 @@ from collections.abc import Mapping
 
 
 FLOW_PREFIX = ".codex-flow/"
+EXECUTION_MODE_IN_PLACE = "in_place"
+EXECUTION_MODE_ISOLATED_WORKTREE = "isolated_worktree"
 
 
 @dataclass(frozen=True)
@@ -42,6 +44,7 @@ class ExecutionWorktreeContext:
     worktree_path: Path
     plan_id: str
     branch: str
+    mode: str = EXECUTION_MODE_IN_PLACE
     source_plan_sha256: str = ""
     cleanup_state: str = "active"
 
@@ -214,6 +217,7 @@ def prepare_execution_worktree(
         worktree_path=target,
         plan_id=normalized_plan_id,
         branch=normalized_branch,
+        mode=EXECUTION_MODE_ISOLATED_WORKTREE,
         source_plan_sha256=source_plan_sha256,
     )
 
