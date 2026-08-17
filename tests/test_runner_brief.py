@@ -408,6 +408,24 @@ print('{"session_id":"review-session"}' if "Agent 3: Read-only Reviewer" in prom
     return fake_codex
 
 
+def write_fake_codex_plain_implementer_hold(tmp_path):
+    fake_codex = tmp_path.parent / f"fake_codex_plain_hold_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+output.write_text("status: `needs_work`\n\nGitHub preflight unavailable.\n", encoding="utf-8")
+print('{"session_id":"implementation-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    return fake_codex
+
+
 def write_fake_codex_without_review_gate(tmp_path):
     fake_codex = tmp_path.parent / f"fake_codex_without_review_gate_{tmp_path.name}.py"
     fake_codex.write_text(
@@ -864,6 +882,21 @@ def test_run_next_execute_with_fake_codex_commits_unit(tmp_path):
     assert queue["units"][0]["status"] == "done"
     assert queue["units"][0]["changed_paths"] == ["work.txt"]
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 2
+
+
+def test_run_next_preserves_plain_implementer_needs_work_without_marking_done(tmp_path):
+    init_git_repo(tmp_path)
+    fake_codex = write_fake_codex_plain_implementer_hold(tmp_path)
+    plan = make_plan(tmp_path)
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex))
+
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    assert result["action"] == "needs_work"
+    assert result["commit"] == ""
+    assert queue["units"][0]["status"] == "needs_work"
+    assert "GitHub preflight unavailable" in queue["units"][0]["last_needs_work_reason"]
+    assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
 
 
 def test_run_next_refuses_commit_without_internal_review_evidence(tmp_path):
