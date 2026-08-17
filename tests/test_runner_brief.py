@@ -417,7 +417,7 @@ import sys
 
 args = sys.argv[1:]
 output = pathlib.Path(args[args.index("--output-last-message") + 1])
-output.write_text("status: `needs_work`\n\nGitHub preflight unavailable.\n", encoding="utf-8")
+output.write_text("status: `needs_work`\\n\\nGitHub preflight unavailable.\\n", encoding="utf-8")
 print('{"session_id":"implementation-session"}')
 """,
         encoding="utf-8",
