@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import hashlib
 import os
+import re
 from pathlib import Path
 
 from . import plan_readiness, plans, source_plan, state
@@ -58,6 +59,32 @@ def next_ready_unit(queue_data: dict) -> dict | None:
         if unit.get("status") == "ready":
             return unit
     return None
+
+
+def next_actionable_unit(queue_data: dict) -> dict | None:
+    for unit in queue_data.get("units", []):
+        if unit.get("status") in {"ready", "prompted", "needs_work", "human_gate"}:
+            return unit
+    return None
+
+
+IMPLEMENTER_NEEDS_WORK_RE = re.compile(
+    r"(?im)(?:^\s*(?:status|상태)\s*:\s*`?needs_work`?\s*$|"
+    r"^\s*COMMIT_UNIT_NEEDS_WORK(?:\s+reason=(?:\"[^\"]*\"|'[^']*'|\S+))?\s*$)"
+)
+
+
+def implementer_needs_work_reason(message: str) -> str | None:
+    if not IMPLEMENTER_NEEDS_WORK_RE.search(message):
+        return None
+    machine_reason = re.search(
+        r"(?im)^\s*COMMIT_UNIT_NEEDS_WORK\s+reason=(\"[^\"]*\"|'[^']*'|\S+)\s*$",
+        message,
+    )
+    if machine_reason:
+        return machine_reason.group(1).strip("\"'")[:500]
+    summary = " ".join(line.strip() for line in message.splitlines() if line.strip())
+    return summary[:500] or "implementer reported needs_work"
 
 
 def unit_for_commit(queue_data: dict, commit_unit: plan_readiness.CommitUnit) -> dict:
@@ -234,6 +261,13 @@ def run_next(
             return None
         commit_unit = readiness.next_unit
         unit = unit_for_commit(queue_data, commit_unit)
+        if unit.get("status") == "done":
+            unit = next_actionable_unit(queue_data)
+            if unit is None:
+                return None
+            commit_unit = commit_units.get(str(unit.get("id")))
+            if commit_unit is None:
+                raise ChildRuntimeConfigError("queue-ready unit is missing from the source plan")
         if unit.get("status") == "human_gate":
             return {
                 "unit": unit,
@@ -675,6 +709,60 @@ def execute_unit(
                 "auto_resolved_dirty": auto_resolved_dirty,
                 "repair_attempts": used_repair_attempts,
                 "repair_reason": str(exc),
+                "review_gate": None,
+            }
+        implementer_hold_reason = implementer_needs_work_reason(
+            implementation_result.implementation_message
+        )
+        if implementer_hold_reason is not None:
+            partial_changed = repair_changed_paths(preserved_repair_dirty, before, status(repo))
+            outside_scope = out_of_scope_paths(partial_changed, allowed_paths)
+            if outside_scope:
+                implementer_hold_reason = (
+                    "implementer hold contains paths outside allowed scope: "
+                    + ", ".join(outside_scope)
+                )
+            unit["status"] = "needs_work"
+            unit["updated_at"] = state.timestamp()
+            unit["repair_attempts"] = used_repair_attempts
+            unit["last_needs_work_reason"] = implementer_hold_reason
+            unit["changed_paths"] = partial_changed
+            current_snapshot = attempt_ledger.load()
+            ledger_snapshot = attempt_ledger.finalize_attempt(
+                expected_revision=current_snapshot.revision,
+                expected_head=before_head or "",
+                observed_head=head_summary(repo) or "",
+                scoped_diff_digest=scoped_diff_probe(),
+                full_diff_digest=scoped_diff_digest(repo, []),
+                out_of_scope_diff_digest=out_of_scope_diff_digest(repo, allowed_paths),
+                process_closed=current_snapshot.record.get("descendants_remaining") is False,
+                termination_reason="implementer_needs_work",
+            )
+            unit["attempt_ledger_revision"] = ledger_snapshot.revision
+            write_attempt_handoff(
+                attempt_dir,
+                unit_id=unit["id"],
+                ledger_revision=ledger_snapshot.revision,
+                status="needs_work",
+                next_action="resolve the implementer hold reason before a new attempt",
+            )
+            plans.save_queue(plan_dir, queue_data)
+            append_log(
+                plan_dir,
+                f"Commit unit {selected_unit.number} needs_work: {implementer_hold_reason}",
+            )
+            state.refresh_dashboard(source_repo)
+            return {
+                "unit": unit,
+                "prompt_path": prompt_path,
+                "action": "needs_work",
+                "reason": implementer_hold_reason,
+                "commit": "",
+                "changed_paths": partial_changed,
+                "out_of_scope_paths": outside_scope,
+                "auto_resolved_dirty": auto_resolved_dirty,
+                "repair_attempts": used_repair_attempts,
+                "repair_reason": implementer_hold_reason,
                 "review_gate": None,
             }
         review_expected_head = head_summary(repo) or ""
