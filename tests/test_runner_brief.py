@@ -118,6 +118,25 @@ def test_run_next_execute_skips_queue_unit_already_marked_done(tmp_path, monkeyp
     assert result["action"] == "main_handoff"
 
 
+def test_run_next_reconciles_done_unit_to_prompted_successor(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    plan = make_plan(tmp_path, isolated=False)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0]["status"] = "done"
+    queue["units"][1]["status"] = "prompted"
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner,
+        "CodexImplementerAgent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("child must not be constructed")),
+    )
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True)
+
+    assert result["unit"]["id"] == "unit-002"
+    assert result["action"] == "main_handoff"
+
+
 def test_portable_isolated_preflight_denies_before_plan_or_repo_write(tmp_path, monkeypatch):
     init_git_repo(tmp_path)
     plan = make_plan(tmp_path, isolated=True)
@@ -903,6 +922,40 @@ def test_implementer_needs_work_parser_accepts_korean_status_label():
     assert runner.implementer_needs_work_reason("상태: `needs_work`\n\nGitHub 연결 실패") == (
         "상태: `needs_work` GitHub 연결 실패"
     )
+
+
+def test_implementer_needs_work_parser_accepts_machine_readable_gate():
+    assert runner.implementer_needs_work_reason(
+        'COMMIT_UNIT_NEEDS_WORK reason="GitHub preflight unavailable"'
+    ) == "GitHub preflight unavailable"
+
+
+def test_plain_implementer_hold_reports_out_of_scope_changes(tmp_path):
+    init_git_repo(tmp_path)
+    fake_codex = tmp_path.parent / f"fake_codex_out_of_scope_hold_{tmp_path.name}.py"
+    fake_codex.write_text(
+        """#!/usr/bin/env python3
+import pathlib
+import sys
+
+args = sys.argv[1:]
+pathlib.Path("forbidden.txt").write_text("unexpected\\n", encoding="utf-8")
+output = pathlib.Path(args[args.index("--output-last-message") + 1])
+output.write_text("status: `needs_work`\\n", encoding="utf-8")
+print('{"session_id":"implementation-session"}')
+""",
+        encoding="utf-8",
+    )
+    fake_codex.chmod(fake_codex.stat().st_mode | 0o111)
+    plan = make_plan(tmp_path)
+
+    result = runner.run_next(
+        plan.plan_path, execute=True, commit=True, codex_command=str(fake_codex)
+    )
+
+    assert result["action"] == "needs_work"
+    assert result["out_of_scope_paths"] == ["forbidden.txt"]
+    assert "outside allowed scope" in result["reason"]
 
 
 def test_run_next_refuses_commit_without_internal_review_evidence(tmp_path):

@@ -16,7 +16,6 @@ from codex_flow.codex_cli import (
     codex_cli_default_args,
     parse_session_id,
     run_codex_exec,
-    sandbox_cli_args,
     with_codex_cli_defaults,
 )
 
@@ -57,15 +56,6 @@ def test_short_explicit_model_arg_is_preserved(monkeypatch):
     args = with_codex_cli_defaults(["-m", "gpt-5.6-terra", "--ephemeral"])
 
     assert args == ["-m", "gpt-5.6-terra", "--ephemeral"]
-
-
-def test_workspace_write_child_keeps_sandbox_and_enables_required_network_preflight():
-    assert sandbox_cli_args("workspace-write") == [
-        "--sandbox",
-        "workspace-write",
-        "--config",
-        "sandbox_workspace_write.network_access=true",
-    ]
 
 
 def test_run_codex_exec_reads_output_last_message(tmp_path):

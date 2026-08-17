@@ -37,7 +37,6 @@ MACHINE_READABLE_AGENT_ENV = {
     "CODEX_CLOSEOUT_HOOK_DISABLED": "1",
 }
 SAFE_CHILD_CONFIG_KEYS = ("model", "model_reasoning_effort", "service_tier", "model_provider")
-WORKSPACE_WRITE_NETWORK_CONFIG = "sandbox_workspace_write.network_access=true"
 
 
 @dataclass(frozen=True)
@@ -69,13 +68,6 @@ class ChildRuntimeConfigError(RuntimeError):
 
 class ChildAttestationError(RuntimeError):
     pass
-
-
-def sandbox_cli_args(sandbox: str) -> list[str]:
-    args = ["--sandbox", sandbox]
-    if sandbox == "workspace-write":
-        args.extend(["--config", WORKSPACE_WRITE_NETWORK_CONFIG])
-    return args
 
 
 @dataclass(frozen=True)
@@ -1021,7 +1013,8 @@ def run_codex_exec(
                 "--json",
                 "--cd",
                 str(repo_path),
-                *sandbox_cli_args(sandbox),
+                "--sandbox",
+                sandbox,
                 "--output-last-message",
                 str(raw_output_path),
                 *with_codex_cli_defaults(extra_args),
