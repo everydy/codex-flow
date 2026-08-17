@@ -100,6 +100,24 @@ def test_run_next_default_main_path_does_not_construct_child(tmp_path, monkeypat
     assert result["contract"]["ledger_revision"] == 1
 
 
+def test_run_next_execute_skips_queue_unit_already_marked_done(tmp_path, monkeypatch):
+    init_git_repo(tmp_path)
+    plan = make_plan(tmp_path, isolated=False)
+    queue = json.loads(plan.queue_json.read_text(encoding="utf-8"))
+    queue["units"][0]["status"] = "done"
+    plan.queue_json.write_text(json.dumps(queue, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    monkeypatch.setattr(
+        runner,
+        "CodexImplementerAgent",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(AssertionError("child must not be constructed")),
+    )
+
+    result = runner.run_next(plan.plan_path, execute=True, commit=True)
+
+    assert result["unit"]["id"] == "unit-002"
+    assert result["action"] == "main_handoff"
+
+
 def test_portable_isolated_preflight_denies_before_plan_or_repo_write(tmp_path, monkeypatch):
     init_git_repo(tmp_path)
     plan = make_plan(tmp_path, isolated=True)

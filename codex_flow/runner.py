@@ -234,6 +234,13 @@ def run_next(
             return None
         commit_unit = readiness.next_unit
         unit = unit_for_commit(queue_data, commit_unit)
+        if unit.get("status") == "done":
+            unit = next_ready_unit(queue_data)
+            if unit is None:
+                return None
+            commit_unit = commit_units.get(str(unit.get("id")))
+            if commit_unit is None:
+                raise ChildRuntimeConfigError("queue-ready unit is missing from the source plan")
         if unit.get("status") == "human_gate":
             return {
                 "unit": unit,
