@@ -899,6 +899,12 @@ def test_run_next_preserves_plain_implementer_needs_work_without_marking_done(tm
     assert subprocess.run(["git", "log", "--oneline"], cwd=tmp_path, check=True, capture_output=True, text=True).stdout.count("\n") == 1
 
 
+def test_implementer_needs_work_parser_accepts_korean_status_label():
+    assert runner.implementer_needs_work_reason("상태: `needs_work`\n\nGitHub 연결 실패") == (
+        "상태: `needs_work` GitHub 연결 실패"
+    )
+
+
 def test_run_next_refuses_commit_without_internal_review_evidence(tmp_path):
     init_git_repo(tmp_path)
     fake_codex = write_fake_codex_without_review_gate(tmp_path)

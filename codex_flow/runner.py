@@ -61,7 +61,7 @@ def next_ready_unit(queue_data: dict) -> dict | None:
     return None
 
 
-IMPLEMENTER_NEEDS_WORK_RE = re.compile(r"(?im)^\s*status\s*:\s*`?needs_work`?\s*$")
+IMPLEMENTER_NEEDS_WORK_RE = re.compile(r"(?im)^\s*(?:status|상태)\s*:\s*`?needs_work`?\s*$")
 
 
 def implementer_needs_work_reason(message: str) -> str | None:
