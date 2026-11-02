@@ -14,7 +14,7 @@ Codex Flow의 child-runtime 준비·검증 경로를 진단하고, raw CLI 호�
 
 - Intent: Codex Flow 구현커밋 child process의 반복적인 준비 실패를 호출자 의존성이 아닌 canonical runtime 책임으로 해결한다.
 - Work type: 원인 조사, 런타임/CLI 계약 설계, 코드·테스트·문서 구현, 회귀 검증.
-- Target: `/Users/moonsoo/projects/codex-flow`의 child-runtime 준비, attestation, runner/CLI 경로 및 관련 테스트·문서.
+- Target: `/Users/moonsoo/projects/tools/codex-flow`의 child-runtime 준비, attestation, runner/CLI 경로 및 관련 테스트·문서.
 - Constraints:
   - fail-closed attestation과 exact skill closure를 약화하거나 isolation을 비활성화하지 않는다.
   - 사용자가 지정한 스킬 체인과 Commit/Phase 순서를 지킨다.

@@ -8,7 +8,7 @@ This is the minimum self-hosting bootstrap needed before the approved Chronica W
 
 ## Scope
 
-- Repository: `/Users/moonsoo/projects/codex-flow`
+- Repository: `/Users/moonsoo/projects/tools/codex-flow`
 - Runtime source: `codex_flow/codex_cli.py`
 - Tests: `tests/test_child_attestation.py`
 - Preserve: exact child-home, manifest, plugin/runtime digest, plan digest, CLI version, TTL, nonce replay, and no-edit failure gates.

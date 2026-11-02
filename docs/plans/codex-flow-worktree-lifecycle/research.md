@@ -10,8 +10,8 @@
 
 조사 범위:
 
-- `/Users/moonsoo/projects/codex-flow`의 route, plan, run, final gate, merge, worktree lifecycle 코드와 테스트
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋`의 main-first, recovery, branch finalization 계약
+- `/Users/moonsoo/projects/tools/codex-flow`의 route, plan, run, final gate, merge, worktree lifecycle 코드와 테스트
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋`의 main-first, recovery, branch finalization 계약
 - `/Users/moonsoo/projects/고연전 중계`에 남은 반복 plan/worktree를 통한 제한적 현장 대조
 
 주요 진입점:
@@ -38,8 +38,8 @@
 - `tests/test_execution_worktree.py`: 외부 worktree 생성, dirty/unmerged 거부, local merge 후 cleanup을 검증한다.
 - `tests/test_inbox_merge.py`: branch finalization 실패의 fail-closed 결과를 검증한다.
 - `tests/test_route_plan_first_source.py`: source plan route와 queue projection을 검증한다.
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`: main-first, final-only review, automatic-safe branch finalization의 설치 정본이다.
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋/references/recovery.md`: dirty/held candidate와 recovery evidence 보존을 요구한다.
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`: main-first, final-only review, automatic-safe branch finalization의 설치 정본이다.
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/references/recovery.md`: dirty/held candidate와 recovery evidence 보존을 요구한다.
 
 ## Current Behavior
 
@@ -202,26 +202,26 @@ External evidence breadth: `threshold intentionally narrowed`. 내부 런타임�
 
 ### Files and lines
 
-- `/Users/moonsoo/projects/codex-flow/codex_flow/cli.py:250-281`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py:176-238`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py:254-327`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py:827-879`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py:900-918`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/git_ops.py:165-267`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/runner.py:368-376`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/main_unit.py:97-103`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/run_all.py:54-96`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/merge.py:194-246`
-- `/Users/moonsoo/projects/codex-flow/tests/test_execution_worktree.py:137-360`
-- `/Users/moonsoo/projects/codex-flow/tests/test_inbox_merge.py:30-104`
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md:20-58`
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋/references/recovery.md:21-32`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/cli.py:250-281`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py:176-238`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py:254-327`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py:827-879`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py:900-918`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/git_ops.py:165-267`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/runner.py:368-376`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/main_unit.py:97-103`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/run_all.py:54-96`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/merge.py:194-246`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_execution_worktree.py:137-360`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_inbox_merge.py:30-104`
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md:20-58`
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/references/recovery.md:21-32`
 
 ### Commands and results
 
 - `rg -n -S 'worktree|cleanup_state|execution_repo' codex_flow tests docs README.md`
 - `git -C '/Users/moonsoo/projects/고연전 중계' worktree list --porcelain`
 - three relevant `queue.json` files inspected with `jq`
-- `/Users/moonsoo/projects/Chat-Bot/.venv/bin/python -m pytest tests/test_execution_worktree.py tests/test_inbox_merge.py tests/test_route_plan_first_source.py -q`
+- `/Users/moonsoo/projects/tools/Chat-Bot/.venv/bin/python -m pytest tests/test_execution_worktree.py tests/test_inbox_merge.py tests/test_route_plan_first_source.py -q`
   - Result on 2026-07-22: `28 passed in 8.24s`
 - System `python3 -m pytest ...` could not run because the system interpreter has no `pytest`; no package installation was performed.

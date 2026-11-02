@@ -2,7 +2,7 @@
 
 ## 검토용 결과물
 
-- 대상 저장소: `/Users/moonsoo/projects/codex-flow`
+- 대상 저장소: `/Users/moonsoo/projects/tools/codex-flow`
 - 검토 대상: Codex Flow plan 생성, Skill Routing Manifest 보정, 실행 프롬프트 전달 경로
 - 결과물 형태: CLI/tooling 동작과 pytest 회귀 테스트
 
@@ -24,12 +24,12 @@ Codex Flow가 구현 성격의 작업 단위를 만들거나 기존 plan manifes
 
 ## 대상 파일
 
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/planner_agent.py`
-- `/Users/moonsoo/projects/codex-flow/tests/test_agent_roles.py`
-- `/Users/moonsoo/projects/codex-flow/tests/test_plans.py`
-- `/Users/moonsoo/projects/codex-flow/tests/test_runner_brief.py`
-- `/Users/moonsoo/projects/codex-flow/README.md`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/planner_agent.py`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_agent_roles.py`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_plans.py`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_runner_brief.py`
+- `/Users/moonsoo/projects/tools/codex-flow/README.md`
 
 ## 함수와 API
 

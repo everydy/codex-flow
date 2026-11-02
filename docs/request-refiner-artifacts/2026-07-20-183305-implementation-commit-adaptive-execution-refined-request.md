@@ -18,7 +18,7 @@ Captionflow Issue #141 작업에서 계측된 구현커밋/Codex Flow 병목을 
 
 - Intent: 구현커밋의 안전성은 유지하면서 문서·계약 작업에서 발생한 과도한 child 실행, 중복 리뷰, 900초 blind wait와 repair loop를 구조적으로 제거한다.
 - Work type: 코드베이스 조사, 아키텍처 계획, 구현 전 다각도 검토, 해결 전략 판정.
-- Target: `/Users/moonsoo/projects/codex-flow`의 runtime·tests·repo mirror skill과 `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md` 등 설치 계약 표면.
+- Target: `/Users/moonsoo/projects/tools/codex-flow`의 runtime·tests·repo mirror skill과 `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md` 등 설치 계약 표면.
 - Constraints: 구현 금지, destructive git 금지, 기존 dirty worktree 보호, 고위험 작업의 fail-closed·최종 독립 리뷰·검증 oracle 유지, 최대 2개 읽기 전용 research worker.
 - Success check: 실제 실행 기록과 코드가 같은 causal chain을 뒷받침하고, 최소 3개 대안을 비교하며, Commit별 대상 파일·변경 계약·테스트·성공 기준·중단 조건·진단 로그를 포함한 계획이 사전 리뷰와 전략 검토를 통과한다.
 - Routing: `요청개선` → `research` + `agent-orchestrator` research lanes → `plan-first-implementation` → 구현 전 `review-all-in-one` → `해결전략검토`.

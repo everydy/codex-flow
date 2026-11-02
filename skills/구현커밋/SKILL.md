@@ -23,12 +23,12 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 
 - Canonical user-facing skill name: `구현커밋`
 - English alias: `implementation-commit`
-- Internal package, state directory, and runtime script remain unchanged for compatibility: `codex_flow`, `.codex-flow`, `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py`
+- Internal package, state directory, and runtime script remain unchanged for compatibility: `codex_flow`, `.codex-flow`, `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py`
 - New docs and human-facing explanations should lead with `구현커밋`. Old skill aliases are removed and should not be routed as skill calls.
 
 ## Canonical Runtime
 
-- 실행 backend는 `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py` 하나다.
+- 실행 backend는 `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py` 하나다.
 - `codex-skills-user/scripts/implementation_commit.py`와 `codex-skills-user/scripts/구현커밋.py`는 위 canonical entrypoint로 넘긴다.
 - `codex-skills-user/tools/codex_flow` 내장 구현은 제거된 stale copy다. 다시 생기면 현재 runtime으로 쓰지 말고 중복 구현으로 취급한다.
 - 이름 마이그레이션 중에도 `codex_flow`, `.codex-flow`, `scripts/codex_flow.py`는 바꾸지 않는다. 이 이름들은 runtime compatibility surface다.
@@ -58,10 +58,10 @@ Crack-CLI를 그대로 복사하지 않고, 사용자의 기존 스킬셋에 맞
 
 ## Core Flow
 
-1. 저장소 루트에서 `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py init`으로 `.codex-flow/`를 만든다.
-2. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py route <plan-first.md>`로 승인된 plan-first Markdown 문서를 실행 source로 채택하고 in-place plan/branch queue를 만든다. 추가 worktree가 필요한 경우에만 `--isolated-worktree`를 붙인다. 짧은 자연어 요청으로 새 plan을 만들지 않는다.
-3. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan <plan.md>`로 commit unit 하나를 구현하고 같은 Codex session에서 `review-all-in-one` post-unit gate를 통과한 뒤 자동 커밋한다. 프롬프트만 만들 때는 `--preview`, 큐 변경도 없이 볼 때는 `--dry-run`을 붙인다.
-4. `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan <plan.md>`로 plan이 complete 또는 needs_work가 될 때까지 반복 처리하며 각 성공 unit을 `review-all-in-one` post-unit gate 후 자동 커밋한다. 모든 unit이 완료되면 별도 `--merge` 없이 target branch, 기본 `main`, 로 local merge하고 성공한 작업 브랜치를 `git branch -d`로 닫는다. `--auto-resolve`에서는 transient needs_work를 기본 1회 repair하고, preview prompt만 만들 때는 `--preview`, 완료 후 브랜치를 일부러 남길 때만 `--no-merge`를 붙인다.
+1. 저장소 루트에서 `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py init`으로 `.codex-flow/`를 만든다.
+2. `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py route <plan-first.md>`로 승인된 plan-first Markdown 문서를 실행 source로 채택하고 in-place plan/branch queue를 만든다. 추가 worktree가 필요한 경우에만 `--isolated-worktree`를 붙인다. 짧은 자연어 요청으로 새 plan을 만들지 않는다.
+3. `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-next --plan <plan.md>`로 commit unit 하나를 구현하고 같은 Codex session에서 `review-all-in-one` post-unit gate를 통과한 뒤 자동 커밋한다. 프롬프트만 만들 때는 `--preview`, 큐 변경도 없이 볼 때는 `--dry-run`을 붙인다.
+4. `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-all --plan <plan.md>`로 plan이 complete 또는 needs_work가 될 때까지 반복 처리하며 각 성공 unit을 `review-all-in-one` post-unit gate 후 자동 커밋한다. 모든 unit이 완료되면 별도 `--merge` 없이 target branch, 기본 `main`, 로 local merge하고 성공한 작업 브랜치를 `git branch -d`로 닫는다. `--auto-resolve`에서는 transient needs_work를 기본 1회 repair하고, preview prompt만 만들 때는 `--preview`, 완료 후 브랜치를 일부러 남길 때만 `--no-merge`를 붙인다.
 5. 긴 Codex child process는 `--codex-timeout-seconds`로 제한한다. 기본값은 900초다. timeout 또는 nonzero child failure가 나면 해당 unit은 `needs_work`가 되고, `diagnostic_path`에 prompt/args/stdout/stderr/last-message/metadata 파일 위치가 남는다.
 6. 아침에는 `morning-brief`와 `review`로 검토 자료를 만든다.
 7. PR 초안은 `open-pr --auto-resolve --dry-run`으로 남은 unit을 먼저 끝내고 자동 커밋한 뒤 만든다. 실제 원격 PR은 `create-pr --auto-resolve`로 분리해 실행한다.
@@ -148,37 +148,37 @@ source plan에서 `### Commit N:` 또는 `### Phase N:` 단위를 찾지 못하�
 ## Commands
 
 ```bash
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py init
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py route docs/plans/example-plan.md
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py route docs/plans/example-plan.md --isolated-worktree
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py plan --ticket .codex-flow/tickets/<ticket>.md
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --preview
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --no-merge
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --preview
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py dashboard
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py dashboard --watch
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py morning-brief
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py review --plan .codex-flow/plans/<slug>/plan.md
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py open-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --dry-run
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py create-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py pr-check
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py drain
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py set-pr-lock --branch codex/<slug> --pr-url https://github.com/example/repo/pull/1
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py clear-pr-lock
-/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py merge --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py init
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py route docs/plans/example-plan.md
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py route docs/plans/example-plan.md --isolated-worktree
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py plan --ticket .codex-flow/tickets/<ticket>.md
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-next --plan .codex-flow/plans/<slug>/plan.md --preview
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --no-merge
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --codex-timeout-seconds 900
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py run-all --plan .codex-flow/plans/<slug>/plan.md --preview
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py dashboard
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py dashboard --watch
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py morning-brief
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py review --plan .codex-flow/plans/<slug>/plan.md
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py open-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve --dry-run
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py create-pr --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py pr-check
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py drain
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py set-pr-lock --branch codex/<slug> --pr-url https://github.com/example/repo/pull/1
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py clear-pr-lock
+/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py merge --plan .codex-flow/plans/<slug>/plan.md --auto-resolve
 ```
 
 ## Reference
 
-- CLI entrypoint: `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py`
-- Package: `/Users/moonsoo/projects/codex-flow/codex_flow/`
-- Tests: `/Users/moonsoo/projects/codex-flow/tests/`
+- CLI entrypoint: `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py`
+- Package: `/Users/moonsoo/projects/tools/codex-flow/codex_flow/`
+- Tests: `/Users/moonsoo/projects/tools/codex-flow/tests/`
 - Managed child operational contract: `docs/plans/codex-flow-managed-child-runtime/operational-contract.md`
 - Raw no-env CLI proof: `docs/plans/codex-flow-managed-child-runtime/raw-cli-proof.md`
-- Canonical installed skill path: `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`
-- Repo mirror skill path: `/Users/moonsoo/projects/codex-flow/skills/구현커밋/SKILL.md`
+- Canonical installed skill path: `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`
+- Repo mirror skill path: `/Users/moonsoo/projects/tools/codex-flow/skills/구현커밋/SKILL.md`

@@ -16,7 +16,7 @@ Commit 4A에서 검증한 격리 실행과 read-only reviewer 분리는 보존�
 
 ## Verified Baseline
 
-- runtime: `/Users/moonsoo/projects/codex-flow`
+- runtime: `/Users/moonsoo/projects/tools/codex-flow`
 - active branch: `codex/runtime-active-implementation-commit-b2db89e`
 - verified baseline: `b2db89e63fc5357b5379783e867f64d165fce739`
 - Commit 4A related tests: `85 passed`

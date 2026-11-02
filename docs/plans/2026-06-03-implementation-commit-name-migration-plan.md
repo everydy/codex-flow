@@ -17,8 +17,8 @@ This plan migrates the user-facing skill name to `구현커밋` while keeping `c
   - Internal package `codex_flow`, script `scripts/codex_flow.py`, and state dir `.codex-flow/` are embedded in code, tests, docs, and existing local repos.
   - Renaming these now would increase breakage without changing user-facing behavior.
 - **Important: script aliases should exist.**
-  - Existing wrapper: `/Users/moonsoo/projects/codex-skills-user/scripts/codex_flow.py`
-  - Runtime entrypoint: `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py`
+  - Existing wrapper: `/Users/moonsoo/projects/tools/codex-skills-user/scripts/codex_flow.py`
+  - Runtime entrypoint: `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py`
   - Add `implementation_commit.py` and Korean `구현커밋.py` wrappers or symlinks where practical.
 - **Minor: historical plan docs can keep old names.**
   - Old docs under `docs/plans/` explain previous design decisions. Updating every historical mention would add noise and risk.
@@ -37,9 +37,9 @@ This avoids a hard cutover and lets old habits keep working.
 Commit 1 freezes the current naming surface before any canonical skill or wrapper change. Evidence was collected with:
 
 - `rg -n "codex-flow|코덱스플로우|Codex Flow|구현커밋|implementation-commit" README.md codex_flow scripts tests docs .codex-flow`
-- `rg -n "codex-flow|코덱스플로우|Codex Flow|구현커밋|implementation-commit" codex-flow 코덱스플로우 scripts README.md` in `/Users/moonsoo/projects/codex-skills-user`
+- `rg -n "codex-flow|코덱스플로우|Codex Flow|구현커밋|implementation-commit" codex-flow 코덱스플로우 scripts README.md` in `/Users/moonsoo/projects/tools/codex-skills-user`
 - `find . -maxdepth 3 \( -name '*codex*flow*' -o -name '*구현커밋*' -o -name '*implementation*commit*' -o -name '*코덱스플로우*' \) -print`
-- `find /Users/moonsoo/projects/codex-skills-user -maxdepth 3 \( -name '*codex*flow*' -o -name '*구현커밋*' -o -name '*implementation*commit*' -o -name '*코덱스플로우*' \) -print`
+- `find /Users/moonsoo/projects/tools/codex-skills-user -maxdepth 3 \( -name '*codex*flow*' -o -name '*구현커밋*' -o -name '*implementation*commit*' -o -name '*코덱스플로우*' \) -print`
 
 ### User-facing migration targets
 
@@ -56,28 +56,28 @@ Commit 1 freezes the current naming surface before any canonical skill or wrappe
   - Current metadata `name:` is `코덱스플로우`.
   - Current wrapper says it is the Korean alias for `codex-flow`.
   - Later it should point to canonical `구현커밋` instead.
-- `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`
   - Current metadata `name:` is `codex-flow`.
   - Current `When To Use` includes `$codex-flow`, `Codex Flow`, and `$코덱스플로우`.
   - Later this should be an alias wrapper, not the canonical body.
-- `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
   - Current metadata `name:` is `코덱스플로우`.
-  - It explicitly loads `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`.
-  - Later it should load canonical `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`.
-- `/Users/moonsoo/projects/codex-skills-user/codex-flow/agents/openai.yaml`
+  - It explicitly loads `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`.
+  - Later it should load canonical `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`.
+- `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/agents/openai.yaml`
   - Current `display_name` is `Codex Flow`.
   - Current `default_prompt` starts with `$codex-flow`.
   - Later it should present `구현커밋` first and keep old aliases in prompt/help text.
 
 ### CLI and wrapper surfaces
 
-- Runtime entrypoint remains `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py`.
-- Compatibility wrapper remains `/Users/moonsoo/projects/codex-skills-user/scripts/codex_flow.py`.
+- Runtime entrypoint remains `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py`.
+- Compatibility wrapper remains `/Users/moonsoo/projects/tools/codex-skills-user/scripts/codex_flow.py`.
 - New wrapper paths are not present yet:
-  - `/Users/moonsoo/projects/codex-flow/scripts/implementation_commit.py`
-  - `/Users/moonsoo/projects/codex-flow/scripts/구현커밋.py`
-  - `/Users/moonsoo/projects/codex-skills-user/scripts/implementation_commit.py`
-  - `/Users/moonsoo/projects/codex-skills-user/scripts/구현커밋.py`
+  - `/Users/moonsoo/projects/tools/codex-flow/scripts/implementation_commit.py`
+  - `/Users/moonsoo/projects/tools/codex-flow/scripts/구현커밋.py`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/scripts/implementation_commit.py`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/scripts/구현커밋.py`
 - Commit 3 should add wrappers or symlinks that delegate to the existing runtime without requiring package installation.
 
 ### Intentional compatibility and internal surfaces
@@ -87,7 +87,7 @@ These surfaces should remain unless a later explicit migration expands scope:
 - Internal Python package: `codex_flow`
 - Local state directory: `.codex-flow`
 - Runtime script: `scripts/codex_flow.py`
-- Historical docs under dated plan files, including older `docs/plans/*codex-flow*` and `/Users/moonsoo/projects/codex-skills-user/docs/2026-05-11-*codex-flow*` plans
+- Historical docs under dated plan files, including older `docs/plans/*codex-flow*` and `/Users/moonsoo/projects/tools/codex-skills-user/docs/2026-05-11-*codex-flow*` plans
 - Existing queue, source snapshot, ticket, and prompt paths under `.codex-flow/`
 - Tests that assert internal state paths such as `.codex-flow`
 
@@ -166,7 +166,7 @@ These surfaces should remain unless a later explicit migration expands scope:
   - skill symlink 위험과 runtime rename 위험을 계획에 명시한다.
 - 검증:
   - `rg -n "codex-flow|코덱스플로우|Codex Flow|구현커밋" README.md codex_flow scripts skills tests docs`
-  - `rg -n "codex-flow|코덱스플로우|Codex Flow|구현커밋" codex-flow 코덱스플로우 scripts README.md` in `/Users/moonsoo/projects/codex-skills-user`
+  - `rg -n "codex-flow|코덱스플로우|Codex Flow|구현커밋" codex-flow 코덱스플로우 scripts README.md` in `/Users/moonsoo/projects/tools/codex-skills-user`
 - 성공 기준:
   - 마이그레이션 대상과 의도적 보존 대상이 분리된다.
 - 중단 조건:
@@ -175,21 +175,21 @@ These surfaces should remain unless a later explicit migration expands scope:
 ### Commit 2: canonical `구현커밋` skill 추가와 legacy alias 전환
 
 - 대상 파일:
-  - `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`
-  - `/Users/moonsoo/projects/codex-skills-user/구현커밋/agents/openai.yaml`
-  - `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`
-  - `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
-  - `/Users/moonsoo/projects/codex-flow/skills/구현커밋/SKILL.md`
-  - `/Users/moonsoo/projects/codex-flow/skills/codex-flow/SKILL.md`
-  - `/Users/moonsoo/projects/codex-flow/skills/코덱스플로우/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/agents/openai.yaml`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-flow/skills/구현커밋/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-flow/skills/codex-flow/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-flow/skills/코덱스플로우/SKILL.md`
 - 변경:
   - `구현커밋/SKILL.md`를 canonical body로 만든다.
   - 설명은 "plan-first 문서를 기준으로 구현, 검토, repair, commit을 수행하는 실행 스킬"로 바꾼다.
   - `codex-flow`와 `코덱스플로우`는 canonical `구현커밋`을 읽고 따르는 alias wrapper로 축소한다.
   - 기존 `$코덱스플로우` 호출, `$codex-flow` 호출은 계속 작동한다고 명시한다.
 - 검증:
-  - `find /Users/moonsoo/projects/codex-skills-user -maxdepth 2 -name SKILL.md | rg "구현커밋|codex-flow|코덱스플로우"`
-  - `rg -n "name: 구현커밋|구현커밋|코덱스플로우.*alias|codex-flow.*alias" /Users/moonsoo/projects/codex-skills-user/구현커밋 /Users/moonsoo/projects/codex-skills-user/codex-flow /Users/moonsoo/projects/codex-skills-user/코덱스플로우`
+  - `find /Users/moonsoo/projects/tools/codex-skills-user -maxdepth 2 -name SKILL.md | rg "구현커밋|codex-flow|코덱스플로우"`
+  - `rg -n "name: 구현커밋|구현커밋|코덱스플로우.*alias|codex-flow.*alias" /Users/moonsoo/projects/tools/codex-skills-user/구현커밋 /Users/moonsoo/projects/tools/codex-skills-user/codex-flow /Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우`
 - 성공 기준:
   - `구현커밋` is discoverable as the canonical skill.
   - old skills clearly point to the canonical one.
@@ -199,21 +199,21 @@ These surfaces should remain unless a later explicit migration expands scope:
 ### Commit 3: CLI wrapper/symlink alias 추가
 
 - 대상 파일:
-  - `/Users/moonsoo/projects/codex-flow/scripts/implementation_commit.py`
-  - `/Users/moonsoo/projects/codex-flow/scripts/구현커밋.py`
-  - `/Users/moonsoo/projects/codex-skills-user/scripts/implementation_commit.py`
-  - `/Users/moonsoo/projects/codex-skills-user/scripts/구현커밋.py`
+  - `/Users/moonsoo/projects/tools/codex-flow/scripts/implementation_commit.py`
+  - `/Users/moonsoo/projects/tools/codex-flow/scripts/구현커밋.py`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/scripts/implementation_commit.py`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/scripts/구현커밋.py`
   - `codex_flow/cli.py`
 - 변경:
-  - Runtime은 계속 `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py`를 호출한다.
+  - Runtime은 계속 `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py`를 호출한다.
   - 새 wrappers or symlinks는 canonical runtime으로 넘긴다.
   - `argparse` `prog`/description은 호출 파일 이름을 반영하거나 최소한 `구현커밋 / implementation-commit` alias를 help에 표시한다.
   - 기존 `scripts/codex_flow.py`는 compatibility wrapper로 유지한다.
 - 검증:
-  - `python3 /Users/moonsoo/projects/codex-flow/scripts/implementation_commit.py --help`
-  - `python3 /Users/moonsoo/projects/codex-flow/scripts/구현커밋.py --help`
-  - `python3 /Users/moonsoo/projects/codex-skills-user/scripts/implementation_commit.py --help`
-  - `python3 /Users/moonsoo/projects/codex-skills-user/scripts/구현커밋.py --help`
+  - `python3 /Users/moonsoo/projects/tools/codex-flow/scripts/implementation_commit.py --help`
+  - `python3 /Users/moonsoo/projects/tools/codex-flow/scripts/구현커밋.py --help`
+  - `python3 /Users/moonsoo/projects/tools/codex-skills-user/scripts/implementation_commit.py --help`
+  - `python3 /Users/moonsoo/projects/tools/codex-skills-user/scripts/구현커밋.py --help`
 - 성공 기준:
   - New and old wrapper paths all show the same command surface.
   - No wrapper requires package install.
@@ -258,7 +258,7 @@ These surfaces should remain unless a later explicit migration expands scope:
 - 검증:
   - `python3 -m pytest`
   - `git diff --check`
-  - `git -C /Users/moonsoo/projects/codex-skills-user diff --check -- 구현커밋 codex-flow 코덱스플로우 scripts`
+  - `git -C /Users/moonsoo/projects/tools/codex-skills-user diff --check -- 구현커밋 codex-flow 코덱스플로우 scripts`
   - Wrapper `--help` checks from Commit 3
   - `rg` remaining-name audit from Commit 4
 - 성공 기준:

@@ -16,7 +16,7 @@
 | dashboard/source integration | `PYTHONPATH=. pytest tests/test_crack_parity.py tests/test_route_plan_first_source.py -q` | 34 passed | main/isolated/fallback projection and existing integrations |
 | combined post-review | `PYTHONPATH=. pytest tests/test_execution_policy.py tests/test_crack_parity.py tests/test_route_plan_first_source.py -q` | 75 passed | final edge-case and redaction matrix |
 | full regression | `PYTHONPATH=. pytest -q` | 253 passed in 199.30s | repository regression suite before evidence-doc packaging |
-| CLI smoke | `python3 scripts/codex_flow.py --repo /Users/moonsoo/projects/codex-flow dashboard` | pass | real active plans show owner, phase/status, elapsed, progress, wait, verification, status source |
+| CLI smoke | `python3 scripts/codex_flow.py --repo /Users/moonsoo/projects/tools/codex-flow dashboard` | pass | real active plans show owner, phase/status, elapsed, progress, wait, verification, status source |
 | whitespace | `git diff --check main...HEAD` | pass | no whitespace errors |
 
 ## Final Same-HEAD Gate

@@ -11,8 +11,8 @@
 - canonical entrypoint: `scripts/codex_flow.py` → `codex_flow.cli` → `runner.run_next`/`runner.execute_unit`
 - child execution boundary: `codex_flow/runner.py::execute_unit`
 - isolation, discovery, attestation: `codex_flow/codex_cli.py`
-- user wrapper: `/Users/moonsoo/projects/codex-skills-user/scripts/implementation_commit.py`
-- precedent: `/Users/moonsoo/projects/development-workflow/plugins/chronica-workflow/skills/implementation-commit/scripts/prepared_child.py`
+- user wrapper: `/Users/moonsoo/projects/tools/codex-skills-user/scripts/implementation_commit.py`
+- precedent: `/Users/moonsoo/projects/tools/development-workflow-runtime/plugins/chronica-workflow/skills/implementation-commit/scripts/prepared_child.py`
 - regression surface: `tests/test_codex_cli.py`, `tests/test_child_attestation.py`, implementer agent argument plumbing, runtime docs
 
 웹/커뮤니티 조사는 수행하지 않았다. 이 문제는 현재 checkout의 내부 실행 계약과 로컬 Codex CLI `0.144.1` 동작이 정본이므로 external 10-platform/20-evidence bar는 `threshold intentionally narrowed`로 처리한다.
@@ -30,10 +30,10 @@
 - `.codex-flow/plans/2026-07-16-codex-flow-fail-closed-child-runtime-plan/source-plan.md`
 - `.codex-flow/plans/2026-07-16-codex-flow-loaded-skill-closure-repair-plan/source-plan.md`
 - `.codex-flow/plans/2026-07-16-codex-flow-plugin-cache-closure-repair-plan/source-plan.md`
-- `/Users/moonsoo/projects/codex-skills-user/scripts/implementation_commit.py`
-- `/Users/moonsoo/projects/codex-skills-user/scripts/codex_flow_entrypoint.py`
-- `/Users/moonsoo/projects/development-workflow/plugins/chronica-workflow/skills/implementation-commit/scripts/prepared_child.py`
-- `/Users/moonsoo/projects/development-workflow/plugins/chronica-workflow/skills/implementation-commit/scripts/implementation_commit.py`
+- `/Users/moonsoo/projects/tools/codex-skills-user/scripts/implementation_commit.py`
+- `/Users/moonsoo/projects/tools/codex-skills-user/scripts/codex_flow_entrypoint.py`
+- `/Users/moonsoo/projects/tools/development-workflow-runtime/plugins/chronica-workflow/skills/implementation-commit/scripts/prepared_child.py`
+- `/Users/moonsoo/projects/tools/development-workflow-runtime/plugins/chronica-workflow/skills/implementation-commit/scripts/implementation_commit.py`
 
 ## Current Behavior
 
@@ -189,8 +189,8 @@ Strongest evidence: current source plus focused no-edit tests. Weakest adopted e
 - `tests/test_child_attestation.py:601-626`: current missing-env no-launch/no-edit oracle.
 - `tests/test_codex_cli.py:82-143`: private config filtering and repo namespace reuse.
 - `skills/구현커밋/SKILL.md:36-44`: documented default child behavior.
-- `/Users/moonsoo/projects/codex-skills-user/scripts/codex_flow_entrypoint.py:43-49`: wrapper only execs canonical entrypoint.
-- `/Users/moonsoo/projects/development-workflow/plugins/chronica-workflow/skills/implementation-commit/scripts/prepared_child.py:159-267`: staging/provision/discovery/publish precedent.
+- `/Users/moonsoo/projects/tools/codex-skills-user/scripts/codex_flow_entrypoint.py:43-49`: wrapper only execs canonical entrypoint.
+- `/Users/moonsoo/projects/tools/development-workflow-runtime/plugins/chronica-workflow/skills/implementation-commit/scripts/prepared_child.py:159-267`: staging/provision/discovery/publish precedent.
 - command, 2026-07-19: `codex --version` → `codex-cli 0.144.1`.
 - command: `rg -n "child_runtime|CHILD_HOME|CHILD_MANIFEST|attestation|prepared|manifest|closure" codex_flow tests README.md skills/구현커밋/SKILL.md`.
 - independent researcher: `child-runtime-precedent-research-20260719`, read-only, completed; main agent re-read cited source before synthesis.

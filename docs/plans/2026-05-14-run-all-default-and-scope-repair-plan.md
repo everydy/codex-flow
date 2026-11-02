@@ -20,7 +20,7 @@
   - `python -m pytest` 기반 회귀 테스트
   - `run-all --preview` 또는 fixture 기반 CLI 테스트 산출물
 - 사용자가 바로 열어볼 링크:
-  - `/Users/moonsoo/projects/codex-flow/docs/plans/2026-05-14-run-all-default-and-scope-repair-plan.md`
+  - `/Users/moonsoo/projects/tools/codex-flow/docs/plans/2026-05-14-run-all-default-and-scope-repair-plan.md`
 
 ## 문제 요약
 
@@ -35,9 +35,9 @@
 
 ## 근거
 
-- `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
   - `$코덱스플로우 모두실행`은 현재 plan의 incomplete commit unit들을 `run-all --auto-resolve`로 끝까지 실행한다고 정의한다.
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py`
   - `write_plan_files()`의 handoff 문구가 항상 `run-next`만 쓴다.
   - `DEFAULT_UNITS[1].allowed_paths`가 앱 구현에 필요한 일반 코드 경로를 포함하지 않는다.
 - `/Users/moonsoo/projects/kubs-equipment-calendar/.codex-flow/plans/사진-등록-화면을-대여-반납-공용-절차로-리팩터링하고-반납-사진-등록-모바일-페이지를-실제-앱에-추가/queue.json`
@@ -62,28 +62,28 @@ flowchart TD
 
 ## Target Files
 
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py`
   - `DEFAULT_UNITS`
   - `write_plan_files()`
   - `render_plan_md()`
   - any helper added for default run command or allowed path policy
-- `/Users/moonsoo/projects/codex-flow/codex_flow/dashboard.py`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/dashboard.py`
   - Suggested command output should continue to prefer `run-all --auto-resolve` for active plans.
-- `/Users/moonsoo/projects/codex-flow/codex_flow/runner.py`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/runner.py`
   - No behavioral rewrite expected, but tests should prove generated prompts for every run-all unit include Required skills and usable allowed paths.
-- `/Users/moonsoo/projects/codex-flow/tests/test_plans.py`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_plans.py`
   - Plan creation, queue generation, handoff, default allowed paths.
-- `/Users/moonsoo/projects/codex-flow/tests/test_runner_brief.py`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_runner_brief.py`
   - `run-all` prompt generation and per-unit skill manifest inclusion.
-- `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
   - Clarify that `run-next` is a single-unit/manual repair command and must not be recommended as the next step after a user invoked `모두실행`, except when run-all reports a specific failed repair unit.
-- `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`
   - Same canonical wording if the body skill needs parity with the Korean alias.
 
 ## Required Behavior
 
 1. `$코덱스플로우 모두실행` remains mapped to:
-   - `/Users/moonsoo/projects/codex-flow/scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve`
+   - `/Users/moonsoo/projects/tools/codex-flow/scripts/codex_flow.py --repo <repo> run-all --plan <plan.md> --auto-resolve`
 2. Newly created plan handoff must not imply `run-next` is the default continuation.
    - Preferred handoff copy:
      - `Resume all units: run-all --plan <plan.md> --auto-resolve`
@@ -125,7 +125,7 @@ flowchart TD
 
 ## Verification Commands
 
-Run from `/Users/moonsoo/projects/codex-flow`:
+Run from `/Users/moonsoo/projects/tools/codex-flow`:
 
 ```bash
 python3 -m pytest tests/test_plans.py tests/test_runner_brief.py
@@ -176,7 +176,7 @@ Do not include unrelated `kubs-equipment-calendar` app changes in this commit.
 - `python3 -m pytest tests/test_plans.py tests/test_runner_brief.py`: pass, 26 tests
 - `python3 -m pytest`: pass, 61 tests
 - `git diff --check -- .`: pass
-- `git -C /Users/moonsoo/projects/codex-skills-user diff --check -- 코덱스플로우/SKILL.md codex-flow/SKILL.md`: pass
+- `git -C /Users/moonsoo/projects/tools/codex-skills-user diff --check -- 코덱스플로우/SKILL.md codex-flow/SKILL.md`: pass
 - CLI smoke with a temp repo:
   - `run-all --preview` generated `unit-001`, `unit-002`, and `unit-003` prompts.
   - `handoff.md` uses `run-all --plan <plan.md> --auto-resolve` as the primary resume command.

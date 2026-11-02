@@ -625,8 +625,8 @@ Target files:
 - `README.md`
 - `skills/codex-flow/SKILL.md`
 - `skills/코덱스플로우/SKILL.md`
-- `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`
-- `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
 
 Changes:
 
@@ -643,7 +643,7 @@ Changes:
 Verification:
 
 ```bash
-rg -n "natural-language|inbox|existing_plan|new_plan|plan-first|source plan|from-request" README.md skills /Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md /Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md
+rg -n "natural-language|inbox|existing_plan|new_plan|plan-first|source plan|from-request" README.md skills /Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md /Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md
 ```
 
 Expected assertions:

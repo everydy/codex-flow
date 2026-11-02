@@ -67,8 +67,8 @@ Codex Flow already runs a review step before committing each unit. This change s
   - `README.md`
   - `skills/codex-flow/SKILL.md`
   - `skills/코덱스플로우/SKILL.md`
-  - `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`
-  - `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
 - 변경:
   - `run-next` / `run-all`이 unit별 자동 커밋 전에 `review-all-in-one` gate를 통과한다는 계약을 문서화한다.
 - 검증:

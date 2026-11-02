@@ -387,8 +387,8 @@ def scoped_status_summary(snapshot: GitStatusSnapshot, allowed_paths: list[str])
 
 - 대상 파일:
   - `README.md`
-  - `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`
-  - `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
   - `docs/plans/2026-06-03-nested-run-all-observability-and-routing-fix-plan.md`
 - 변경:
   - timeout, diagnostic path, source manifest 보존, external path 정책을 문서화한다.
@@ -431,7 +431,7 @@ def scoped_status_summary(snapshot: GitStatusSnapshot, allowed_paths: list[str])
 
 ## 검토용 결과물
 
-- 계획 문서: `/Users/moonsoo/projects/codex-flow/docs/plans/2026-06-03-nested-run-all-observability-and-routing-fix-plan.md`
+- 계획 문서: `/Users/moonsoo/projects/tools/codex-flow/docs/plans/2026-06-03-nested-run-all-observability-and-routing-fix-plan.md`
 - 테스트 링크: 해당 없음. CLI/backend orchestration 작업이므로 localhost URL 대신 pytest 명령으로 검증한다.
 
 ### HTML 생략 보고서

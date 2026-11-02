@@ -49,8 +49,8 @@ cli.py run-next/run-all
 - `tests/test_runner_brief.py`: review, repair, stash, timeout, 정상-return HEAD 이동 테스트.
 - `tests/test_execution_worktree.py`: 별도 execution worktree와 cleanup guard 테스트.
 - `README.md`, `skills/구현커밋/SKILL.md`: repo runtime 계약.
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`: 현재 설치된 사용자-facing 계약.
-- `/Users/moonsoo/projects/codex-skills-user/review-all-in-one/SKILL.md`: 명시 호출·읽기 전용 review 계약.
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`: 현재 설치된 사용자-facing 계약.
+- `/Users/moonsoo/projects/tools/codex-skills-user/review-all-in-one/SKILL.md`: 명시 호출·읽기 전용 review 계약.
 - Issue #141 archived `queue.json`, `log.md`, `attempts/`: 실제 시각과 dangling attempt 근거.
 
 ## Current Behavior
@@ -66,7 +66,7 @@ cli.py run-next/run-all
 7. timeout/nonzero catch는 정상 종료 후 HEAD 검사보다 먼저 반환한다. child가 HEAD를 변경한 뒤 실패하면 정상-return HEAD guard가 실행되지 않는다.
 8. stale `in_progress`는 `needs_work` repair context로 취급되지 않는다. 다음 auto-resolve에서 부분 변경이 unrelated dirty state로 stash될 수 있다.
 9. queue JSON은 atomic temp-write/rename 또는 CAS가 아니라 직접 `write_text`로 갱신된다.
-10. repo mirror `skills/구현커밋/SKILL.md`와 설치된 `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`가 현재 서로 다르다. repo mirror에는 managed child closure 계약이 있지만 설치본에는 더 오래된 child isolation 설명과 더 최신 task-worktree cleanup 설명이 혼재한다.
+10. repo mirror `skills/구현커밋/SKILL.md`와 설치된 `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`가 현재 서로 다르다. repo mirror에는 managed child closure 계약이 있지만 설치본에는 더 오래된 child isolation 설명과 더 최신 task-worktree cleanup 설명이 혼재한다.
 
 ### Empirical Issue #141 timeline
 
@@ -243,21 +243,21 @@ flowchart TD
 
 ### Repository evidence
 
-- `/Users/moonsoo/projects/codex-flow/codex_flow/cli.py:82-108`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/implementer_agent.py:94-137`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/implementer_agent.py:197-218`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/git_ops.py:46-63`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/codex_cli.py:964-1072`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/runner.py:267-430`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/runner.py:503-552`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plan_readiness.py:136`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py:404`
-- `/Users/moonsoo/projects/codex-flow/codex_flow/plans.py:817`
-- `/Users/moonsoo/projects/codex-flow/tests/test_runner_brief.py:582`
-- `/Users/moonsoo/projects/codex-flow/tests/test_runner_brief.py:917`
-- `/Users/moonsoo/projects/codex-flow/skills/구현커밋/SKILL.md`
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`
-- `/Users/moonsoo/projects/codex-skills-user/review-all-in-one/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/cli.py:82-108`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/implementer_agent.py:94-137`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/implementer_agent.py:197-218`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/git_ops.py:46-63`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/codex_cli.py:964-1072`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/runner.py:267-430`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/runner.py:503-552`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plan_readiness.py:136`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py:404`
+- `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py:817`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_runner_brief.py:582`
+- `/Users/moonsoo/projects/tools/codex-flow/tests/test_runner_brief.py:917`
+- `/Users/moonsoo/projects/tools/codex-flow/skills/구현커밋/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`
+- `/Users/moonsoo/projects/tools/codex-skills-user/review-all-in-one/SKILL.md`
 
 ### Empirical evidence
 
@@ -272,7 +272,7 @@ flowchart TD
 - `git log --all --date=iso-strict --pretty=...`
 - `jq` inspection of archived `queue.json` and attempt metadata
 - targeted local Biome check of generated `.codex-flow` JSON: formatting failure confirmed without writes
-- `diff -u skills/구현커밋/SKILL.md /Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`: installed-skill drift confirmed
+- `diff -u skills/구현커밋/SKILL.md /Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`: installed-skill drift confirmed
 
 ## Research Brief
 

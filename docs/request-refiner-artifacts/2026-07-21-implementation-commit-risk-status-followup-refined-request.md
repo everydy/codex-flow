@@ -46,7 +46,7 @@
 - Research: reuse prior research for the completed architecture; add only focused evidence for classifier precedence and status projection. External web research is intentionally excluded unless local contracts prove insufficient.
 - Review hard stop: no runtime/test implementation while `review-all-in-one` or `해결전략검토` is active.
 - Implementation gate: proceed only if the strategy verdict is `적절`, or `조건부 적절` conditions are fully resolved in the plan before code changes.
-- Git boundary: work only in `/Users/moonsoo/projects/codex-flow`; preserve other repositories and unrelated changes.
+- Git boundary: work only in `/Users/moonsoo/projects/tools/codex-flow`; preserve other repositories and unrelated changes.
 - Deployment: not authorized.
 - Artifact role: this document is the source prompt for all remaining work in this request.
 

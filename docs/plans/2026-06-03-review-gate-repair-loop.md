@@ -88,8 +88,8 @@ Codex Flow already asks the post-unit review pass to apply `review-all-in-one`. 
   - `README.md`
   - `skills/codex-flow/SKILL.md`
   - `skills/코덱스플로우/SKILL.md`
-  - `/Users/moonsoo/projects/codex-skills-user/codex-flow/SKILL.md`
-  - `/Users/moonsoo/projects/codex-skills-user/코덱스플로우/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/codex-flow/SKILL.md`
+  - `/Users/moonsoo/projects/tools/codex-skills-user/코덱스플로우/SKILL.md`
 - 변경:
   - review gate score contract를 문서화한다.
   - `blocker=0`, `important=0`이 commit condition임을 명시한다.

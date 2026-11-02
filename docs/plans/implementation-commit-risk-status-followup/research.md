@@ -4,7 +4,7 @@
 
 완료된 main-first `구현커밋` 구조를 다시 열지 않고, 남은 두 제안인 위험도 오탐 방지와 기존 상태판의 최소 보강이 실제 결함을 직접 해결하는지 확인한다.
 
-조사 기준은 `/Users/moonsoo/projects/codex-flow`의 `main` HEAD `2f86ce28`이며, source prompt는 `docs/request-refiner-artifacts/2026-07-21-implementation-commit-risk-status-followup-refined-request.md`다.
+조사 기준은 `/Users/moonsoo/projects/tools/codex-flow`의 `main` HEAD `2f86ce28`이며, source prompt는 `docs/request-refiner-artifacts/2026-07-21-implementation-commit-risk-status-followup-refined-request.md`다.
 
 ## Scope And Entry Points
 

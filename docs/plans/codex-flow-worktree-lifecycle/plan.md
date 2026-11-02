@@ -47,7 +47,7 @@ flowchart LR
 - `codex_flow/merge.py`: in-place branch close and isolated cleanup behavior.
 - `tests/test_execution_worktree.py`, `tests/test_main_unit.py`, `tests/test_final_gate.py`: behavior and regression tests.
 - `README.md`, `skills/구현커밋/SKILL.md`: runtime-facing contract.
-- `/Users/moonsoo/projects/codex-skills-user/구현커밋/SKILL.md`: installed canonical contract.
+- `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋/SKILL.md`: installed canonical contract.
 
 ## Current Behavior
 
@@ -172,7 +172,7 @@ flowchart LR
 
 ### Phase 4: Synchronize the installed implementation skill
 
-- target repository: `/Users/moonsoo/projects/codex-skills-user`
+- target repository: `/Users/moonsoo/projects/tools/codex-skills-user`
 - target files:
   - `구현커밋/SKILL.md`
   - wrapper compatibility tests or probes affected by route flags
@@ -225,9 +225,9 @@ flowchart LR
 ## Validation
 
 - focused tests:
-  - `/Users/moonsoo/projects/Chat-Bot/.venv/bin/python -m pytest tests/test_execution_worktree.py tests/test_main_unit.py tests/test_final_gate.py tests/test_inbox_merge.py tests/test_route_plan_first_source.py -q`
+  - `/Users/moonsoo/projects/tools/Chat-Bot/.venv/bin/python -m pytest tests/test_execution_worktree.py tests/test_main_unit.py tests/test_final_gate.py tests/test_inbox_merge.py tests/test_route_plan_first_source.py -q`
 - full suite:
-  - `/Users/moonsoo/projects/Chat-Bot/.venv/bin/python -m pytest -q`
+  - `/Users/moonsoo/projects/tools/Chat-Bot/.venv/bin/python -m pytest -q`
 - static checks:
   - `python3 -m compileall codex_flow scripts`
   - `git diff --check`
