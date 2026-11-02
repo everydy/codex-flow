@@ -261,9 +261,9 @@ flowchart TD
 
 ### Empirical evidence
 
-- `/Users/moonsoo/projects/크로니카/archives/chronika-platform-codex-flow/2026-07-20-branch-cleanup/issue-141-pr142/plans/implementation-plan-captionflow-team-ai-pilot-onboarding/queue.json`
-- `/Users/moonsoo/projects/크로니카/archives/chronika-platform-codex-flow/2026-07-20-branch-cleanup/issue-141-pr142/plans/implementation-plan-captionflow-team-ai-pilot-onboarding/log.md`
-- `/Users/moonsoo/projects/크로니카/archives/chronika-platform-codex-flow/2026-07-20-branch-cleanup/issue-141-pr142/plans/implementation-plan-captionflow-team-ai-pilot-onboarding/attempts/`
+- `/Users/moonsoo/projects/content/chronika/archives/chronika-platform-codex-flow/2026-07-20-branch-cleanup/issue-141-pr142/plans/implementation-plan-captionflow-team-ai-pilot-onboarding/queue.json`
+- `/Users/moonsoo/projects/content/chronika/archives/chronika-platform-codex-flow/2026-07-20-branch-cleanup/issue-141-pr142/plans/implementation-plan-captionflow-team-ai-pilot-onboarding/log.md`
+- `/Users/moonsoo/projects/content/chronika/archives/chronika-platform-codex-flow/2026-07-20-branch-cleanup/issue-141-pr142/plans/implementation-plan-captionflow-team-ai-pilot-onboarding/attempts/`
 - Git commits: `72b1b8b`, `73e03ec`, `0bb1596`, `5328248`, `627525f`, `afbda65`, `e158216`, `4363ba7`
 
 ### Commands used

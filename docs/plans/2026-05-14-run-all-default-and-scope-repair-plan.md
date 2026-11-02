@@ -40,7 +40,7 @@
 - `/Users/moonsoo/projects/tools/codex-flow/codex_flow/plans.py`
   - `write_plan_files()`의 handoff 문구가 항상 `run-next`만 쓴다.
   - `DEFAULT_UNITS[1].allowed_paths`가 앱 구현에 필요한 일반 코드 경로를 포함하지 않는다.
-- `/Users/moonsoo/projects/kubs-equipment-calendar/.codex-flow/plans/사진-등록-화면을-대여-반납-공용-절차로-리팩터링하고-반납-사진-등록-모바일-페이지를-실제-앱에-추가/queue.json`
+- `/Users/moonsoo/projects/apps/kubs-equipment-calendar/.codex-flow/plans/사진-등록-화면을-대여-반납-공용-절차로-리팩터링하고-반납-사진-등록-모바일-페이지를-실제-앱에-추가/queue.json`
   - `unit-001`만 `prompted`, `unit-002/003`은 `ready`다.
   - `unit-002.allowed_paths`가 `scripts/**`, `tools/**`, `docs/**`로 제한되어 있다.
 

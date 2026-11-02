@@ -12,7 +12,7 @@
 
 - `/Users/moonsoo/projects/tools/codex-flow`의 route, plan, run, final gate, merge, worktree lifecycle 코드와 테스트
 - `/Users/moonsoo/projects/tools/codex-skills-user/구현커밋`의 main-first, recovery, branch finalization 계약
-- `/Users/moonsoo/projects/고연전 중계`에 남은 반복 plan/worktree를 통한 제한적 현장 대조
+- `/Users/moonsoo/projects/apps/goyeonjeon-broadcast`에 남은 반복 plan/worktree를 통한 제한적 현장 대조
 
 주요 진입점:
 
@@ -58,7 +58,7 @@
 
 ### Empirical local observation
 
-`/Users/moonsoo/projects/고연전 중계/.codex-flow/plans/`에는 같은 제목에서 파생된 `계획`, `계획-2`, `계획-3`이 있고 세 queue 모두 `cleanup_state=active`였다. 상태 조합은 각각 `human_gate,ready,human_gate`, `human_gate,needs_work,human_gate`, `done,done,human_gate`였다. 2026-07-22 확인 당시 Git registry에는 `계획-3` worktree만 남아 있었다. 이 사례는 route-time 선생성, 반복 route의 `unique_slug()` 증가, human gate 보존, cleanup metadata와 물리 상태의 분리가 함께 나타날 수 있음을 보여준다.
+`/Users/moonsoo/projects/apps/goyeonjeon-broadcast/.codex-flow/plans/`에는 같은 제목에서 파생된 `계획`, `계획-2`, `계획-3`이 있고 세 queue 모두 `cleanup_state=active`였다. 상태 조합은 각각 `human_gate,ready,human_gate`, `human_gate,needs_work,human_gate`, `done,done,human_gate`였다. 2026-07-22 확인 당시 Git registry에는 `계획-3` worktree만 남아 있었다. 이 사례는 route-time 선생성, 반복 route의 `unique_slug()` 증가, human gate 보존, cleanup metadata와 물리 상태의 분리가 함께 나타날 수 있음을 보여준다.
 
 이 현장 관찰은 일반화된 빈도 통계가 아니라 현재 사용자 환경의 재현 사례로만 사용한다.
 
@@ -220,7 +220,7 @@ External evidence breadth: `threshold intentionally narrowed`. 내부 런타임�
 ### Commands and results
 
 - `rg -n -S 'worktree|cleanup_state|execution_repo' codex_flow tests docs README.md`
-- `git -C '/Users/moonsoo/projects/고연전 중계' worktree list --porcelain`
+- `git -C '/Users/moonsoo/projects/apps/goyeonjeon-broadcast' worktree list --porcelain`
 - three relevant `queue.json` files inspected with `jq`
 - `/Users/moonsoo/projects/tools/Chat-Bot/.venv/bin/python -m pytest tests/test_execution_worktree.py tests/test_inbox_merge.py tests/test_route_plan_first_source.py -q`
   - Result on 2026-07-22: `28 passed in 8.24s`
